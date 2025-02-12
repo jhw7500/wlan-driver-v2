@@ -155,9 +155,6 @@ Change log:
 #include "moal_shim.h"
 /* Wireless header */
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 12, 12)
-#include <net/lib80211.h>
-#endif
 #include <net/cfg80211.h>
 #include <net/ieee80211_radiotap.h>
 #endif
