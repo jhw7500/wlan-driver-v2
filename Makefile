@@ -22,10 +22,6 @@ COMPATDIR=/lib/modules/$(KERNELVERSION_X86)/build/compat-wireless-3.2-rc1-1/incl
 CC ?=		$(CROSS_COMPILE)gcc -I$(COMPATDIR)
 endif
 
-KERNELDIR ?= /opt/sda/mini-6.6.3/imx-6.6.3-1.0.0-build/build-wayland/tmp/work/imx8mmevk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
-CROSS_COMPILE?=/shared/fsl-imx-xwayland/6.6-nanbield/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
-CC =            $(CROSS_COMPILE)gcc
-
 LD ?=		$(CROSS_COMPILE)ld
 BACKUP=		/root/backup
 YMD=		`date +%Y%m%d%H%M`
@@ -39,28 +35,28 @@ CONFIG_SD8897=n
 CONFIG_USB8897=n
 CONFIG_PCIE8897=n
 CONFIG_SD8977=n
-CONFIG_SD8978=n
+CONFIG_SD8978=y
 CONFIG_USB8978=n
-CONFIG_SD8997=n
+CONFIG_SD8997=y
 CONFIG_USB8997=n
-CONFIG_PCIE8997=n
-CONFIG_SD8987=n
+CONFIG_PCIE8997=y
+CONFIG_SD8987=y
 CONFIG_SD9097=n
-CONFIG_SD9177=n
-CONFIG_SD8801=n
+CONFIG_SD9177=y
+CONFIG_SD8801=y
 CONFIG_USB8801=n
 CONFIG_USB9097=n
 CONFIG_PCIE9097=n
 CONFIG_SD9098=y
 CONFIG_USB9098=n
 CONFIG_PCIE9098=y
-CONFIG_SDIW610=n
-CONFIG_USBIW610=n
+CONFIG_SDIW610=y
+CONFIG_USBIW610=y
 CONFIG_SDIW624=n
 CONFIG_SDAW693=n
 CONFIG_PCIEIW624=n
 CONFIG_USBIW624=n
-CONFIG_PCIEAW693=n
+CONFIG_PCIEAW693=y
 
 
 # Debug Option
@@ -111,16 +107,7 @@ CONFIG_DUMP_TO_PROC=y
 
 CONFIG_TASKLET_SUPPORT=n
 
-CONFIG_JHW_TEST=n
 
-# Runtime bridge transaction fault injection (QA-only, production default off).
-# `make bridge-fault-guard-check` verifies that the source keeps every hook
-# declaration and injected branch behind the same default-off compile guard.
-CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n
-
-.PHONY: bridge-fault-guard-check
-bridge-fault-guard-check:
-	@bash scripts/tests/bridge_static_checks.sh
 
 #32bit app over 64bit kernel support
 CONFIG_USERSPACE_32BIT_OVER_KERNEL_64BIT=n
@@ -163,13 +150,8 @@ ccflags-y += -I$(PWD)/mlan
 ccflags-y += -DLINUX
 
 
-ifeq ($(CONFIG_JHW_TEST),y)
-ccflags-y += -DJHW_TEST
-endif
 
-ifeq ($(CONFIG_BRIDGE_SWITCH_FAULT_INJECT),y)
-ccflags-y += -DBRIDGE_SWITCH_FAULT_INJECT
-endif
+
 
 
 ARCH ?= arm64
@@ -186,7 +168,6 @@ endif
 LD += -S
 
 BINDIR = bin_wlan
-MOD_SUFFIX ?=
 APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 
 #############################################################################
@@ -535,8 +516,7 @@ MOALOBJS =	mlinux/moal_main.o \
 		mlinux/moal_ioctl.o \
 		mlinux/moal_shim.o \
 		mlinux/moal_eth_ioctl.o \
-		mlinux/moal_init.o \
-		mlinux/moal_bridge.o
+		mlinux/moal_init.o
 
 MLANOBJS =	mlan/mlan_shim.o mlan/mlan_init.o \
 		mlan/mlan_txrx.o \
@@ -640,17 +620,11 @@ endif
 
 export		CC LD ccflags-y KERNELDIR
 
-.PHONY: mapp/mlanutl mapp/mlanevent clean distclean
+.PHONY: mapp/mlanutl clean distclean
 	@echo "Finished Making NXP Wlan Linux Driver"
 
 mapp/mlanutl:
 	$(MAKE) -C $@
-
-mapp/mlanevent:
-	@if [ ! -d $(BINDIR) ]; then \
-		mkdir $(BINDIR); \
-	fi
-	$(MAKE) -C $@ INSTALLDIR=$(BINDIR)
 
 echo:
 
@@ -665,7 +639,6 @@ appsbuild:
 ifneq ($(APPDIR),)
 	cp -rf mapp/mlanconfig/config $(BINDIR)
 	$(MAKE) -C mapp/mlanutl $@ INSTALLDIR=$(BINDIR)
-	$(MAKE) -C mapp/mlanevent $@ INSTALLDIR=$(BINDIR)
 endif
 
 build:		echo default
@@ -674,23 +647,15 @@ build:		echo default
 		mkdir $(BINDIR); \
 	fi
 
-	cp -f mlan.$(MODEXT) $(BINDIR)/mlan$(MOD_SUFFIX)$(DBG).$(MODEXT)
+	cp -f mlan.$(MODEXT) $(BINDIR)/mlan$(DBG).$(MODEXT)
 
-	cp -f moal.$(MODEXT) $(BINDIR)/moal$(MOD_SUFFIX)$(DBG).$(MODEXT)
-
-# .ko 는 재배치에 .symtab 이 필요하므로 --strip-debug 만 사용 (--strip-all 금지)
-	cd $(BINDIR) && for m in mlan$(MOD_SUFFIX)$(DBG).$(MODEXT) moal$(MOD_SUFFIX)$(DBG).$(MODEXT); do \
-		$(CROSS_COMPILE)objcopy --only-keep-debug $$m $$m.debug; \
-		$(CROSS_COMPILE)strip --strip-debug $$m; \
-		$(CROSS_COMPILE)objcopy --add-gnu-debuglink=$$m.debug $$m; \
-	done
+	cp -f moal.$(MODEXT) $(BINDIR)/moal$(DBG).$(MODEXT)
 
 	cp -f README $(BINDIR)
 
 ifneq ($(APPDIR),)
 	cp -rf mapp/mlanconfig/config $(BINDIR)
 	$(MAKE) -C mapp/mlanutl $@ INSTALLDIR=$(BINDIR)
-	$(MAKE) -C mapp/mlanevent $@ INSTALLDIR=$(BINDIR)
 endif
 
 clean:
@@ -706,15 +671,14 @@ clean:
 	-rm -rf .tmp_versions
 ifneq ($(APPDIR),)
 	$(MAKE) -C mapp/mlanutl $@
-	$(MAKE) -C mapp/mlanevent $@
 endif
 #ifdef SDIO
 #endif // SDIO
 
 install: default
 
-	cp -f mlan.$(MODEXT) $(INSTALLDIR)/mlan$(MOD_SUFFIX)$(DBG).$(MODEXT)
-	cp -f moal.$(MODEXT) $(INSTALLDIR)/moal$(MOD_SUFFIX)$(DBG).$(MODEXT)
+	cp -f mlan.$(MODEXT) $(INSTALLDIR)/mlan$(DBG).$(MODEXT)
+	cp -f moal.$(MODEXT) $(INSTALLDIR)/moal$(DBG).$(MODEXT)
 	echo $(INSTALLDIR)
 	echo "MX Driver Installed"
 
@@ -736,7 +700,6 @@ distclean:
 	-rm -rf .tmp_versions
 ifneq ($(APPDIR),)
 	$(MAKE) -C mapp/mlanutl $@
-	$(MAKE) -C mapp/mlanevent $@
 endif
 
 # End of file
