@@ -15112,11 +15112,20 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 
 #define NAPI_BUDGET 64
 	if (moal_extflg_isset(handle, EXT_NAPI)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+		handle->napi_dev = alloc_netdev_dummy(0);
+		if (!handle->napi_dev) {
+			PRINTM(MERROR, "%s: Failed to allocate woal dummy netdev\n", __func__);
+			goto err_kmalloc;
+		}
+		netif_napi_add(handle->napi_dev, &handle->napi_rx,
+			       woal_netdev_poll_rx);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 		init_dummy_netdev(&handle->napi_dev);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
 			       woal_netdev_poll_rx);
 #else
+		init_dummy_netdev(&handle->napi_dev);
 		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
 			       woal_netdev_poll_rx, NAPI_BUDGET);
 #endif
