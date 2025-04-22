@@ -7110,7 +7110,8 @@ done:
  *  @param substr_len   length of the received substring
  *  @return             Numeric value or 0
  */
-t_u16 extractNumericVal(char *str, t_u32 str_len, char *substr, t_u8 substr_len)
+static t_u16 extractNumericVal(char *str, t_u32 str_len, char *substr,
+			       t_u8 substr_len)
 {
 	char result[6]; //  result holds argument value which can be of max size
 			//  of t_u16 (65535)
@@ -7146,7 +7147,7 @@ t_u16 extractNumericVal(char *str, t_u32 str_len, char *substr, t_u8 substr_len)
  *  @param len          length of the received ascii data buffer
  *  @return             string buffer or NULL
  */
-void asciiToString(t_u8 *raw_data, t_u32 len, char *str, t_u32 *str_len)
+static void asciiToString(t_u8 *raw_data, t_u32 len, char *str, t_u32 *str_len)
 {
 	t_u32 i, j;
 

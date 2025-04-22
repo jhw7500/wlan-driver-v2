@@ -201,6 +201,9 @@ static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
 #endif
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+				      unsigned int link_id,
+#endif
 				      int *dbm);
 
 static int woal_cfg80211_set_tx_power(struct wiphy *wiphy,
@@ -2626,7 +2629,12 @@ static int woal_cfg80211_authenticate(struct wiphy *wiphy,
 			PRINTM(MMSG, "bssid not found in scan list\n");
 			kfree(ssid_bssid);
 			LEAVE();
-			return -EFAULT;
+			/* Supplicannt has provision to retry Auth,
+			 * if error is returned as ENOENT.
+			 * it does Auth scan on specific channel
+			 * to sync cfg80211 and DRV scan table entry
+			 */
+			return -ENOENT;
 		}
 	}
 	kfree(ssid_bssid);
@@ -3123,6 +3131,8 @@ void woal_host_mlme_process_assoc_timeout(moal_private *priv,
 	kfree(assoc_info);
 #endif
 	/* Send Assoc Failure with Timeout to CFG80211 */
+	priv->host_mlme = MFALSE;
+	priv->auth_flag = 0;
 #if (CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 0, 0) ||                       \
      (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 33 &&             \
       CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 15, 74)))
@@ -3603,8 +3613,6 @@ static int woal_cfg80211_associate(struct wiphy *wiphy, struct net_device *dev,
 	    woal_bss_start(priv, MOAL_IOCTL_WAIT_TIMEOUT, ssid_bssid)) {
 		PRINTM(MERROR, "HostMlme %s: bss_start Fails\n",
 		       priv->netdev->name);
-		priv->host_mlme = MFALSE;
-		priv->auth_flag = 0;
 		ret = -EFAULT;
 	}
 
@@ -3684,13 +3692,13 @@ done:
 			// kernel
 			woal_save_assoc_params(priv, req, ssid_bssid);
 			ret = 0;
+			priv->host_mlme = MFALSE;
+			priv->auth_flag = 0;
 		} else {
 			ssid_bssid->assoc_rsp.assoc_resp_len = 0;
 			ret = 0;
 			woal_assoc_timeout_event(priv, req);
 		}
-		priv->host_mlme = MFALSE;
-		priv->auth_flag = 0;
 		spin_unlock_irqrestore(&priv->connect_lock, flags);
 	}
 	/*Association Response should also be send when ret is non-zero.
@@ -6886,6 +6894,9 @@ static int woal_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+				      unsigned int link_id,
+#endif
 #endif
 				      int *dbm)
 {

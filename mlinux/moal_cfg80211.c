@@ -4383,11 +4383,12 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 		case WAPI_IE:
 			break;
 		case EXTENSION:
-			/* skip 11ax, 6G if bands are not enabled */
-			if (!(priv->phandle->fw_bands & BAND_GAX) ||
+			/* skip 2G-HE, 5G-HE, 6G if bands are not enabled */
+			if (!(priv->phandle->fw_bands & BAND_GAX) &&
 			    !(priv->phandle->fw_bands & BAND_AAX)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-			    || !(priv->phandle->fw_bands & BAND_6G)
+			    && (!(priv->phandle->fw_bands & BAND_6G))
+
 #endif
 			)
 				break;

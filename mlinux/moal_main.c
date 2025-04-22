@@ -3325,6 +3325,7 @@ static t_u32 woal_process_init_cfg(moal_handle *handle, const t_u8 *data,
 					       __LINE__);
 					goto done;
 				}
+				strncpy(bss_mac_name, intf_s + 1, j);
 				bss_mac_name[j] = '\0';
 				for (i = 0; i < handle->priv_num; i++) {
 					if (!handle->priv[i])
@@ -5371,6 +5372,9 @@ static void woal_mon_set_multicast_list(struct net_device *ndev)
 	LEAVE();
 }
 
+#define PKT_HEADER_SIZE 12 // sizeof(pkt_header)
+#define FRAME_HEADER_LEN PKT_HEADER_SIZE + 2 // sizeof(t_u16)
+
 /**
  * @brief This function handles packet transmission for monitor interface
  *
@@ -5383,18 +5387,18 @@ static netdev_tx_t woal_mon_hard_start_xmit(struct sk_buff *skb,
 					    struct net_device *ndev)
 {
 	int len_rthdr;
-	int qos_len = 0;
-	int dot11_hdr_len = 24;
-	int snap_len = 6;
-	unsigned char *pdata;
+	t_u8 four_addr_pkt = 0;
 	unsigned short fc;
-	unsigned char src_mac_addr[6];
-	unsigned char dst_mac_addr[6];
 	struct ieee80211_hdr *dot11_hdr;
 	struct ieee80211_radiotap_header *prthdr =
 		(struct ieee80211_radiotap_header *)skb->data;
 	monitor_iface *mon_if = netdev_priv(ndev);
-
+	struct ifreq req;
+	t_u8 zero_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	t_u32 packet_len = 0;
+	t_u16 *frmlen = NULL;
+	pkt_header *hdr = NULL;
+	req.ifr_data = NULL;
 	ENTER();
 
 	if (mon_if == NULL || mon_if->base_ndev == NULL) {
@@ -5418,7 +5422,7 @@ static netdev_tx_t woal_mon_hard_start_xmit(struct sk_buff *skb,
 	len_rthdr = ieee80211_get_radiotap_len(skb->data);
 
 	/* does the skb contain enough to deliver on the alleged length? */
-	if (unlikely((int)skb->len < len_rthdr)) {
+	if (unlikely((int)skb->len < (len_rthdr + IEEE80211_HEADER_SIZE))) {
 		PRINTM(MERROR,
 		       "Invalid data length,"
 		       "skb->len: %d\n",
@@ -5431,37 +5435,71 @@ static netdev_tx_t woal_mon_hard_start_xmit(struct sk_buff *skb,
 
 	dot11_hdr = (struct ieee80211_hdr *)skb->data;
 	fc = le16_to_cpu(dot11_hdr->frame_control);
-	if ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_DATA) {
+
+	if (((fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA) &&
+	    ((fc & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT)) {
+		PRINTM(MERROR,
+		       "%s: Tx is not supported for this frame type, frame_control= 0%04X",
+		       __func__, fc);
+		goto fail; /* skb too short for claimed rt header extent */
+	}
+
+	packet_len = (FRAME_HEADER_LEN + skb->len + ETH_ALEN);
+	if ((fc & IEEE80211_FCTL_FTYPE) == IEEE80211_FTYPE_DATA &&
+	    ((dot11_hdr->frame_control & (__force __le16)0x0300) ==
+	     (__force __le16)0x0300)) {
 		/* Check if this ia a Wireless Distribution System (WDS) frame
 		 * which has 4 MAC addresses
 		 */
-		if (dot11_hdr->frame_control & (__force __le16)0x0080)
-			qos_len = 2;
-		if ((dot11_hdr->frame_control & (__force __le16)0x0300) ==
-		    (__force __le16)0x0300)
-			dot11_hdr_len += 6;
-
-		moal_memcpy_ext(NULL, dst_mac_addr, dot11_hdr->addr1,
-				sizeof(dst_mac_addr), sizeof(dst_mac_addr));
-		moal_memcpy_ext(NULL, src_mac_addr, dot11_hdr->addr2,
-				sizeof(src_mac_addr), sizeof(src_mac_addr));
-
-		/* Skip the 802.11 header, QoS (if any) and SNAP, but leave
-		 * spaces for for two MAC addresses
-		 */
-		skb_pull(skb, dot11_hdr_len + qos_len + snap_len -
-				      sizeof(src_mac_addr) * 2);
-		pdata = (unsigned char *)skb->data;
-		moal_memcpy_ext(NULL, pdata, dst_mac_addr, sizeof(dst_mac_addr),
-				(t_u32)skb->len);
-		moal_memcpy_ext(NULL, pdata + sizeof(dst_mac_addr),
-				src_mac_addr, sizeof(src_mac_addr),
-				(t_u32)skb->len - sizeof(dst_mac_addr));
-
-		LEAVE();
-		return woal_hard_start_xmit(skb, mon_if->base_ndev);
+		packet_len -= ETH_ALEN;
+		four_addr_pkt = 1;
 	}
 
+	req.ifr_data = kmalloc(packet_len, GFP_KERNEL);
+	if (req.ifr_data == NULL)
+		goto fail;
+
+	hdr = (pkt_header *)req.ifr_data;
+	hdr->TxPktType = MRVL_PKT_TYPE_MGMT_FRAME;
+	hdr->TxControl = 0;
+	frmlen = (t_u16 *)(req.ifr_data + PKT_HEADER_SIZE);
+
+	if (!four_addr_pkt) {
+		hdr->pkt_len = ((int)skb->len + sizeof(t_u16) + ETH_ALEN);
+		*frmlen = skb->len + ETH_ALEN;
+		moal_memcpy_ext(NULL, (t_u8 *)(req.ifr_data + FRAME_HEADER_LEN),
+				(t_u8 *)skb->data,
+				(packet_len - FRAME_HEADER_LEN),
+				IEEE80211_HEADER_SIZE);
+
+		moal_memcpy_ext(
+			NULL,
+			(t_u8 *)(req.ifr_data +
+				 (FRAME_HEADER_LEN + IEEE80211_HEADER_SIZE)),
+			(t_u8 *)zero_mac,
+			(packet_len -
+			 (FRAME_HEADER_LEN + IEEE80211_HEADER_SIZE)),
+			ETH_ALEN);
+
+		moal_memcpy_ext(
+			NULL,
+			(t_u8 *)(req.ifr_data + FRAME_HEADER_LEN +
+				 IEEE80211_HEADER_SIZE + ETH_ALEN),
+			(t_u8 *)skb->data + IEEE80211_HEADER_SIZE,
+			(packet_len -
+			 (FRAME_HEADER_LEN + IEEE80211_HEADER_SIZE + ETH_ALEN)),
+			skb->len - IEEE80211_HEADER_SIZE);
+	} else {
+		hdr->pkt_len = ((int)skb->len + sizeof(t_u16));
+		*frmlen = skb->len;
+		moal_memcpy_ext(NULL, (t_u8 *)(req.ifr_data + FRAME_HEADER_LEN),
+				(t_u8 *)skb->data,
+				(packet_len - FRAME_HEADER_LEN), skb->len);
+	}
+
+	woal_send_mon_if_packet(mon_if->base_ndev, &req);
+	if (req.ifr_data != NULL)
+		kfree(req.ifr_data);
 fail:
 	dev_kfree_skb(skb);
 	LEAVE();
@@ -13790,10 +13828,19 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 
 #define NAPI_BUDGET 64
 	if (moal_extflg_isset(handle, EXT_NAPI)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+		handle->pnapi_dev = alloc_netdev_dummy(0);
+#else
 		init_dummy_netdev(&handle->napi_dev);
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
-			       woal_netdev_poll_rx);
+		netif_napi_add(
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+			handle->pnapi_dev,
+#else
+			&handle->napi_dev,
+#endif
+			&handle->napi_rx, woal_netdev_poll_rx);
 #else
 		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
 			       woal_netdev_poll_rx, NAPI_BUDGET);
