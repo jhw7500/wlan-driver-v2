@@ -3269,7 +3269,11 @@ struct _moal_handle {
 #endif
 	mlan_ds_misc_keep_alive keep_alive[MAX_KEEP_ALIVE_ID];
 	mlan_ds_misc_keep_alive_rx keep_alive_rx[MAX_KEEP_ALIVE_RX_ID];
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+	struct net_device *pnapi_dev;
+#else
 	struct net_device napi_dev;
+#endif
 	struct napi_struct napi_rx;
 	/* bus interface operations */
 	moal_if_ops ops;
@@ -4286,7 +4290,7 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf);
 #define MGMT_MASK_BEACON_WPS_P2P 0x8000
 #define MLAN_CUSTOM_IE_DELETE_MASK 0x0
 #define MLAN_CUSTOM_IE_NEW_MASK 0x8000
-
+#define MRVL_PKT_TYPE_MGMT_FRAME 0xE5
 /** common ioctl for uap, station */
 int woal_custom_ie_ioctl(struct net_device *dev, struct ifreq *req);
 #ifdef UAP_SUPPORT
@@ -4296,6 +4300,7 @@ int woal_priv_get_nonglobal_operclass_by_bw_channel(moal_private *priv,
 						    t_u8 *oper_class);
 #endif
 int woal_send_host_packet(struct net_device *dev, struct ifreq *req);
+int woal_send_mon_if_packet(struct net_device *dev, struct ifreq *req);
 /** Private command ID to pass mgmt frame */
 #define WOAL_MGMT_FRAME_TX_IOCTL (SIOCDEVPRIVATE + 12)
 /** common ioctl for TDLS */

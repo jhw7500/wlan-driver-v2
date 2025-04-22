@@ -2765,6 +2765,85 @@ done:
 }
 
 /**
+ *  @brief function to send raw data packet from monitor mode interface
+ *
+ *  @param dev      A pointer to net_device structure
+ *  @param req      A pointer to ifreq structure
+ *  @return         0 --success, otherwise fail
+ */
+int woal_send_mon_if_packet(struct net_device *dev, struct ifreq *req)
+{
+	moal_private *priv = (moal_private *)netdev_priv(dev);
+	t_u32 packet_len = 0;
+	int ret = 0;
+	pmlan_buffer pmbuf = NULL;
+	mlan_status status;
+
+	ENTER();
+
+	if (!priv || !priv->phandle) {
+		PRINTM(MERROR, "priv or handle is NULL\n");
+		ret = -EFAULT;
+		goto done;
+	}
+
+	/* Sanity check */
+	if (req->ifr_data == NULL) {
+		PRINTM(MERROR, "woal_send_mon_if_packet() corrupt data\n");
+		ret = -EFAULT;
+		goto done;
+	}
+
+	moal_memcpy_ext(NULL, &packet_len, req->ifr_data, sizeof(packet_len),
+			sizeof(packet_len));
+#define PACKET_HEADER_LEN 8
+#define FRAME_LEN 2
+#define MV_ETH_FRAME_LEN 1514
+	if (packet_len > MV_ETH_FRAME_LEN) {
+		PRINTM(MERROR, "Invalid packet length %d\n", packet_len);
+		ret = -EFAULT;
+		goto done;
+	}
+	pmbuf = woal_alloc_mlan_buffer(
+		priv->phandle, (int)(MLAN_MIN_DATA_HEADER_LEN +
+				     (int)packet_len + PACKET_HEADER_LEN));
+	if (!pmbuf) {
+		PRINTM(MERROR, "Fail to allocate mlan_buffer\n");
+		ret = -ENOMEM;
+		goto done;
+	}
+	pmbuf->data_offset = MLAN_MIN_DATA_HEADER_LEN;
+
+	moal_memcpy_ext(NULL, pmbuf->pbuf + pmbuf->data_offset,
+			(void *)((t_u8 *)(req->ifr_data) + sizeof(packet_len)),
+			PACKET_HEADER_LEN + packet_len,
+			PACKET_HEADER_LEN + packet_len);
+
+	pmbuf->data_len = PACKET_HEADER_LEN + packet_len;
+	pmbuf->buf_type = MLAN_BUF_TYPE_RAW_DATA;
+	pmbuf->bss_index = priv->bss_index;
+
+	status = mlan_send_packet(priv->phandle->pmlan_adapter, pmbuf);
+	switch (status) {
+	case MLAN_STATUS_PENDING:
+		atomic_inc(&priv->phandle->tx_pending);
+		queue_work(priv->phandle->workqueue, &priv->phandle->main_work);
+		break;
+	case MLAN_STATUS_SUCCESS:
+		woal_free_mlan_buffer(priv->phandle, pmbuf);
+		break;
+	case MLAN_STATUS_FAILURE:
+	default:
+		woal_free_mlan_buffer(priv->phandle, pmbuf);
+		ret = -EFAULT;
+		break;
+	}
+done:
+	LEAVE();
+	return ret;
+}
+
+/**
  *  @brief send raw data packet ioctl function
  *
  *  @param dev      A pointer to net_device structure

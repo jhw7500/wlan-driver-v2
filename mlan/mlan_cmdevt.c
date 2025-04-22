@@ -6759,6 +6759,10 @@ mlan_status wlan_ret_get_hw_spec(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 		pmadapter->fw_bands |= BAND_AN;
 	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GN))
 		pmadapter->fw_bands &= ~BAND_GN;
+	if (!(pmadapter->fw_bands & BAND_A) && (pmadapter->fw_bands & BAND_AAC))
+		pmadapter->fw_bands &= ~BAND_AAC;
+	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GAC))
+		pmadapter->fw_bands &= ~BAND_GAC;
 
 	pmadapter->config_bands = pmadapter->fw_bands;
 	for (i = 0; i < pmadapter->priv_num; i++) {

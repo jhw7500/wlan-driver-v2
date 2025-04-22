@@ -1644,7 +1644,10 @@ static void wlan_update_hw_spec(pmlan_adapter pmadapter)
 		pmadapter->fw_bands |= BAND_AN;
 	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GN))
 		pmadapter->fw_bands &= ~BAND_GN;
-
+	if (!(pmadapter->fw_bands & BAND_A) && (pmadapter->fw_bands & BAND_AAC))
+		pmadapter->fw_bands &= ~BAND_AAC;
+	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GAC))
+		pmadapter->fw_bands &= ~BAND_GAC;
 	pmadapter->config_bands = pmadapter->fw_bands;
 	for (i = 0; i < pmadapter->priv_num; i++) {
 		if (pmadapter->priv[i]) {
