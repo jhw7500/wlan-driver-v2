@@ -943,10 +943,6 @@ enum host_cmd_id {
 #define FW_CAPINFO_EASY_MESH MBIT(21)
 /** FW cap info bit 22: ADDBA support with scan */
 #define FW_CAPINFO_ALLOW_ADDBA_RESP_ON_SCAN MBIT(22)
-/** FW cap info bit 23: MAC2 is not available */
-#define FW_CAPINFO_EXT_NO_MAC2 MBIT(23)
-/** FW cap info bit 24: BE support */
-#define FW_CAPINFO_EXT_802_11BE MBIT(24)
 
 /** Check if 5G 1x1 only is supported by firmware */
 #define IS_FW_SUPPORT_5G_1X1_ONLY(_adapter)                                    \
@@ -3355,6 +3351,10 @@ typedef MLAN_PACK_START struct _HostCmd_DS_802_11_GET_LOG {
 	t_u32 gdma_abort_cnt;
 	/** Rx Reset MAC Count */
 	t_u32 g_reset_rx_mac_cnt;
+	/** Current SOC Temperature*/
+	t_u32 currTemp;
+	/** TX Power Control Method*/
+	t_u32 TXpwrMethod;
 	/** SDMA FSM stuck Count*/
 	t_u32 SdmaStuckCnt;
 	// Ownership error counters
@@ -7953,15 +7953,6 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		/** Auth, (Re)Assoc timeout configuration */
 		HostCmd_DS_AUTH_ASSOC_TIMEOUT_CFG auth_assoc_cfg;
 		t_u8 assoc_rsp_buf[ASSOC_RSP_BUF_SIZE];
-		HostCmd_DS_GET_FOUNDRY_TYPE foundry_type;
-
-#ifdef UAP_SUPPORT
-		/** Agiled channel switch configuration */
-		HostCmd_DS_AGCS_CFG agcs_cfg;
-#endif /* UAP_SUPPORT */
-
-		/** Channel switch count configuration */
-		HostCmd_DS_CHAN_SWITCH_CNT_CFG chan_switch_cnt_cfg;
 	} params;
 } MLAN_PACK_END HostCmd_DS_COMMAND, *pHostCmd_DS_COMMAND;
 
@@ -8100,22 +8091,5 @@ typedef MLAN_PACK_START struct _Event_DPD_CAL_t {
 	t_u8 radio_id;
 	t_u8 sub_band;
 } MLAN_PACK_END Event_DPD_CAL_t;
-
-#ifdef SECURE_HOST
-typedef MLAN_PACK_START struct _SECURE_HOST_EVENT_HEADER {
-	/** Type ID */
-	t_u16 type_id;
-	t_u16 bbs;
-	/** Action */
-	t_u16 tls_action;
-} MLAN_PACK_END SECURE_HOST_EVENT_HEADER;
-
-typedef MLAN_PACK_START struct SECURE_HOST_EVENT {
-	/** TLS handshake message header */
-	SECURE_HOST_EVENT_HEADER tls_header;
-	/** TLS handshake message data */
-	t_u8 tls_data[];
-} MLAN_PACK_END SECURE_HOST_EVENT;
-#endif
 
 #endif /* !_MLAN_FW_H_ */

@@ -171,11 +171,10 @@ static t_u16 woal_update_card_type(t_void *card)
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIE8897,
 				strlen(CARD_PCIE8897), strlen(driver_version));
 		/* we are copying card name in middle of full version, we can
-		 * not copy null termination. This was already tried and
-		 * reverted as full version got terminated in middle(See commit
-		 * 57c27201f9a23562337491f3cbb9833ca348076c). thus suppressing
-		 * the coverity warning for all card types in this function.
-		 */
+		   not copy null termination. This was already tried and
+		   reverted as full version got terminated in middlei(See commit
+		   57c27201f9a23562337491f3cbb9833ca348076c). thus suppressing
+		   the coverity warning  for all card types in this function. */
 		// coverity[string_null:SUPPRESS]
 		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
@@ -186,17 +185,26 @@ static t_u16 woal_update_card_type(t_void *card)
 					strlen(KERN_VERSION));
 	}
 #endif
+#ifdef PCIE8997
+	if (cardp_pcie->dev->device == PCIE_DEVICE_ID_88W8997P) {
+		card_type = CARD_TYPE_PCIE8997;
+		moal_memcpy_ext(NULL, driver_version, CARD_PCIE8997,
+				strlen(CARD_PCIE8997), strlen(driver_version));
+		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
+		moal_memcpy_ext(NULL,
+				driver_version + strlen(INTF_CARDTYPE) +
+					strlen(KERN_VERSION),
+				V16, strlen(V16),
+				strlen(driver_version) - strlen(INTF_CARDTYPE) -
+					strlen(KERN_VERSION));
+	}
+#endif
 #ifdef PCIE9097
 	if (cardp_pcie->dev->device == PCIE_DEVICE_ID_88W9097) {
 		card_type = CARD_TYPE_PCIE9097;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIE9097,
 				strlen(CARD_PCIE9097), strlen(driver_version));
-		/* we are copying card name in middle of full version, we can
-		 * not copy null termination. This was already tried and
-		 * reverted as full version got terminated in middle(See commit
-		 * 57c27201f9a23562337491f3cbb9833ca348076c). thus suppressing
-		 * the coverity warning for all card types in this function.
-		 */
 		// coverity[string_null:SUPPRESS]
 		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
@@ -235,12 +243,6 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIEAW693;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIEAW693,
 				strlen(CARD_PCIEAW693), strlen(driver_version));
-		/* we are copying card name in middle of full version, we can
-		 * not copy null termination. This was already tried and
-		 * reverted as full version got terminated in middle(See commit
-		 * 57c27201f9a23562337491f3cbb9833ca348076c). thus suppressing
-		 * the coverity warning for all card types in this function.
-		 */
 		// coverity[string_null:SUPPRESS]
 		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
@@ -256,12 +258,6 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIEIW624;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIEIW624,
 				strlen(CARD_PCIEIW624), strlen(driver_version));
-		/* we are copying card name in middle of full version, we can
-		 * not copy null termination. This was already tried and
-		 * reverted as full version got terminated in middle(See commit
-		 * 57c27201f9a23562337491f3cbb9833ca348076c). thus suppressing
-		 * the coverity warning for all card types in this function.
-		 */
 		// coverity[string_null:SUPPRESS]
 		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
@@ -2281,7 +2277,7 @@ static void woal_pcie_dump_fw_info_v1(moal_handle *phandle)
 					PRINTM(MINFO,
 					       "pre-allocced buf is not enough\n");
 			}
-			if (stat == RDWR_STATUS_DONE) {
+			if (RDWR_STATUS_DONE == stat) {
 				PRINTM(MMSG, "%s done: size=0x%lx\n",
 				       mem_type_mapping_tbl[idx].mem_name,
 				       (dbg_ptr -

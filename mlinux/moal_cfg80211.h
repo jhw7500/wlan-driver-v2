@@ -4,7 +4,7 @@
  * @brief This file contains the CFG80211 specific defines.
  *
  *
- * Copyright 2011-2022, 2024-2026 NXP
+ * Copyright 2011-2022, 2024-2025 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -589,7 +589,6 @@ mlan_status woal_request_6e_inband_frame(
 	struct cfg80211_unsol_bcast_probe_resp *unsol_bcast_probe_resp);
 #endif
 
-#if defined(STA_CFG80211) || defined(UAP_CFG80211)
 void woal_cfg80211_free_bands(struct wiphy *wiphy);
 #endif
 
@@ -665,5 +664,39 @@ mlan_status woal_request_set_host_mlme(moal_private *priv, t_u8 *bssid);
 
 void process_wifi_channel_avoid_list_event(
 	moal_private *priv, wifi_chan_avoid_list_t *pwifi_chan_info);
+
+/* Handling for 6E Indoor/Outdoor Mode */
+
+#define OP_MODE_LEN 8
+#define PSD_LEN 8
+
+/**
+ * @brief Operation mode/PSD table
+ */
+typedef struct _mode_psd_t {
+	/** @brief Operation mode */
+	t_u8 op_mode[OP_MODE_LEN];
+	/** @brief PSD Value */
+	t_u8 psd_dbm[PSD_LEN];
+} mode_psd_t;
+
+/**
+ * @brief The structure for Region-Mode-PSD table
+ */
+typedef struct _rmp_table_t {
+	/** @brief Region or Code */
+	t_u8 code;
+	/** @brief Mode/Power */
+	mode_psd_t *mp_ptr;
+} rmp_table_t;
+
+void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
+				t_u32 buf_len);
+
+void woal_dnld_sta_6e_psd_table(moal_private *priv, t_u8 *resp_buf,
+				t_u32 resp_len,
+				chan_band_reginfo_t *psta_reg_info);
+
+mlan_status woal_dnld_default_6e_psd_table(moal_private *priv);
 
 #endif /* _MOAL_CFG80211_H_ */

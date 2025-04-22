@@ -4,7 +4,7 @@
  * @brief This file contains wireless extension standard ioctl functions
  *
  *
- * Copyright 2008-2026 NXP
+ * Copyright 2008-2025 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -314,7 +314,6 @@ static int woal_set_nick(struct net_device *dev, struct iw_request_info *info,
 {
 	moal_private *priv = (moal_private *)netdev_priv(dev);
 	struct iw_point *dwrq = &wrqu->data;
-
 	ENTER();
 	/*
 	 * Check the size of the string
@@ -345,7 +344,6 @@ static int woal_get_nick(struct net_device *dev, struct iw_request_info *info,
 {
 	moal_private *priv = (moal_private *)netdev_priv(dev);
 	struct iw_point *dwrq = &wrqu->data;
-
 	ENTER();
 	/*
 	 * Get the Nick Name saved
@@ -1521,8 +1519,9 @@ static int woal_get_gen_ie(struct net_device *dev, struct iw_request_info *info,
 
 	ENTER();
 
-	if (woal_set_get_gen_ie(priv, MLAN_ACT_GET, NULL, ie, &ie_len,
-				MOAL_IOCTL_WAIT) != MLAN_STATUS_SUCCESS) {
+	if (MLAN_STATUS_SUCCESS != woal_set_get_gen_ie(priv, MLAN_ACT_GET, NULL,
+						       ie, &ie_len,
+						       MOAL_IOCTL_WAIT)) {
 		ret = -EFAULT;
 		goto done;
 	}
@@ -1585,9 +1584,9 @@ static int woal_set_gen_ie(struct net_device *dev, struct iw_request_info *info,
 		}
 	}
 
-	if (woal_set_get_gen_ie(priv, MLAN_ACT_SET, (t_u8 *)extra, NULL,
-				&ie_len,
-				MOAL_IOCTL_WAIT) != MLAN_STATUS_SUCCESS) {
+	if (MLAN_STATUS_SUCCESS !=
+	    woal_set_get_gen_ie(priv, MLAN_ACT_SET, (t_u8 *)extra, NULL,
+				&ie_len, MOAL_IOCTL_WAIT)) {
 		ret = -EFAULT;
 		goto done;
 	}

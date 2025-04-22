@@ -155,6 +155,9 @@ Change log:
 #include "moal_shim.h"
 /* Wireless header */
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 12, 12)
+#include <net/lib80211.h>
+#endif
 #include <net/cfg80211.h>
 #include <net/ieee80211_radiotap.h>
 #endif
@@ -2253,32 +2256,6 @@ struct _moal_private {
 	t_u16 auth_tx_wait_time;
 
 	t_u32 rx_pkt_ac[MAX_AC_QUEUES];
-
-	moal_priv_linkstats_cfg plinkstats_cfg;
-	moal_priv_linkstats plinkstats;
-#if defined(STA_CFG80211) || defined(UAP_CFG80211)
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
-	struct cfg80211_qos_map *qos_map;
-#endif
-#endif
-
-	/*BSS active time*/
-	t_u64 bss_active_time;
-	/*CCA count*/
-	t_u64 cca_cnt_base;
-	/*RX airtime count*/
-	t_u64 rx_airtime_base;
-	/*TX airtime count*/
-	t_u64 tx_airtime_base;
-#ifdef XDP_SUPPORT
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-	/** xdp */
-	struct bpf_prog *xdp_prog;
-	struct xdp_rxq_info xdp_rxq;
-#endif
-#endif
-
-	t_u32 band_ctrl;
 };
 
 #ifdef SDIO
@@ -2629,8 +2606,7 @@ struct radiotap_body {
 	t_u8 flags; /* 8th byte */
 	/** rate for LG pkt, RATE flag will be present, it shows datarate in
 	 * 500Kbps. For HT/VHT pkt, RATE flag will not be present, it is not
-	 * used.
-	 */
+	 * used. */
 	t_u8 rate; /* 9th byte */
 	/** channel */
 	struct channel_field channel; /* 10~13 bytes */
@@ -2655,27 +2631,6 @@ struct radiotap_header {
 #define GTK_REKEY_OFFLOAD_ENABLE 1
 #define GTK_REKEY_OFFLOAD_SUSPEND 2
 
-#if defined(STA_CFG80211)
-struct chan_power {
-	/** channel hw value */
-	t_u8 channel;
-	/** max tx power value */
-	t_u8 max_tx_pwr;
-};
-/** peer countryIE information */
-typedef struct _peer_country_info {
-	/** country code */
-	t_u8 country_code[COUNTRY_CODE_LEN];
-	/** for all channels in 2GHz band */
-	struct chan_power band_2g[NUM_2G_CHAN];
-	/** for all channels in 5GHz band */
-	struct chan_power band_5g[NUM_5G_CHAN];
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	/** for all channels in 6GHz band */
-	struct chan_power band_6g[NUM_6G_CHAN];
-#endif
-} peer_country_info_t;
-#endif
 /** Supported bandwidth for monitor mode */
 enum {
 	SNIFF_BW_20MHZ = 0,
@@ -2930,13 +2885,6 @@ typedef struct _moal_mod_para {
 	int tpe_ie_ignore;
 	/* make_before_break during roam */
 	int make_before_break;
-	/** plinkstats_cfg setting */
-	char *plinkstats;
-#ifdef SECURE_HOST
-	int secure_host;
-#endif
-	int bandctrl;
-
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);
@@ -3110,9 +3058,6 @@ struct _moal_handle {
 	char mode_psd_string[64];
 	/** Load time file name */
 	char mode_psd_file[64];
-	/** RU String */
-	char ru_string[64];
-	char pwr_offset_string[64];
 	/** Hotplug device */
 	struct device *hotplug_device;
 	/** STATUS variables */
@@ -3490,11 +3435,7 @@ struct _moal_handle {
 #endif
 	mlan_ds_misc_keep_alive keep_alive[MAX_KEEP_ALIVE_ID];
 	mlan_ds_misc_keep_alive_rx keep_alive_rx[MAX_KEEP_ALIVE_RX_ID];
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
-	struct net_device *napi_dev;
-#else
 	struct net_device napi_dev;
-#endif
 	struct napi_struct napi_rx;
 	/* bus interface operations */
 	moal_if_ops ops;
@@ -4798,10 +4739,6 @@ t_u8 woal_find_mcast_node_tx(moal_private *priv, struct sk_buff *skb);
 
 mlan_status woal_request_country_power_table(moal_private *priv, char *region,
 					     t_u8 wait_option, t_u8 psd_mode);
-mlan_status woal_dnld_tx_pwr_offset_table(moal_private *priv, char *country,
-					  t_u8 wait_option);
-mlan_status woal_dnld_ru_power_table(moal_private *priv, char *country,
-				     t_u8 wait_option);
 mlan_status woal_mc_policy_cfg(moal_private *priv, t_u16 *enable,
 			       t_u8 wait_option, t_u8 action);
 #ifdef UAP_SUPPORT
@@ -4980,19 +4917,5 @@ mlan_status woal_ioctl_hostcmd_htc_cap(moal_private *priv, t_u16 action,
 				       t_u8 *enable);
 int woal_getset_regrdwr(moal_private *priv, t_u32 action, t_u32 type,
 			t_u32 offset, t_u32 *value);
-#ifdef UAP_SUPPORT
-extern void woal_process_agcs_event(moal_private *priv,
-				    pagcs_stats pstart_event);
-extern void woal_process_ch_sel_and_switch(moal_private *priv,
-					   pagcs_event pevent);
-extern mlan_status moal_agcs_trans_state(moal_private *priv,
-					 agcs_state next_state);
-extern void woal_agcs_event(moal_private *priv, pagcs_event pacs_start_event);
-extern agcs_state moal_agcs_get_state(moal_private *priv);
-#endif /* UAP_SUPPORT */
 
-#if defined(USB)
-extern mlan_status check_device_name_info(char *device_name, t_u16 *card_type);
-extern mlan_status woal_get_c_vidpid(char **c_vidpid);
-#endif
 #endif /* _MOAL_MAIN_H */

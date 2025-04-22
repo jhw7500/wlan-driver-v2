@@ -670,16 +670,14 @@ static mlan_status wlan_ret_802_11_snmp_mib(pmlan_private pmpriv,
 		/* Update state for Tpe Ie Ignore */
 		if (oid == Ignore_tpe_i) {
 			/* Set tpe ie ignore to private */
-			ul_temp = wlan_le16_to_cpu(read_u16_unaligned(
-				pmpriv->adapter, psmib->value));
+			ul_temp = wlan_le16_to_cpu(*((t_u16 *)(psmib->value)));
 			PRINTM(MCMND, "SNMP_RESP: Ignore_tpe_i = %u\n",
 			       ul_temp);
 		}
 	}
 
 	if (oid == User_band_config_i) {
-		ul_temp = wlan_le16_to_cpu(
-			read_u16_unaligned(pmpriv->adapter, psmib->value));
+		ul_temp = wlan_le16_to_cpu(*((t_u16 *)(psmib->value)));
 		PRINTM(MCMND, "SNMP_RESP: user defined bandcfg =0x%x\n",
 		       ul_temp);
 	}
@@ -802,6 +800,10 @@ static mlan_status wlan_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->gdma_abort_cnt);
 		pget_info->param.stats.g_reset_rx_mac_cnt =
 			wlan_le32_to_cpu(pget_log->g_reset_rx_mac_cnt);
+		pget_info->param.stats.currTemp =
+			wlan_le32_to_cpu(pget_log->currTemp);
+		pget_info->param.stats.TXpwrMethod =
+			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.SdmaStuckCnt =
 			wlan_le32_to_cpu(pget_log->SdmaStuckCnt);
 		// Ownership error counters
@@ -1034,10 +1036,6 @@ static mlan_status wlan_ret_tx_power_cfg(pmlan_private pmpriv,
 			LEAVE();
 			return MLAN_STATUS_FAILURE;
 		}
-		/* Suppressed due to validated TLV length and controlled buffer
-		 * access within wlan_get_power_level, ensuring safe memory
-		 * operations.
-		 */
 		// coverity[overrun-buffer-val:SUPPRESS]
 		// coverity[cert_str31_c_violation:SUPPRESS]
 		// coverity[cert_arr30_c_violation:SUPPRESS]

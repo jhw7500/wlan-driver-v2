@@ -1405,10 +1405,6 @@ typedef struct _mlan_private {
 	t_u8 assoc_req_buf[ASSOC_RSP_BUF_SIZE];
 	/** Length of the data stored in assoc_rsp_buf */
 	t_u32 assoc_req_size;
-	/** Assoc request capability */
-	t_u16 assoc_req_cap;
-	/** delay link lost flag */
-	t_u8 delay_link_lost;
 	/** prev_bssid */
 	mlan_802_11_mac_addr prev_bssid;
 	/** Buffer to store the association response for application retrieval
@@ -3172,7 +3168,7 @@ struct _mlan_adapter {
 	/** LLDE enable/disable */
 	t_u8 llde_enabled;
 	/** LLDE modes 0 - default; 1 - carplay; 2 - gameplay; 3 - sound bar, 4
-	 * - validation, 5 - event driven */
+	 * � validation, 5- event driven */
 	t_u8 llde_mode;
 	/** high priority data packet type. 0: All traffic, 1: ping, 2: TCP ACK,
 	 * 4: TCP Data, 8: UDP */

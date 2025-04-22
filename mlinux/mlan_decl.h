@@ -1144,12 +1144,6 @@ typedef MLAN_PACK_START struct _chan_band_info {
 	t_u8 is_dfs_chan;
 } MLAN_PACK_END chan_band_info;
 
-/** remain_on_channel_info  */
-typedef MLAN_PACK_START struct _remain_on_channel_info {
-	/* Is previous AP lost when waiting doing Auth RoC */
-	t_bool delay_link_lost;
-} MLAN_PACK_END remain_on_channel_info;
-
 #if defined(STA_SUPPORT)
 /** MrvlIEtypes_chan_band_reginfo_t */
 typedef MLAN_PACK_START struct _MrvlIEtypes_chan_band_reginfo_t {
@@ -1173,16 +1167,6 @@ typedef MLAN_PACK_START struct _chan_band_reginfo_t {
 	t_u8 regInfo;
 } MLAN_PACK_END chan_band_reginfo_t;
 #endif
-
-/** Structure to WiFi Channel Avoidance List */
-typedef MLAN_PACK_START struct _wifi_chan_avoid_list_t {
-	/** Band Configuration */
-	Band_Config_t bandcfg;
-	/** Length */
-	t_u8 length;
-	/** Chanlist */
-	t_u8 chanList[];
-} MLAN_PACK_END wifi_chan_avoid_list_t;
 
 /** Channel usability flags */
 #define NXP_CHANNEL_NO_OFDM MBIT(9)
@@ -1370,9 +1354,7 @@ typedef MLAN_PACK_START struct _radiotap_timestamp {
 	 * 0 milliseconds,
 	 * 1 microseconds,
 	 * 2 nanoseconds,
-	 * 3-15 reserved
-	 */
-	// bit-field usage is required to match protocol-defined layout
+	 * 3-15 reserved */
 	// coverity[misra_c_2012_rule_6_1_violation:SUPPRESS]
 	t_u8 unit : 4;
 	/* position:
@@ -1383,7 +1365,6 @@ typedef MLAN_PACK_START struct _radiotap_timestamp {
 	 * 4-14 reserved
 	 * 15 unknown or vendor/OOB defined
 	 */
-	// bit-field usage is required to match protocol-defined layout
 	// coverity[misra_c_2012_rule_6_1_violation:SUPPRESS]
 	t_u8 position : 4;
 	/* flags
@@ -2829,38 +2810,6 @@ typedef struct _mlan_callbacks {
 					 t_s32 copy_delay);
 	mlan_status (*moal_calc_short_ssid)(t_u8 *pssid, t_u32 ssid_len,
 					    t_u32 *pshort_ssid);
-	/* Unaligned Access */
-	struct unaligned_access {
-		t_u16 (*moal_read_u16)(const void *src);
-		t_u32 (*moal_read_u32)(const void *src);
-		void (*moal_write_u16)(void *dest, t_u16 val);
-		void (*moal_write_u32)(void *dest, t_u32 val);
-	} moal_unaligned_access;
-#ifdef SECURE_HOST
-	t_u8 (*moal_secure_host_get_msg_id)(t_void *msg);
-
-	mlan_status (*moal_secure_host_init)(t_void *pmoal, const t_u8 key[64],
-					     const t_u8 uuid[16]);
-	void (*moal_secure_host_cleanup)(t_void *pmoal);
-
-	mlan_status (*moal_secure_host_do_hello)(t_void *pmoal, t_void **msg);
-	mlan_status (*moal_secure_host_device_hello_rcvd)(t_void *pmoal,
-							  t_void *msg);
-	mlan_status (*moal_secure_host_do_finished)(t_void *pmoal,
-						    t_void **msg);
-	mlan_status (*moal_secure_host_derive_traffic_keys)(t_void *pmoal);
-	mlan_status (*moal_secure_host_data_ctx_init)(t_void *pmoal);
-	mlan_status (*moal_secure_host_data_encrypt)(t_void *pmoal,
-						     t_void **enc_data,
-						     t_void **payload,
-						     t_u32 len);
-	mlan_status (*moal_secure_host_data_decrypt)(t_void *pmoal,
-						     t_void **dec_data,
-						     t_void **payload,
-						     t_u32 len);
-#endif
-	t_u32 (*moal_crc32_be)(t_u32 initial_crc, t_u8 const *data,
-			       unsigned long len);
 } mlan_callbacks, *pmlan_callbacks;
 
 /** Parameter unchanged, use MLAN default setting */
@@ -3042,10 +2991,6 @@ typedef struct _mlan_device {
 	t_u8 mclient_scheduling;
 	t_u8 disable_11h_tpc;
 	t_u8 tpe_ie_ignore;
-	t_u32 amsdu_disable;
-#ifdef SECURE_HOST
-	t_u32 secure_host;
-#endif
 } mlan_device, *pmlan_device;
 
 /** MLAN API function prototype */

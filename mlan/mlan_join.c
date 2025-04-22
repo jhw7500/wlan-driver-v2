@@ -8,7 +8,7 @@
  *  to the firmware.
  *
  *
- *  Copyright 2008-2026 NXP
+ *  Copyright 2008-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -320,9 +320,6 @@ static mlan_status wlan_get_common_rates(mlan_private *pmpriv, t_u8 *rate1,
 	PRINTM(MINFO, "Tx DataRate is set to 0x%X\n", pmpriv->data_rate);
 
 	if (!pmpriv->is_data_rate_auto) {
-		/* rate1_size is decremented in sync with ptr++ and loop exits
-		 * when rate1_size becomes 0 ensures no overflow
-		 */
 		// coverity[integer_overflow:SUPPRESS]
 		while (rate1_size && *ptr) {
 			/* loop exits when rate1_size becomes 0 */
@@ -1105,7 +1102,6 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 	memcpy_ext(pmpriv->adapter, &pmpriv->curr_bss_params.attemp_bssid,
 		   pbss_desc->mac_address, MLAN_MAC_ADDR_LENGTH,
 		   MLAN_MAC_ADDR_LENGTH);
-	pmpriv->delay_link_lost = MFALSE;
 	/* back up previous AP's assoc_resp and assoc_req buffer*/
 	if (pmpriv->media_connected) {
 		memcpy_ext(pmpriv->adapter, &pmpriv->prev_bssid,
@@ -1999,24 +1995,10 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 					pmpriv,
 					MLAN_EVENT_ID_DRV_ASSOC_FAILURE_REPORT,
 					MNULL);
-				// update Assoc resp/req buf, if Assoc Rsp
-				// failure.
-				pmpriv->assoc_rsp_size =
-					pmpriv->prior_assoc_rsp_size;
-				memcpy_ext(pmadapter, pmpriv->assoc_rsp_buf,
-					   pmpriv->prior_assoc_rsp,
-					   pmpriv->assoc_rsp_size,
-					   ASSOC_RSP_BUF_SIZE);
-				pmpriv->assoc_req_size =
-					pmpriv->prior_assoc_req_size;
-				memcpy_ext(pmadapter, pmpriv->assoc_req_buf,
-					   pmpriv->prior_assoc_req,
-					   pmpriv->assoc_req_size,
-					   ASSOC_RSP_BUF_SIZE);
-
-				_memset(pmpriv->adapter,
-					pmpriv->curr_bss_params.prev_bssid, 0,
-					MLAN_MAC_ADDR_LENGTH);
+				// coverity[no_effect:SUPPRESS]
+				memset(pmpriv->adapter,
+				       pmpriv->curr_bss_params.prev_bssid, 0,
+				       MLAN_MAC_ADDR_LENGTH);
 			}
 		} else
 			wlan_reset_connect_state(pmpriv, MTRUE);

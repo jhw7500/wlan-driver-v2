@@ -976,11 +976,6 @@ static t_u8 wlan_scan_create_channel_list(
 			if (cfp->dynamic.flags & NXP_CHANNEL_DISABLED)
 				continue;
 
-			/* Make sure null channel entries are not added into
-			 * pscan_chan_list */
-			if (!cfp->channel)
-				continue;
-
 			if ((pscan_region->band == BAND_6G) &&
 			    (pmadapter->wifi_6g_scan_coloc_ap)) {
 				if (!wlan_scan_add_6g_chan(
@@ -5634,8 +5629,8 @@ static t_bool wlan_scan_6g_network(mlan_private *pmpriv,
 	while (pcoloc_ap &&
 	       pcoloc_ap != (wlan_6e_coloc_ap_t *)&pmadapter->coloc_ap_list) {
 		PRINTM(MCMND,
-		       "Colocated AP(#%02d): " MACSTR
-		       ", SSID[%s], Short-SSID[0x%0x], Operating Class[%d], Channel Number[%d], BSS parameters[0x%0x]\n",
+		       "Colocated AP(#%02d): " MACSTR ", "
+		       "SSID[%s], Short-SSID[0x%0x], Operating Class[%d], Channel Number[%d], BSS parameters[0x%0x]\n",
 		       num++, MAC2STR(pcoloc_ap->ap_info.bssid),
 		       pcoloc_ap->ap_info.ssid.ssid,
 		       pcoloc_ap->ap_info.short_ssid,

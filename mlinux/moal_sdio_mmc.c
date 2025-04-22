@@ -2941,7 +2941,6 @@ static void woal_sdiommc_dump_fw_info(moal_handle *phandle)
 	queue_work(phandle->workqueue, &phandle->main_work);
 
 	mlan_pm_wakeup_card(phandle->pmlan_adapter, MTRUE);
-
 	msleep(5);
 	phandle->fw_dump = MTRUE;
 	if (phandle->card_info->dump_fw_info == DUMP_FW_SDIO_V2) {

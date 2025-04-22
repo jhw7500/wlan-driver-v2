@@ -4,7 +4,7 @@
  *  @brief This file declares the IOCTL data structures and APIs.
  *
  *
- *  Copyright 2008-2026 NXP
+ *  Copyright 2008-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -397,22 +397,6 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_MISC_OTP_CAL_DATA_RD_WR = 0x00200098,
 	MLAN_OID_MISC_AUTH_ASSOC_TIMEOUT_CONFIG = 0x00200099,
 	MLAN_OID_MISC_PREV_ASSOC_INFO = 0x0020009A,
-	MLAN_OID_MISC_FOUNDRY_TYPE = 0X0020009B,
-
-	MLAN_OID_MISC_NAV_MITIGATION_HW = 0x0020009C,
-
-	MLAN_OID_MISC_PREAMBLE_PWR_BOOST = 0x0020009D,
-	MLAN_OID_MISC_PER_BAND_TXPWR_CAP = 0x0020009E,
-
-#ifdef UAP_SUPPORT
-	MLAN_OID_MISC_AGCS_CONFIG = 0x002000A0,
-#endif /* UAP_SUPPORT */
-	MLAN_OID_SEC_CFG_SSID_PROTECTION = 0x002000A1,
-	MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE = 0x002000A2,
-
-	MLAN_OID_MISC_GENERIC_CMD = 0x002000A4,
-
-	MLAN_OID_MISC_CHAN_SWITCH_CNT_CONFIG = 0x002000A5
 };
 
 /** Sub command size */
@@ -684,8 +668,6 @@ typedef struct _mlan_ds_scan {
 		mlan_scan_cfg scan_cfg;
 		/** 6E Scan config parameters */
 		mlan_scan_6g_cfg scan_6g_cfg;
-		/** Select the band to flush from scan table */
-		t_u32 band;
 	} param;
 } mlan_ds_scan, *pmlan_ds_scan;
 
@@ -1855,6 +1837,10 @@ typedef struct _mlan_ds_get_stats {
 	t_u32 gdma_abort_cnt;
 	/** Rx Reset MAC Count */
 	t_u32 g_reset_rx_mac_cnt;
+	/** Current SOC Temperature*/
+	t_u32 currTemp;
+	/** TX Power Control Method*/
+	t_u32 TXpwrMethod;
 	/** SDMA FSM stuck Count*/
 	t_u32 SdmaStuckCnt;
 	// Ownership error counters

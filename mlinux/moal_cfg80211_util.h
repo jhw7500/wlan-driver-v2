@@ -945,10 +945,6 @@ enum vendor_sub_command {
 	subcmd_set_get_tx_ampdu_prot_mode = 0x1924,
 	subcmd_twt_setup = 0x1925,
 	subcmd_twt_teardown = 0x1926,
-	subcmd_btwt_ap_config_set = 0x1927,
-	subcmd_btwt_ap_config_get = 0x1928,
-	// Get Usable channel list
-	subcmd_get_usable_channels = 0x1950,
 	sub_cmd_max,
 };
 
@@ -986,6 +982,69 @@ enum mkeep_alive_attributes {
 	MKEEP_ALIVE_ATTRIBUTE_RETRY_CNT,
 	MKEEP_ALIVE_ATTRIBUTE_AFTER_LAST,
 	MKEEP_ALIVE_ATTRIBUTE_MAX = MKEEP_ALIVE_ATTRIBUTE_AFTER_LAST - 1
+};
+int woal_roam_ap_info(moal_private *priv, t_u8 *data, int len);
+
+/*Attribute for wpa_supplicant*/
+enum mrvl_wlan_vendor_attr_roam_auth {
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_INVALID = 0,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_BSSID,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_REQ_IE,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_RESP_IE,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_AUTHORIZED,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_KEY_REPLAY_CTR,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_PTK_KCK,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_PTK_KEK,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_SUBNET_STATUS,
+	/* keep last */
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_AFTER_LAST,
+	MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_MAX =
+		MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_AFTER_LAST - 1
+};
+
+/** WiFi roaming capabilities structure */
+typedef struct {
+	/** max blacklist size */
+	u32 max_blacklist_size;
+	/** max whitelist size */
+	u32 max_whitelist_size;
+} wifi_roaming_capabilities;
+
+/** WiFi BSSID params structure */
+typedef struct {
+	/** Num of BSSID */
+	u32 num_bssid;
+	/** List of AP mac address */
+	t_u8 mac_addr[MAX_AP_LIST][MLAN_MAC_ADDR_LENGTH];
+} wifi_bssid_params;
+
+/** SSID structure */
+typedef struct {
+	/** Length */
+	u32 length;
+	/** SSID */
+	char ssid[MLAN_MAX_SSID_LENGTH];
+} ssid_t;
+
+/** WiFi SSID params structure */
+typedef struct {
+	/** No of SSID */
+	u32 num_ssid;
+	/** Whitelist SSID */
+	ssid_t whitelist_ssid[MAX_SSID_NUM];
+} wifi_ssid_params;
+
+/*Attribute for wifi hal*/
+enum mrvl_wlan_vendor_attr_fw_roaming {
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_INVALID = 0,
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CAPA,
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CONTROL,
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CONFIG_BSSID,
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CONFIG_SSID,
+	/* keep last */
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_AFTER_LAST,
+	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_MAX =
+		MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_AFTER_LAST - 1
 };
 
 enum attr_rtt {

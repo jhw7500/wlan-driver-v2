@@ -3229,10 +3229,9 @@ static mlan_status wlan_uap_cmd_snmp_mib(pmlan_private pmpriv,
 		case User_band_config_i:
 			psnmp_mib->oid = wlan_cpu_to_le16((t_u16)cmd_oid);
 			psnmp_mib->buf_size = wlan_cpu_to_le16(sizeof(t_u16));
-			ul_temp =
-				read_u32_unaligned(pmpriv->adapter, pdata_buf);
-			write_u16_unaligned(pmpriv->adapter, psnmp_mib->value,
-					    wlan_cpu_to_le16((t_u16)ul_temp));
+			ul_temp = *(t_u32 *)pdata_buf;
+			*((t_u16 *)(psnmp_mib->value)) =
+				wlan_cpu_to_le16((t_u16)ul_temp);
 			cmd->size += sizeof(t_u16);
 			break;
 		case StopDeauth_i:
@@ -3355,14 +3354,8 @@ static mlan_status wlan_uap_ret_snmp_mib(pmlan_private pmpriv,
 		while (tlv_buf_left >= sizeof(MrvlIEtypes_snmp_oid_t)) {
 			/* oid_offset cannot overflow struct size */
 			// coverity[overflow_sink:SUPPRESS]
-			tlv_type = wlan_le16_to_cpu(
-				read_u16_unaligned(pmadapter, psnmp_oid));
+			tlv_type = wlan_le16_to_cpu(*(t_u16 *)psnmp_oid);
 			psnmp_oid += sizeof(t_u16) + sizeof(t_u16);
-			/* The memcpy_ext() call copies a fixed number of bytes
-			 * (sizeof(t_u32)) from a buffer (psnmp_oid) that is
-			 * validated to have sufficient remaining length before
-			 * the copy.
-			 */
 			// coverity[cert_arr30_c_violation:SUPPRESS]
 			// coverity[overrun:SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
@@ -3589,6 +3582,10 @@ static mlan_status wlan_uap_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->gdma_abort_cnt);
 		pget_info->param.stats.g_reset_rx_mac_cnt =
 			wlan_le32_to_cpu(pget_log->g_reset_rx_mac_cnt);
+		pget_info->param.stats.currTemp =
+			wlan_le32_to_cpu(pget_log->currTemp);
+		pget_info->param.stats.TXpwrMethod =
+			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.SdmaStuckCnt =
 			wlan_le32_to_cpu(pget_log->SdmaStuckCnt);
 		// Ownership error counters
@@ -4834,6 +4831,7 @@ static mlan_status wlan_uap_cmd_add_station(pmlan_private pmpriv,
 				sta_ptr->is_11ax_enabled = MTRUE;
 				PRINTM(MCMND, "ADD_STA supports 11ax\n");
 			} else if (pext_tlv->ext_id == HE_6G_CAPABILITY) {
+				MrvlIEtypes_He_6g_cap_t *phe_6g_cap = MNULL;
 				phe_6g_cap = (MrvlIEtypes_He_6g_cap_t *)tlv;
 				if (GET_6G_BAND_CAP_MAXMPDULEN(
 					    phe_6g_cap->capa) == 2)
@@ -7026,9 +7024,6 @@ mlan_status wlan_ops_uap_process_event(t_void *priv)
 		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
 			   pmbuf->pbuf + pmbuf->data_offset, pevent->event_len,
 			   pevent->event_len);
-		/* The buffer pevent->event_buf is populated using memcpy_ext
-		 * with a known bounded length.
-		 */
 		// coverity[cert_str32_c_violation:SUPPRESS]
 		wlan_recv_event(pmpriv, pevent->event_id, pevent);
 	}

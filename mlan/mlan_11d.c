@@ -4,7 +4,7 @@
  *  @brief This file contains functions for 802.11D.
  *
  *
- *  Copyright 2008-2022, 2024-2026 NXP
+ *  Copyright 2008-2022, 2024-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -1091,7 +1091,6 @@ wlan_cmd_802_11d_custom_bcn_country_ie_info(mlan_private *pmpriv,
 	t_u8 *tlv = MNULL;
 	t_u8 i;
 	mlan_ds_11d_cfg *cfg_11d = MNULL;
-
 	ENTER();
 
 	if (!pioctl_buf) {

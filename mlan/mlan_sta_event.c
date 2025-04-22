@@ -734,7 +734,7 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 	chan_band_info *pchan_band_info = MNULL;
 	t_u8 radar_chan;
 	t_u8 bandwidth;
-	MrvlIEtypes_chan_band_reginfo_t *psta_info = MNULL;
+	chan_band_reginfo_t *psta_info = MNULL;
 	chan_band_reginfo_t *psta_reg_info = MNULL;
 	t_u16 enable = 0;
 	Event_Link_Lost *link_lost_evt = MNULL;
@@ -1130,6 +1130,7 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 			pmpriv, pevent, &radar_chan, &bandwidth);
 		/* Also send this event as passthru */
 		pevent->event_id = MLAN_EVENT_ID_DRV_PASSTHRU;
+		pevent->event_len = pmbuf->data_len;
 		// Ensure event_len does not exceed buffer size
 		pevent->event_len = MIN(pmbuf->data_len, MAX_EVENT_SIZE);
 		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
@@ -1532,45 +1533,6 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 		PRINTM(MEVENT, "EVENT: EVENT_IMD3_CAL_END\n");
 		break;
 
-	case EVENT_TSP_CONFIG:
-		evt_buf =
-			(pmbuf->pbuf + pmbuf->data_offset + sizeof(eventcause));
-		tsp_status = evt_buf[4];
-		switch (tsp_status) {
-		case TSP_PWR_BACKOFF_START:
-			PRINTM(MEVENT,
-			       "EVENT: EVENT_TSP_POWER_BACKOFF_START\n");
-			break;
-		case TSP_PWR_BACKOFF_END:
-			PRINTM(MEVENT, "EVENT: EVENT_TSP_POWER_BACKOFF_END\n");
-			break;
-		case TSP_STREAM_1X1:
-			PRINTM(MEVENT, "EVENT: EVENT_NOTIFY_STREAM_1X1\n");
-			break;
-		case TSP_STREAM_2X2:
-			PRINTM(MEVENT, "EVENT: EVENT_NOTIFY_STREAM_2X2\n");
-			break;
-		case DTM_DC_THROTTLE_START:
-			PRINTM(MEVENT, "EVENT: EVENT_DTM_DC_THROTTLE_ENABLE\n");
-			break;
-		case DTM_DC_THROTTLE_END:
-			PRINTM(MEVENT,
-			       "EVENT: EVENT_DTM_DC_THROTTLE_DISABLE\n");
-			break;
-		default:
-			break;
-		}
-		break;
-	case EVENT_EMERGENCY_TEMP_REACHED:
-		PRINTM(MEVENT, "EVENT: EVENT_EMERGENCY_TEMP_REACHED\n");
-
-		pevent->event_id = MLAN_EVENT_ID_EMERGENCY_TEMP_REACHED;
-		pevent->event_len = MIN(pmbuf->data_len, MAX_EVENT_SIZE);
-		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
-			   pmbuf->pbuf + pmbuf->data_offset, pevent->event_len,
-			   pevent->event_len);
-		wlan_recv_event(pmpriv, pevent->event_id, pevent);
-		break;
 	case EVENT_DPD_CAL:
 		wlan_process_dpd_cal_event(pmpriv, pmbuf);
 		break;
@@ -1590,17 +1552,16 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 	case EVENT_CHANNEL_SWITCH_REGINFO:
 		PRINTM(MEVENT, "EVENT: Channel Switch Reginfo (%#x)\n",
 		       eventcause);
-		psta_info = (MrvlIEtypes_chan_band_reginfo_t
-				     *)(pmadapter->event_body);
+		psta_info = (chan_band_reginfo_t *)(pmadapter->event_body);
 		DBG_HEXDUMP(MCMD_D, "chan band reginfo", (t_u8 *)psta_info,
-			    sizeof(MrvlIEtypes_chan_band_reginfo_t));
+			    sizeof(chan_band_reginfo_t));
 		/* Setup event buffer */
 		pevent->bss_index = pmpriv->bss_index;
 		pevent->event_id = MLAN_EVENT_ID_FW_CHAN_SWITCH_REGINFO;
 		pevent->event_len = sizeof(chan_band_reginfo_t);
 		psta_reg_info = (chan_band_reginfo_t *)pevent->event_buf;
 		/* Copy event data */
-		if (psta_info->bandcfg.chanBand == BAND_6GHZ) {
+		if (psta_reg_info->bandcfg.chanBand == BAND_6GHZ) {
 			memcpy_ext(pmadapter, (t_u8 *)&psta_reg_info->bandcfg,
 				   (t_u8 *)&psta_info->bandcfg,
 				   sizeof(psta_info->bandcfg),
@@ -1613,27 +1574,6 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 		} else
 			PRINTM(MEVENT,
 			       "Ignoring the Channel Switch Reg Info Event\n");
-		break;
-#ifdef SECURE_HOST
-	case EVENT_SECURE_HOST_COMM:
-		ret = wlan_process_secure_host_event(
-			pmpriv, pmbuf->pbuf + pmbuf->data_offset,
-			pmbuf->data_len);
-		break;
-#endif
-	case EVENT_WIFI_CHANNEL_AVOID_LIST:
-		PRINTM(MEVENT, "EVENT: EVENT_WIFI_CHANNEL_AVOID_LIST (%#x)\n",
-		       eventcause);
-		pevent->event_id = MLAN_EVENT_ID_FW_WIFI_CHANNEL_AVOID_LIST;
-		pevent->bss_index = pmpriv->bss_index;
-		pevent->event_len = pmbuf->data_len;
-		// coverity[cert_arr30_c_violation:SUPPRESS]
-		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
-			   pmbuf->pbuf + pmbuf->data_offset, pevent->event_len,
-			   pevent->event_len);
-		DBG_HEXDUMP(MCMD_D, "WiFi channel avoid list",
-			    (t_u8 *)pevent->event_buf, pevent->event_len);
-		wlan_recv_event(pmpriv, pevent->event_id, pevent);
 		break;
 	default:
 		PRINTM(MEVENT, "EVENT: unknown event id: %#x\n", eventcause);

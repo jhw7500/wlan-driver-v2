@@ -4,7 +4,7 @@
  *  @brief This file contains USB specific code
  *
  *
- *  Copyright 2008-2021, 2024-2026 NXP
+ *  Copyright 2008-2021, 2024-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991

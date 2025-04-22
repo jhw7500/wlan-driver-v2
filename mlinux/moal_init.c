@@ -206,13 +206,13 @@ static int rps = 0;
  * EDMAC for EU adaptivity
  * Default value of 0 keeps edmac disabled by default
  */
-static int edmac_ctrl;
+static int edmac_ctrl = 0;
 static int tx_skb_clone = 1;
 
 #ifdef IMX_SUPPORT
 static int pmqos = 1;
 #else
-static int pmqos;
+static int pmqos = 0;
 #endif
 
 static int chan_track;
@@ -370,6 +370,9 @@ static int tpe_ie_ignore;
 
 static int amsdu_8k_rx;
 
+/** ignore TPE IE configuration from ex-AP*/
+static int tpe_ie_ignore = 0;
+
 #ifdef DEBUG_LEVEL1
 #ifdef DEBUG_LEVEL2
 #define DEFAULT_DEBUG_MASK (0xffffffff)
@@ -453,7 +456,7 @@ static card_type_entry card_type_map_tbl[] = {
 static int dfs53cfg = DFS_W53_DEFAULT_FW;
 
 static int keep_previous_scan = 1;
-static int make_before_break;
+static int make_before_break = 0;
 static int auto_11ax = 1;
 static int reject_addba_req;
 
@@ -1925,22 +1928,6 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			PRINTM(MMSG, "make_before_break=%x\n",
 			       params->make_before_break);
 		}
-#ifdef SECURE_HOST
-		else if (strncmp(line, "secure_host", strlen("secure_host")) ==
-			 0) {
-			if (parse_line_read_int(line, &out_data) !=
-			    MLAN_STATUS_SUCCESS)
-				goto err;
-			params->secure_host = out_data;
-		}
-#endif
-
-		else if (strncmp(line, "bandctrl", strlen("bandctrl")) == 0) {
-			if (parse_line_read_int(line, &out_data) !=
-			    MLAN_STATUS_SUCCESS)
-				goto err;
-			params->bandctrl = out_data;
-		}
 	}
 
 	if (params->tx_budget <= 0)
@@ -2232,8 +2219,7 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (handle->params.txpwrlimit_cfg) {
 		memset(handle->mode_psd_file, 0, sizeof(handle->mode_psd_file));
 		strncpy(handle->mode_psd_file, handle->params.txpwrlimit_cfg,
-			sizeof(handle->mode_psd_file) - 1);
-		handle->mode_psd_file[sizeof(handle->mode_psd_file) - 1] = '\0';
+			strlen(handle->params.txpwrlimit_cfg) + 1);
 		PRINTM(MINFO, "Mode PSD file name: %s", handle->mode_psd_file);
 	}
 
@@ -2437,18 +2423,6 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		handle->params.tpe_ie_ignore = params->tpe_ie_ignore;
 	handle->params.make_before_break = make_before_break;
-
-#ifdef SECURE_HOST
-	handle->params.secure_host = secure_host;
-	if (params)
-		handle->params.secure_host = params->secure_host;
-	if (!IS_CARDAW693(handle->card_type))
-		handle->params.secure_host = 0;
-#endif
-
-	handle->params.bandctrl = bandctrl;
-	if (params)
-		handle->params.bandctrl = params->bandctrl;
 }
 
 /**
@@ -3088,22 +3062,6 @@ void woal_init_from_dev_tree(void)
 				make_before_break = data;
 			}
 		}
-#ifdef SECURE_HOST
-		else if (!strncmp(prop->name, "secure_host",
-				  strlen("secure_host"))) {
-			if (!of_property_read_u32(dt_node, prop->name, &data)) {
-				PRINTM(MIOCTL, "secure_host=0x%x\n", data);
-				secure_host = data;
-			}
-		}
-#endif
-
-		else if (!strncmp(prop->name, "bandctrl", strlen("bandctrl"))) {
-			if (!of_property_read_u32(dt_node, prop->name, &data)) {
-				PRINTM(MIOCTL, "bandctrl=0x%x\n", data);
-				bandctrl = data;
-			}
-		}
 	}
 	of_node_put(dt_node);
 	LEAVE();
@@ -3704,7 +3662,7 @@ MODULE_PARM_DESC(
 module_param(antcfg, int, 0660);
 MODULE_PARM_DESC(
 	antcfg,
-	"0:default; SD8887/SD8987-[1:Tx/Rx antenna 1, 2:Tx/Rx antenna 2, 0xffff:enable antenna diversity];SD8897-[Bit0:Rx Path A, Bit1:Rx Path B, Bit 4:Tx Path A, Bit 5:Tx Path B];9098/9097-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B,Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B];AW693-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B, Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B, Bit 16: 6G Tx/Rx path A, Bit 17: 6G Tx/Rx path B]");
+	"0:default; SD8887/SD8987-[1:Tx/Rx antenna 1, 2:Tx/Rx antenna 2, 0xffff:enable antenna diversity];SD8897/SD8997-[Bit0:Rx Path A, Bit1:Rx Path B, Bit 4:Tx Path A, Bit 5:Tx Path B];9098/9097-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B,Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B];AW693-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B, Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B, Bit 16: 6G Tx/Rx path A, Bit 17: 6G Tx/Rx path B]");
 
 module_param(uap_oper_ctrl, uint, 0);
 MODULE_PARM_DESC(uap_oper_ctrl, "0:default; 0x20001:uap restarts on channel 6");
@@ -3882,14 +3840,3 @@ module_param(make_before_break, int, 0);
 MODULE_PARM_DESC(
 	make_before_break,
 	"1: make_before_break during roam; 0: no make_before_break during roam");
-
-#ifdef SECURE_HOST
-module_param(secure_host, int, 0660);
-MODULE_PARM_DESC(
-	secure_host,
-	"0: Disable secure host mode(default); 1: Enable secure host mode");
-#endif
-
-module_param(bandctrl, int, 0);
-MODULE_PARM_DESC(bandctrl,
-		 "0: Disable bandctrl mode(default); 1: Enable bandctrl mode");

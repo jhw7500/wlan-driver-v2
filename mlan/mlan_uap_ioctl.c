@@ -4,7 +4,7 @@
  *  @brief This file contains the handling of AP mode ioctls
  *
  *
- *  Copyright 2009-2026 NXP
+ *  Copyright 2009-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -2416,10 +2416,6 @@ mlan_status wlan_ops_uap_ioctl(t_void *adapter, pmlan_ioctl_req pioctl_req)
 		else if (misc->sub_command == MLAN_OID_MISC_CH_LOAD_RESULTS)
 			status = wlan_misc_ioctl_ch_load_results(pmadapter,
 								 pioctl_req);
-		else if (misc->sub_command == MLAN_OID_MISC_FOUNDRY_TYPE)
-			status = wlan_misc_ioctl_foundry_type(pmadapter,
-							      pioctl_req);
-
 		else if (misc->sub_command == MLAN_OID_MISC_GET_TSF)
 			status = wlan_misc_ioctl_get_tsf(pmadapter, pioctl_req);
 		else if (misc->sub_command == MLAN_OID_MISC_CROSS_CHIP_SYNCH)
@@ -2463,9 +2459,6 @@ mlan_status wlan_ops_uap_ioctl(t_void *adapter, pmlan_ioctl_req pioctl_req)
 			status = wlan_misc_ioctl_led(pmadapter, pioctl_req);
 		else if (misc->sub_command == MLAN_OID_MISC_TX_AMPDU_PROT_MODE)
 			status = wlan_misc_ioctl_tx_ampdu_prot_mode(pmadapter,
-								    pioctl_req);
-		else if (misc->sub_command == MLAN_OID_MISC_PREAMBLE_PWR_BOOST)
-			status = wlan_misc_ioctl_preamble_pwr_boost(pmadapter,
 								    pioctl_req);
 		else if (misc->sub_command ==
 			 MLAN_OID_MISC_DOT11MC_UNASSOC_FTM_CFG)

@@ -943,7 +943,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
 
 	if (!woal_secure_add(&count, 1, &tmp_count, TYPE_UINT32)) {
-		PRINTM(MERROR, "%s:count param overflow\n", __func__);
+		PRINTM(MERROR, "%s:count param overflow \n", __func__);
 		LEAVE();
 		return -EINVAL;
 	}

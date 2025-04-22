@@ -5,7 +5,7 @@
  *  module.
  *
  *
- *  Copyright 2008-2022, 2024-2026 NXP
+ *  Copyright 2008-2022, 2024-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -543,6 +543,7 @@ mlan_status wlan_process_rx_packet(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 			ret = MLAN_STATUS_FAILURE;
 			goto done;
 		}
+
 		hdr_chop = (t_u16)((t_ptr)peth_hdr - (t_ptr)prx_pd);
 	} else {
 		HEXDUMP("RX Data: LLC/SNAP", (t_u8 *)&prx_pkt->rfc1042_hdr,
@@ -577,7 +578,7 @@ mlan_status wlan_process_rx_packet(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 	 */
 	if (pmbuf->data_len < hdr_chop) {
 		PRINTM(MERROR, "%s(): invalid eth/eth803 header len\n",
-		       __func__);
+		       __FUNCTION__);
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}

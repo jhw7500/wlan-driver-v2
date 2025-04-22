@@ -6,7 +6,7 @@
  *  related code
  *
  *
- *  Copyright 2009-2026 NXP
+ *  Copyright 2009-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -3860,6 +3860,57 @@ table_a:
 			bonded_chan_count = 0;
 		}
 	}
+	if (is6g && pmadapter->cfp_otp_6g && pmadapter->tx_power_table_6g) {
+		rows = pmadapter->tx_power_table_6g_rows;
+		cols = pmadapter->tx_power_table_6g_cols;
+		if (pmadapter->tx_power_table_6g_size < (rows * cols))
+			return;
+		max = 0;
+		bonded_chan_count = 0;
+		for (i = 0; i < rows; i++) {
+			if ((pmadapter->cfp_otp_6g + i)->dynamic.flags &
+			    NXP_CHANNEL_DISABLED)
+				continue;
+
+			/* Get the max value among all mod groups for this chan
+			 */
+			for (j = 1; j < cols; j++)
+				max = MAX(
+					max,
+					pmadapter->tx_power_table_6g[i * cols +
+								     j]);
+
+			bonded_chan_count++;
+
+			if ((i < (rows - 1)) &&
+			    !((pmadapter->cfp_otp_6g + i + 1)->dynamic.flags &
+			      NXP_CHANNEL_DISABLED)) {
+				/* Compare the max power value with the next
+				 * chan in this bonded group, unless this is the
+				 * last or the next one is disabled
+				 */
+				if (!((pmadapter->cfp_otp_6g + i)->dynamic.flags &
+				      NXP_CHANNEL_NOHT80)) {
+					if (bonded_chan_count < 4)
+						continue;
+				} else if (!((pmadapter->cfp_otp_6g + i)
+						     ->dynamic.flags &
+					     NXP_CHANNEL_NOHT40)) {
+					if (bonded_chan_count < 2)
+						continue;
+				}
+			}
+			/* Apply the max power value to all channels in this
+			 * bonded group
+			 */
+
+			for (k = 0; k < bonded_chan_count; k++)
+				(pmadapter->cfp_otp_6g + i - k)->max_tx_power =
+					max;
+			max = 0;
+			bonded_chan_count = 0;
+		}
+	}
 }
 
 /**
@@ -4550,7 +4601,7 @@ static mlan_status wlan_get_6g_cfpinfo(pmlan_adapter pmadapter,
 		c.is6g_present = 1;
 		c.rows_6g = cfp_no_6g;
 		c.cols_6g = pmadapter->tx_power_table_6g_cols;
-		size += (c.rows_6g * c.cols_6g);
+		size += pmadapter->tx_power_table_6g_size;
 	}
 	/* Check information buffer length of MLAN IOCTL */
 	if (pioctl_req->buf_len < size) {
@@ -4578,8 +4629,9 @@ static mlan_status wlan_get_6g_cfpinfo(pmlan_adapter pmadapter,
 	if (pmadapter->tx_power_table_6g) {
 		memcpy_ext(pmadapter, req_buf + len,
 			   pmadapter->tx_power_table_6g,
-			   (c.rows_6g * c.cols_6g), (c.rows_6g * c.cols_6g));
-		len += (c.rows_6g * c.cols_6g);
+			   pmadapter->tx_power_table_6g_size,
+			   pmadapter->tx_power_table_6g_size);
+		len += pmadapter->tx_power_table_6g_size;
 	}
 out:
 	if (pioctl_req)

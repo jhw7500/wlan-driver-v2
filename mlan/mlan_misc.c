@@ -277,9 +277,6 @@ static mlan_status wlan_custom_ioctl_auto_delete(pmlan_private pmpriv,
 					   cnt, MAX_IE_SIZE);
 				if (pmpriv->mgmt_ie[index].ie_length >
 				    (cnt + del_len)) {
-					/*buffer bounds are validated using MIN
-					 *and logic ensures safe access within
-					 *allocated array size. */
 					// coverity[cert_arr30_c_violation:
 					// SUPPRESS]
 					// coverity[cert_str31_c_violation:SUPPRESS]
@@ -831,7 +828,7 @@ t_void wlan_wakeup_card_timeout_func(void *function_context)
 
 	ENTER();
 
-	PRINTM(MCMND, "%s: ps_state=%d\n", __func__, pmadapter->ps_state);
+	PRINTM(MCMND, "%s: ps_state=%d\n", __FUNCTION__, pmadapter->ps_state);
 	if (pmadapter->ps_state != PS_STATE_AWAKE) {
 		PRINTM_NETINTF(MCMND, pmpriv);
 		PRINTM(MCMND, "Wakeup card timeout(%d)!\n",
@@ -4553,7 +4550,7 @@ t_u8 *wlan_get_specific_ie(pmlan_private priv, t_u8 *ie_buf, t_u16 ie_len,
 		/*In case of 11AI, Assoc Req/Reassoc Req contains encrypted
 		 TLV's after FILS_SESSION. To avoid InterpretIE: error skipping
 		 TLV's after FILS_SESSION*/
-		if (element_id == FILS_SESSION) {
+		if (FILS_SESSION == element_id) {
 			break;
 		}
 		pcurrent_ptr += element_len + 2;
@@ -6830,7 +6827,8 @@ mlan_status wlan_misc_ioctl_mef_flt_cfg(pmlan_adapter pmadapter,
 				pmef->num_mdns_entry = 0;
 				memset(pmadapter, &pmef->entry[8], 0,
 				       sizeof(mef_entry_t));
-				if (wlan_process_mef_cfg_cmd(
+				if (MLAN_STATUS_SUCCESS !=
+				    wlan_process_mef_cfg_cmd(
 					    pmadapter
 						    ->priv[pioctl_req->bss_index],
 					    pmadapter) != MLAN_STATUS_SUCCESS)
