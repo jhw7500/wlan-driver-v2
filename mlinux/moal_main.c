@@ -5301,7 +5301,6 @@ static netdev_tx_t woal_mon_hard_start_xmit(struct sk_buff *skb,
 	t_u32 packet_len = 0;
 	t_u16 *frmlen = NULL;
 	pkt_header *hdr = NULL;
-
 	req.ifr_data = NULL;
 	ENTER();
 
@@ -5325,7 +5324,10 @@ static netdev_tx_t woal_mon_hard_start_xmit(struct sk_buff *skb,
 
 	/* does the skb contain enough to deliver on the alleged length? */
 	if (unlikely((int)skb->len < (len_rthdr + IEEE80211_HEADER_SIZE))) {
-		PRINTM(MERROR, "Invalid data length,skb->len: %d\n", skb->len);
+		PRINTM(MERROR,
+		       "Invalid data length,"
+		       "skb->len: %d\n",
+		       skb->len);
 		goto fail; /* skb too short for claimed rt header extent */
 	}
 
@@ -14904,10 +14906,19 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 
 #define NAPI_BUDGET 64
 	if (moal_extflg_isset(handle, EXT_NAPI)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+		handle->pnapi_dev = alloc_netdev_dummy(0);
+#else
 		init_dummy_netdev(&handle->napi_dev);
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
-			       woal_netdev_poll_rx);
+		netif_napi_add(
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+			handle->pnapi_dev,
+#else
+			&handle->napi_dev,
+#endif
+			&handle->napi_rx, woal_netdev_poll_rx);
 #else
 		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
 			       woal_netdev_poll_rx, NAPI_BUDGET);

@@ -202,6 +202,9 @@ static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
 #endif
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
+				      unsigned int link_id,
+#endif
 				      int *dbm);
 
 static int woal_cfg80211_set_tx_power(struct wiphy *wiphy,
@@ -3375,6 +3378,8 @@ void woal_host_mlme_process_assoc_timeout(moal_private *priv,
 	kfree(assoc_info);
 #endif
 	/* Send Assoc Failure with Timeout to CFG80211 */
+	priv->host_mlme = MFALSE;
+	priv->auth_flag = 0;
 #if (CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 0, 0) ||                       \
      (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 33 &&             \
       CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 15, 74)))
@@ -7340,9 +7345,6 @@ static int woal_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
-				      int radio_idx,
-#endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
 				      unsigned int link_id,
 #endif

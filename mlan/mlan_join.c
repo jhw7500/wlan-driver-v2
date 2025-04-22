@@ -1982,7 +1982,7 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 				    MLAN_MAC_ADDR_LENGTH) ||
 			    !pmpriv->prior_assoc_rsp_size) {
 				wlan_reset_connect_state(pmpriv, MTRUE);
-			} else {
+			else {
 				// fallback to previous AP
 				memcpy_ext(
 					pmpriv->adapter,
@@ -1995,6 +1995,21 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 					pmpriv,
 					MLAN_EVENT_ID_DRV_ASSOC_FAILURE_REPORT,
 					MNULL);
+				// update Assoc resp/req buf, if Assoc Rsp
+				// failure.
+				pmpriv->assoc_rsp_size =
+					pmpriv->prior_assoc_rsp_size;
+				memcpy_ext(pmadapter, pmpriv->assoc_rsp_buf,
+					   pmpriv->prior_assoc_rsp,
+					   pmpriv->assoc_rsp_size,
+					   ASSOC_RSP_BUF_SIZE);
+				pmpriv->assoc_req_size =
+					pmpriv->prior_assoc_req_size;
+				memcpy_ext(pmadapter, pmpriv->assoc_req_buf,
+					   pmpriv->prior_assoc_req,
+					   pmpriv->assoc_req_size,
+					   ASSOC_RSP_BUF_SIZE);
+
 				// coverity[no_effect:SUPPRESS]
 				memset(pmpriv->adapter,
 				       pmpriv->curr_bss_params.prev_bssid, 0,
