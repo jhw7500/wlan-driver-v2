@@ -215,12 +215,11 @@ static int rps = 0;
  * Default value of 0 keeps edmac disabled by default
  */
 static int edmac_ctrl = 0;
+static int tx_skb_clone = 1;
 
 #ifdef IMX_SUPPORT
-static int tx_skb_clone = 1;
 static int pmqos = 1;
 #else
-static int tx_skb_clone = 0;
 static int pmqos = 0;
 #endif
 
@@ -233,7 +232,9 @@ static int hs_auto_arp = 0;
 /** 802.11d configuration */
 static int cfg_11d;
 #endif
-
+#if defined(UAP_SUPPORT)
+static int custom_11d_bcn_country_ie_en;
+#endif
 /** fw serial download check */
 static int fw_serial = 1;
 
@@ -372,6 +373,9 @@ int dual_nb;
 /** disable 802.11h tpc configuration */
 static int disable_11h_tpc = 0;
 
+/** ignore TPE IE configuration from ex-AP*/
+static int tpe_ie_ignore = 0;
+
 #ifdef DEBUG_LEVEL1
 #ifdef DEBUG_LEVEL2
 #define DEFAULT_DEBUG_MASK (0xffffffff)
@@ -470,6 +474,7 @@ static card_type_entry card_type_map_tbl[] = {
 static int dfs53cfg = DFS_W53_DEFAULT_FW;
 
 static int keep_previous_scan = 1;
+static int make_before_break = 0;
 static int auto_11ax = 1;
 static int reject_addba_req = 0;
 
@@ -1105,10 +1110,20 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			if (parse_line_read_int(line, &out_data) !=
 			    MLAN_STATUS_SUCCESS)
 				goto err;
-			if (out_data)
+
+			if (IS_PCIE(handle->card_type)) {
+				if (out_data)
+					moal_extflg_set(handle,
+							EXT_PM_KEEP_POWER);
+				else
+					moal_extflg_clear(handle,
+							  EXT_PM_KEEP_POWER);
+			} else {
 				moal_extflg_set(handle, EXT_PM_KEEP_POWER);
-			else
-				moal_extflg_clear(handle, EXT_PM_KEEP_POWER);
+				if (!out_data)
+					PRINTM(MMSG,
+					       "pm_keep_power=0 config is not eligible for SDIO/USB");
+			}
 			PRINTM(MMSG, "pm_keep_power %s\n",
 			       moal_extflg_isset(handle, EXT_PM_KEEP_POWER) ?
 				       "on" :
@@ -1137,6 +1152,17 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				goto err;
 			params->cfg_11d = out_data;
 			PRINTM(MMSG, "cfg_11d = %d\n", params->cfg_11d);
+		}
+#endif
+#if defined(UAP_SUPPORT)
+		else if (strncmp(line, "custom_11d_bcn_country_ie_en",
+				 strlen("custom_11d_bcn_country_ie_en")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->custom_11d_bcn_country_ie_en = out_data;
+			PRINTM(MMSG, "custom_11d_bcn_country_ie_en = %d\n",
+			       params->custom_11d_bcn_country_ie_en);
 		}
 #endif
 #if defined(SDIO)
@@ -1781,6 +1807,22 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->disable_11h_tpc = out_data;
 			PRINTM(MMSG, "disable_11h_tpc=%x\n",
 			       params->disable_11h_tpc);
+		} else if (strncmp(line, "tpe_ie_ignore",
+				   strlen("tpe_ie_ignore")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->tpe_ie_ignore = out_data;
+			PRINTM(MMSG, "tpe_ie_ignore=%x\n",
+			       params->tpe_ie_ignore);
+		} else if (strncmp(line, "make_before_break",
+				   strlen("make_before_break")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->make_before_break = out_data;
+			PRINTM(MMSG, "make_before_break=%x\n",
+			       params->make_before_break);
 		}
 	}
 
@@ -2022,8 +2064,15 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		handle->params.gpiopin = params->gpiopin;
 #endif
-	if (pm_keep_power)
+	if (IS_PCIE(handle->card_type)) {
+		if (pm_keep_power)
+			moal_extflg_set(handle, EXT_PM_KEEP_POWER);
+	} else {
 		moal_extflg_set(handle, EXT_PM_KEEP_POWER);
+		if (!pm_keep_power)
+			PRINTM(MMSG,
+			       "pm_keep_power=0 config is not eligible for SDIO/USB\n");
+	}
 #if defined(SDIO) && defined(SDIO_SUSPEND_RESUME)
 	if (shutdown_hs)
 		moal_extflg_set(handle, EXT_SHUTDOWN_HS);
@@ -2032,6 +2081,13 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.cfg_11d = cfg_11d;
 	if (params)
 		handle->params.cfg_11d = params->cfg_11d;
+#endif
+#if defined(UAP_SUPPORT)
+	handle->params.custom_11d_bcn_country_ie_en =
+		custom_11d_bcn_country_ie_en;
+	if (params)
+		handle->params.custom_11d_bcn_country_ie_en =
+			params->custom_11d_bcn_country_ie_en;
 #endif
 #if defined(SDIO)
 	handle->params.slew_rate = slew_rate;
@@ -2053,6 +2109,14 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		woal_dup_string(&handle->params.txpwrlimit_cfg,
 				params->txpwrlimit_cfg);
+
+	if (handle->params.txpwrlimit_cfg) {
+		memset(handle->mode_psd_file, 0, sizeof(handle->mode_psd_file));
+		strncpy(handle->mode_psd_file, handle->params.txpwrlimit_cfg,
+			strlen(handle->params.txpwrlimit_cfg) + 1);
+		PRINTM(MINFO, "Mode PSD file name: %s", handle->mode_psd_file);
+	}
+
 	handle->params.cntry_txpwr = cntry_txpwr;
 	if (params)
 		handle->params.cntry_txpwr = params->cntry_txpwr;
@@ -2248,6 +2312,13 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 		moal_extflg_set(handle, EXT_COUNTRY_IE_IGNORE);
 	if (params)
 		handle->params.disable_11h_tpc = params->disable_11h_tpc;
+	handle->params.tpe_ie_ignore = tpe_ie_ignore;
+	/* Ignore country IE when tpe ie is disabled */
+	if (tpe_ie_ignore)
+		moal_extflg_set(handle, EXT_COUNTRY_IE_IGNORE);
+	if (params)
+		handle->params.tpe_ie_ignore = params->tpe_ie_ignore;
+	handle->params.make_before_break = make_before_break;
 }
 
 /**
@@ -2833,6 +2904,12 @@ void woal_init_from_dev_tree(void)
 				PRINTM(MERROR, "disable_11h_tpc=0x%x\n", data);
 				disable_11h_tpc = data;
 			}
+		} else if (!strncmp(prop->name, "tpe_ie_ignore",
+				    strlen("tpe_ie_ignore"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MERROR, "tpe_ie_ignore=0x%x\n", data);
+				tpe_ie_ignore = data;
+			}
 		}
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
@@ -2845,6 +2922,14 @@ void woal_init_from_dev_tree(void)
 		}
 #endif
 #endif
+		else if (!strncmp(prop->name, "make_before_break",
+				  strlen("make_before_break"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MERROR, "make_before_break=0x%x\n",
+				       data);
+				make_before_break = data;
+			}
+		}
 	}
 	LEAVE();
 	return;
@@ -2970,6 +3055,8 @@ mlan_status woal_init_module_param(moal_handle *handle)
 	PRINTM(MMSG, "%s: init module param from usr cfg\n",
 	       card_type_map_tbl[i].name);
 	size = (t_u32)handle->param_data->size;
+	// Casting is done to read and parse the data
+	// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 	data = (t_u8 *)handle->param_data->data;
 	while ((int)parse_cfg_get_line(data, size, line) != -1) {
 		if (line[0] == '#')
@@ -3244,6 +3331,16 @@ module_param(cfg_11d, int, 0);
 MODULE_PARM_DESC(cfg_11d,
 		 "0: MLAN default; 1: Enable 802.11d; 2: Disable 802.11d");
 #endif
+#if defined(UAP_SUPPORT)
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
+module_param(custom_11d_bcn_country_ie_en, int, 0);
+MODULE_PARM_DESC(
+	custom_11d_bcn_country_ie_en,
+	"1: Enable Custom BCN Country ie; 0: Disable Custom BCN Country ie");
+#endif
+
 #if defined(SDIO)
 module_param(slew_rate, int, 0);
 MODULE_PARM_DESC(
@@ -3413,7 +3510,7 @@ MODULE_PARM_DESC(
 module_param(antcfg, int, 0660);
 MODULE_PARM_DESC(
 	antcfg,
-	"0:default; SD8887/SD8987-[1:Tx/Rx antenna 1, 2:Tx/Rx antenna 2, 0xffff:enable antenna diversity];SD8897/SD8997-[Bit0:Rx Path A, Bit1:Rx Path B, Bit 4:Tx Path A, Bit 5:Tx Path B];9098/9097-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B,Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B]");
+	"0:default; SD8887/SD8987-[1:Tx/Rx antenna 1, 2:Tx/Rx antenna 2, 0xffff:enable antenna diversity];SD8897/SD8997-[Bit0:Rx Path A, Bit1:Rx Path B, Bit 4:Tx Path A, Bit 5:Tx Path B];9098/9097-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B,Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B];AW693-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B, Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B, Bit 16: 6G Tx/Rx path A, Bit 17: 6G Tx/Rx path B]");
 
 module_param(uap_oper_ctrl, uint, 0);
 MODULE_PARM_DESC(uap_oper_ctrl, "0:default; 0x20001:uap restarts on channel 6");
@@ -3577,3 +3674,11 @@ MODULE_PARM_DESC(
 module_param(disable_11h_tpc, int, 0);
 MODULE_PARM_DESC(disable_11h_tpc,
 		 "0: Enable 802.11h tpc; 1: Disable 802.11h tpc");
+module_param(tpe_ie_ignore, int, 0);
+MODULE_PARM_DESC(tpe_ie_ignore,
+		 "0: obey TPE IEs from ex-AP; 1: ignore TPE IEs from ex-AP");
+
+module_param(make_before_break, int, 0);
+MODULE_PARM_DESC(
+	make_before_break,
+	"1: make_before_break during roam; 0: no make_before_break during roam");

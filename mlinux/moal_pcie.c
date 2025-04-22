@@ -33,7 +33,6 @@ Change log:
 #endif
 
 #include "moal_pcie.h"
-#include "moal_bridge.h"
 #ifdef UAP_SUPPORT
 #include "moal_uap.h"
 #endif
@@ -154,6 +153,7 @@ static const struct pci_device_id wlan_ids[] = {
 /* moal interface ops */
 static moal_if_ops pcie_ops;
 
+
 /********************************************************
 			Global Variables
 ********************************************************/
@@ -187,6 +187,13 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIE8897;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIE8897,
 				strlen(CARD_PCIE8897), strlen(driver_version));
+		/* we are copying card name in middle of full version, we can
+		   not copy null termination. This was already tried and
+		   reverted as full version got terminated in middlei(See commit
+		   57c27201f9a23562337491f3cbb9833ca348076c). thus suppressing
+		   the coverity warning  for all card types in this function. */
+		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
 				driver_version + strlen(INTF_CARDTYPE) +
 					strlen(KERN_VERSION),
@@ -200,6 +207,8 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIE8997;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIE8997,
 				strlen(CARD_PCIE8997), strlen(driver_version));
+		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
 				driver_version + strlen(INTF_CARDTYPE) +
 					strlen(KERN_VERSION),
@@ -213,6 +222,8 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIE9097;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIE9097,
 				strlen(CARD_PCIE9097), strlen(driver_version));
+		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
 				driver_version + strlen(INTF_CARDTYPE) +
 					strlen(KERN_VERSION),
@@ -228,6 +239,7 @@ static t_u16 woal_update_card_type(t_void *card)
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIE9098,
 				strlen(CARD_PCIE9098), strlen(driver_version));
 		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
 				driver_version + strlen(INTF_CARDTYPE) +
 					strlen(KERN_VERSION),
@@ -242,6 +254,8 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIEAW693;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIEAW693,
 				strlen(CARD_PCIEAW693), strlen(driver_version));
+		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
 				driver_version + strlen(INTF_CARDTYPE) +
 					strlen(KERN_VERSION),
@@ -255,6 +269,8 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_PCIEIW624;
 		moal_memcpy_ext(NULL, driver_version, CARD_PCIEIW624,
 				strlen(CARD_PCIEIW624), strlen(driver_version));
+		// coverity[string_null:SUPPRESS]
+		// coverity[cert_str32_c_violation:SUPPRESS]
 		moal_memcpy_ext(NULL,
 				driver_version + strlen(INTF_CARDTYPE) +
 					strlen(KERN_VERSION),
@@ -313,54 +329,6 @@ done:
 	return ret;
 }
 
-/* Reset callbacks are pinned by PCI core and rebuild callers additionally hold
- * AddRemoveCardSem.  The reset lock closes the remaining race with
- * remove/module-exit publication: either teardown marks reset_stopping first
- * and this leaves the producer gate set, or publication wins before teardown
- * can take that gate. */
-static mlan_status woal_pcie_resume_gate_check(pcie_service_card *card,
-					       moal_handle *handle,
-					       bool publish)
-{
-	int index;
-	mlan_status status = MLAN_STATUS_FAILURE;
-
-	if (!card || !handle)
-		return status;
-
-	spin_lock_bh(&card->reset_lock);
-	if (card->reset_stopping || READ_ONCE(driver_exit_in_progress) ||
-	    !card->dev || card->handle != handle || handle->card != card ||
-	    (publish && !READ_ONCE(handle->pmlan_adapter)))
-		goto keep_quiesced;
-	for (index = 0; index < MAX_MLAN_ADAPTER; index++)
-		if (READ_ONCE(m_handle[index]) == handle)
-			break;
-	if (index == MAX_MLAN_ADAPTER)
-		goto keep_quiesced;
-
-	if (publish) {
-		/* Publish the rebuilt adapter before allowing the ISR to consume it. */
-		smp_wmb();
-		WRITE_ONCE(handle->surprise_removed, MFALSE);
-		WRITE_ONCE(handle->is_suspended, MFALSE);
-	}
-	status = MLAN_STATUS_SUCCESS;
-	goto out;
-keep_quiesced:
-	WRITE_ONCE(handle->surprise_removed, MTRUE);
-out:
-	spin_unlock_bh(&card->reset_lock);
-	return status;
-}
-
-static mlan_status woal_pcie_resume_gate(moal_handle *handle)
-{
-	if (!handle || !handle->card)
-		return MLAN_STATUS_FAILURE;
-	return woal_pcie_resume_gate_check(handle->card, handle, true);
-}
-
 /**
  * @brief Function to process pre/post PCIe function level reset
  *
@@ -376,8 +344,7 @@ static mlan_status woal_pcie_resume_gate(moal_handle *handle)
  *
  * @return        MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
  */
-static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
-				 bool flr_flag, bool card_sem_owned)
+static mlan_status woal_do_flr(moal_handle *handle, bool prepare, bool flr_flag)
 {
 	unsigned int i;
 	int index = 0;
@@ -385,8 +352,6 @@ static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
 	moal_private *priv = NULL;
 	pcie_service_card *card = NULL;
 	int fw_serial_bkp = 0;
-	int bridge_ret;
-	bool restore_nowait = false;
 
 	ENTER();
 
@@ -409,47 +374,21 @@ static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
 	    !IS_PCIEIW624(handle->card_type) &&
 	    !IS_PCIEAW693(handle->card_type) &&
 	    !IS_PCIE9098(handle->card_type)) {
-		/* Chipsets outside the FLR allowlist keep the historical no-op
-		 * success: suspend/resume and PCI reset callbacks now treat an
-		 * FLR failure as a terminal recovery error, so a hard failure
-		 * here would brick ordinary suspend on unsupported parts. */
 		LEAVE();
-		return MLAN_STATUS_SUCCESS;
+		return status;
 	}
 
-	/* Once FLR has started callers cannot safely abort; use exclusive,
-	 * non-interruptible ownership and propagate all rebuild failures. */
-	if (!card_sem_owned)
-		down(&AddRemoveCardSem);
+	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
+		goto exit_sem_err;
 
 	if (!prepare)
 		goto perform_init;
-	handle->fw_reseting = MTRUE;
-	handle->surprise_removed = MTRUE;
-	if (!handle->pmlan_adapter) {
-		status = MLAN_STATUS_FAILURE;
+	if (!handle->pmlan_adapter)
 		goto exit;
-	}
-
-	/* Snapshot and drain the one effective owner before any WLAN netdev is
-	 * removed.  Companion prepare calls see the existing suspended snapshot
-	 * and otherwise remain owner-safe no-ops. */
-	bridge_ret = moal_bridge_suspend_owner_for_reset(handle);
-	if (bridge_ret) {
-		status = MLAN_STATUS_FAILURE;
-		goto exit;
-	}
-	/* surprise_removed/fw_reseting gate every new IRQ/main-work producer in all
-	 * callers.  Wait out an IRQ that passed the gate before this reset phase. */
-	synchronize_irq(card->dev->irq);
 
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
-	if (woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE) !=
-	    MLAN_STATUS_SUCCESS) {
-		status = MLAN_STATUS_FAILURE;
-		goto exit;
-	}
+	woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE);
 	woal_clean_up(handle);
 	mlan_ioctl(handle->pmlan_adapter, NULL);
 
@@ -457,20 +396,9 @@ static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
 	handle->init_wait_q_woken = MFALSE;
 	status = mlan_shutdown_fw(handle->pmlan_adapter);
 
-	if (status == MLAN_STATUS_PENDING) {
-		if (wait_event_interruptible(handle->init_wait_q,
-					     handle->init_wait_q_woken)) {
-			status = MLAN_STATUS_FAILURE;
-			goto exit;
-		}
-		status = MLAN_STATUS_SUCCESS;
-	}
-	if (status != MLAN_STATUS_SUCCESS)
-		goto exit;
-	/* Shutdown may require main_work to complete, so drain only afterwards.
-	 * With IRQs gated and synchronized above, the drain is terminal before
-	 * interface removal and mlan_unregister(). */
-	woal_flush_workqueue(handle);
+	if (status == MLAN_STATUS_PENDING)
+		wait_event_interruptible(handle->init_wait_q,
+					 handle->init_wait_q_woken);
 
 	if (atomic_read(&handle->rx_pending) ||
 	    atomic_read(&handle->tx_pending) ||
@@ -489,10 +417,6 @@ static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
 #endif
 #endif
 
-	/* FLR recreates every netdev identity while the bridge notifier is
-	 * suspended.  Invalidate the old-name request before virtual or physical
-	 * unregister can permit reuse. */
-	moal_bridge_pending_invalidate_handle(handle);
 #ifdef WIFI_DIRECT_SUPPORT
 #if defined(STA_CFG80211) && defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= WIFI_DIRECT_KERNEL_VERSION
@@ -543,18 +467,11 @@ perform_init:
 
 	/* Init SW */
 	if (woal_init_sw(handle)) {
-		status = MLAN_STATUS_FAILURE;
 		PRINTM(MFATAL, "Software Init Failed\n");
 		goto err_init_fw;
 	}
-	if (!handle->pmlan_adapter) {
-		status = MLAN_STATUS_FAILURE;
+	if (!handle->pmlan_adapter)
 		goto err_init_fw;
-	}
-	if (woal_pcie_resume_gate(handle) != MLAN_STATUS_SUCCESS) {
-		status = MLAN_STATUS_FAILURE;
-		goto err_init_fw;
-	}
 
 #if defined(PCIE9098) || defined(PCIEAW693)
 	if ((card->dev->device == PCIE_DEVICE_ID_88W9098P_FN1) ||
@@ -573,66 +490,39 @@ perform_init:
 		moal_extflg_clear(handle, EXT_FW_SERIAL);
 		woal_update_firmware_name(handle);
 	}
-	if (moal_extflg_isset(handle, EXT_REQ_FW_NOWAIT)) {
-		moal_extflg_clear(handle, EXT_REQ_FW_NOWAIT);
-		restore_nowait = true;
-	}
-	WRITE_ONCE(handle->fw_init_card_sem_owned, MTRUE);
 	if (woal_init_fw(handle)) {
-		WRITE_ONCE(handle->fw_init_card_sem_owned, MFALSE);
-		status = MLAN_STATUS_FAILURE;
 		PRINTM(MFATAL, "Firmware Init Failed\n");
 		woal_pcie_reg_dbg(handle);
 		if (fw_serial_bkp)
 			moal_extflg_set(handle, EXT_FW_SERIAL);
 		goto err_init_fw;
 	}
-	WRITE_ONCE(handle->fw_init_card_sem_owned, MFALSE);
-	if (restore_nowait) {
-		moal_extflg_set(handle, EXT_REQ_FW_NOWAIT);
-		restore_nowait = false;
-	}
 
 	if (flr_flag && fw_serial_bkp)
 		moal_extflg_set(handle, EXT_FW_SERIAL);
 	if (IS_PCIE9098(handle->card_type))
 		handle->event_fw_dump = MTRUE;
-	handle->fw_reseting = MFALSE;
 exit:
-	if (!card_sem_owned)
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 
+exit_sem_err:
 	LEAVE();
 	return status;
 
 err_init_fw:
-	WRITE_ONCE(handle->fw_init_card_sem_owned, MFALSE);
-	moal_bridge_discard_suspended_owner_for_reset(handle);
-	if (restore_nowait)
-		moal_extflg_set(handle, EXT_REQ_FW_NOWAIT);
-	/* prepare normally cleared the owner already; keep the failure/free
-	 * boundary explicit for any standalone or partial reset invocation. */
-	moal_bridge_deinit(handle);
-	/* Post-reset init may have re-enabled IRQ/main processing before failing.
-	 * Close the producer gate and wait out an IRQ which observed the old state
-	 * before any adapter or handle teardown below. */
-	handle->surprise_removed = MTRUE;
-	synchronize_irq(card->dev->irq);
 	if (handle->is_fw_dump_timer_set) {
 		woal_cancel_timer(&handle->fw_dump_timer);
 		handle->is_fw_dump_timer_set = MFALSE;
 	}
-	if (handle->pmlan_adapter &&
-	    ((handle->hardware_status == HardwareStatusFwReady) ||
-	     (handle->hardware_status == HardwareStatusReady))) {
+	if ((handle->hardware_status == HardwareStatusFwReady) ||
+	    (handle->hardware_status == HardwareStatusReady)) {
 		PRINTM(MINFO, "shutdown mlan\n");
 		handle->init_wait_q_woken = MFALSE;
 		status = mlan_shutdown_fw(handle->pmlan_adapter);
 		if (status == MLAN_STATUS_PENDING)
 			wait_event_interruptible(handle->init_wait_q,
-					 handle->init_wait_q_woken);
+						 handle->init_wait_q_woken);
 	}
-	woal_flush_workqueue(handle);
 #ifdef ANDROID_KERNEL
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
 	wakeup_source_trash(&handle->ws);
@@ -646,6 +536,7 @@ err_init_fw:
 	/* Unregister device */
 	PRINTM(MINFO, "unregister device\n");
 	woal_pcie_unregister_dev(handle);
+	handle->surprise_removed = MTRUE;
 #ifdef REASSOCIATION
 	if (handle->reassoc_thread.pid)
 		wake_up_interruptible(&handle->reassoc_thread.wait_q);
@@ -665,22 +556,9 @@ err_init_fw:
 	if (index < MAX_MLAN_ADAPTER)
 		m_handle[index] = NULL;
 	card->handle = NULL;
-	if (!card_sem_owned)
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 	return (mlan_status)MLAN_STATUS_FAILURE;
-}
-
-static mlan_status woal_do_flr(moal_handle *handle, bool prepare, bool flr_flag)
-{
-	return __woal_do_flr(handle, prepare, flr_flag, false);
-}
-
-/* DBDC outer transactions retain AddRemoveCardSem across both handles. */
-static mlan_status woal_do_flr_locked(moal_handle *handle, bool prepare,
-				      bool flr_flag)
-{
-	return __woal_do_flr(handle, prepare, flr_flag, true);
 }
 #endif
 
@@ -718,7 +596,6 @@ static int woal_pcie_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	card->dev = pdev;
-	spin_lock_init(&card->reset_lock);
 
 	card_type = woal_update_card_type(card);
 	if (!card_type) {
@@ -775,11 +652,6 @@ static void woal_pcie_remove(struct pci_dev *dev)
 		LEAVE();
 		return;
 	}
-	spin_lock_bh(&card->reset_lock);
-	card->reset_stopping = true;
-	if (card->handle)
-		WRITE_ONCE(card->handle->surprise_removed, MTRUE);
-	spin_unlock_bh(&card->reset_lock);
 	cancel_work_sync(&card->reset_work);
 	handle = card->handle;
 	if (!handle) {
@@ -790,10 +662,6 @@ static void woal_pcie_remove(struct pci_dev *dev)
 		return;
 	}
 	handle->surprise_removed = MTRUE;
-	/* Gate new IRQ callbacks, then wait out one which read card->handle before
-	 * the gate.  woal_remove_card may unregister the MLAN adapter first. */
-	synchronize_irq(dev->irq);
-	woal_cancel_hang_work(handle);
 
 #ifdef IMX_SUPPORT
 	woal_unregist_oob_wakeup_irq(card->handle);
@@ -941,8 +809,10 @@ static int woal_pcie_suspend(struct pci_dev *pdev, pm_message_t state)
 			goto done;
 		}
 	}
-	for (i = 0; i < handle->priv_num; i++)
-		netif_device_detach(handle->priv[i]->netdev);
+	for (i = 0; i < handle->priv_num; i++) {
+		if (handle->priv[i])
+			netif_device_detach(handle->priv[i]->netdev);
+	}
 
 	if (keep_power) {
 		woal_sched_timeout(200);
@@ -956,37 +826,20 @@ static int woal_pcie_suspend(struct pci_dev *pdev, pm_message_t state)
 		} else {
 			PRINTM(MMSG, "HS not actived, suspend fail!");
 			handle->suspend_fail = MTRUE;
-			for (i = 0; i < handle->priv_num; i++)
-				netif_device_attach(handle->priv[i]->netdev);
+			for (i = 0; i < handle->priv_num; i++) {
+				if (handle->priv[i])
+					netif_device_attach(
+						handle->priv[i]->netdev);
+			}
 			ret = -EBUSY;
 			goto done;
 		}
 	}
 	woal_flush_workqueue(handle);
 	if (!keep_power) {
+		handle->surprise_removed = MTRUE;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
-		down(&AddRemoveCardSem);
-		handle = cardp->handle;
-		if (!handle) {
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-			ret = -ENODEV;
-			goto done;
-		}
-		handle->surprise_removed = MTRUE;
-		if (woal_do_flr_locked(handle, true, false) !=
-		    MLAN_STATUS_SUCCESS) {
-			moal_bridge_discard_suspended_owner();
-			moal_bridge_deinit(handle);
-			handle->driver_status = MTRUE;
-			handle->hardware_status = HardwareStatusNotReady;
-			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-			ret = -EIO;
-			goto done;
-		}
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-#else
-		handle->surprise_removed = MTRUE;
+		woal_do_flr(handle, true, false);
 #endif
 		handle->is_suspended = MTRUE;
 	}
@@ -1014,11 +867,9 @@ done:
 static int woal_pcie_resume(struct pci_dev *pdev)
 {
 	moal_handle *handle;
-	moal_handle *ref_handle;
 	pcie_service_card *cardp;
 	int keep_power = 0;
 	int i;
-	int ret = 0;
 
 	ENTER();
 	if (pdev) {
@@ -1042,13 +893,8 @@ static int woal_pcie_resume(struct pci_dev *pdev)
 		PRINTM(MWARN, "Device already resumed\n");
 		goto done;
 	}
-	/* Validate the PCI callback's exact current owner before restoring power.
-	 * Post-FLR publication validates again when it opens the IRQ gate. */
-	if (woal_pcie_resume_gate_check(cardp, handle, false) !=
-	    MLAN_STATUS_SUCCESS) {
-		ret = -ENODEV;
-		goto done;
-	}
+	handle->is_suspended = MFALSE;
+
 	if (moal_extflg_isset(handle, EXT_PM_KEEP_POWER))
 		keep_power = MTRUE;
 	else
@@ -1058,50 +904,9 @@ static int woal_pcie_resume(struct pci_dev *pdev)
 	pci_restore_state(pdev);
 	pci_enable_wake(pdev, PCI_D0, 0);
 	if (!keep_power) {
+		handle->surprise_removed = MFALSE;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
-		down(&AddRemoveCardSem);
-		handle = cardp->handle;
-		if (!handle) {
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-			ret = -ENODEV;
-			goto done;
-		}
-		if (woal_do_flr_locked(handle, false, false) !=
-		    MLAN_STATUS_SUCCESS) {
-			/* Post-init failure may free handle/card->handle.  Do not touch
-			 * the stale local after the helper returns. */
-			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-			ret = -EIO;
-			goto done;
-		}
-		/* A chipset outside the FLR allowlist no-ops the rebuild above,
-		 * skipping the perform-init publication that clears
-		 * surprise_removed/is_suspended.  Republish at caller level as
-		 * the base driver did; a rebuilt chipset's gate revalidates and
-		 * re-clears idempotently. */
-		if (woal_pcie_resume_gate(handle) != MLAN_STATUS_SUCCESS) {
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-			ret = -ENODEV;
-			goto done;
-		}
-		ref_handle = handle->pref_mac;
-		if ((!ref_handle || !ref_handle->fw_reseting) &&
-		    moal_bridge_resume_owner()) {
-			moal_bridge_deinit(handle);
-			handle->driver_status = MTRUE;
-			handle->hardware_status = HardwareStatusNotReady;
-			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-			ret = -EIO;
-			goto done;
-		}
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-#else
-		if (woal_pcie_resume_gate(handle) != MLAN_STATUS_SUCCESS) {
-			ret = -ENODEV;
-			goto done;
-		}
+		woal_do_flr(handle, false, false);
 #endif
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
@@ -1109,17 +914,15 @@ static int woal_pcie_resume(struct pci_dev *pdev)
 #endif
 #endif
 	} else {
-		if (woal_pcie_resume_gate(handle) != MLAN_STATUS_SUCCESS) {
-			ret = -ENODEV;
-			goto done;
-		}
 		if (woal_check_driver_status(handle)) {
 			PRINTM(MERROR, "Resuem, device is in hang state\n");
 			LEAVE();
 			return MLAN_STATUS_SUCCESS;
 		}
-		for (i = 0; i < handle->priv_num; i++)
-			netif_device_attach(handle->priv[i]->netdev);
+		for (i = 0; i < handle->priv_num; i++) {
+			if (handle->priv[i])
+				netif_device_attach(handle->priv[i]->netdev);
+		}
 
 		woal_cancel_hs(woal_get_priv(handle, MLAN_BSS_ROLE_ANY),
 			       MOAL_NO_WAIT);
@@ -1130,7 +933,7 @@ static int woal_pcie_resume(struct pci_dev *pdev)
 done:
 	PRINTM(MCMND, "<--- Leave woal_pcie_resume --->\n");
 	LEAVE();
-	return ret;
+	return 0;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
@@ -1146,7 +949,6 @@ static void woal_pcie_reset_prepare(struct pci_dev *pdev)
 	pcie_service_card *card;
 	moal_handle *handle;
 	moal_handle *ref_handle = NULL;
-	mlan_status status = MLAN_STATUS_SUCCESS;
 
 	ENTER();
 
@@ -1156,11 +958,13 @@ static void woal_pcie_reset_prepare(struct pci_dev *pdev)
 		LEAVE();
 		return;
 	}
-	down(&AddRemoveCardSem);
+
 	handle = card->handle;
+
 	if (!handle) {
 		PRINTM(MINFO, "Invalid handle\n");
-		goto out;
+		LEAVE();
+		return;
 	}
 
 	PRINTM(MMSG, "%s: vendor=0x%4.04X device=0x%4.04X rev=%d Pre-FLR\n",
@@ -1180,54 +984,22 @@ static void woal_pcie_reset_prepare(struct pci_dev *pdev)
 			ref_handle = (moal_handle *)handle->pref_mac;
 		}
 	}
-	/* A second kernel callback for the paired function observes the phase
-	 * already prepared and must not destructively prepare it again. */
-	if (handle->fw_reseting && !handle->pmlan_adapter &&
-	    (!ref_handle ||
-	     (ref_handle->fw_reseting && !ref_handle->pmlan_adapter)))
-		goto out;
 	handle->surprise_removed = MTRUE;
 	handle->fw_reseting = MTRUE;
-	handle->fw_reset_prepare_failed = MFALSE;
-	if (ref_handle) {
-		ref_handle->surprise_removed = MTRUE;
-		ref_handle->fw_reseting = MTRUE;
-		ref_handle->fw_reset_prepare_failed = MFALSE;
-	}
 	// TODO: Can add more chips once the related code has been ported to fw
 	// v18
 	if (IS_PCIE9097(handle->card_type) || IS_PCIE9098(handle->card_type) ||
 	    IS_PCIEAW693(handle->card_type)) {
-		if (woal_reset_adma(handle) != MLAN_STATUS_SUCCESS)
-			status = MLAN_STATUS_FAILURE;
+		woal_reset_adma(handle);
 	}
 
-	if (woal_do_flr_locked(handle, true, true) != MLAN_STATUS_SUCCESS)
-		status = MLAN_STATUS_FAILURE;
+	woal_do_flr(handle, true, true);
 	if (ref_handle) {
-		if (woal_do_flr_locked(ref_handle, true, true) !=
-		    MLAN_STATUS_SUCCESS) {
-			ref_handle->fw_reset_prepare_failed = MTRUE;
-			status = MLAN_STATUS_FAILURE;
-		}
-	}
-	if (status != MLAN_STATUS_SUCCESS) {
-		handle->fw_reset_prepare_failed = MTRUE;
-		moal_bridge_discard_suspended_owner();
-		moal_bridge_deinit(handle);
-		handle->driver_status = MTRUE;
-		handle->hardware_status = HardwareStatusNotReady;
-		if (ref_handle)
-			moal_bridge_deinit(ref_handle);
-		if (ref_handle) {
-			ref_handle->driver_status = MTRUE;
-			ref_handle->hardware_status = HardwareStatusNotReady;
-		}
-		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+		ref_handle->surprise_removed = MTRUE;
+		ref_handle->fw_reseting = MTRUE;
+		woal_do_flr(ref_handle, true, true);
 	}
 
-out:
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 }
 /**
@@ -1240,7 +1012,6 @@ static void woal_pcie_reset_done(struct pci_dev *pdev)
 	pcie_service_card *card;
 	moal_handle *handle;
 	moal_handle *ref_handle = NULL;
-	bool failed;
 	ENTER();
 
 	card = pci_get_drvdata(pdev);
@@ -1249,11 +1020,12 @@ static void woal_pcie_reset_done(struct pci_dev *pdev)
 		LEAVE();
 		return;
 	}
-	down(&AddRemoveCardSem);
+
 	handle = card->handle;
 	if (!handle) {
 		PRINTM(MINFO, "Invalid handle\n");
-		goto out;
+		LEAVE();
+		return;
 	}
 
 	PRINTM(MMSG, "%s: vendor=0x%4.04X device=0x%4.04X rev=%d Post-FLR\n",
@@ -1273,57 +1045,19 @@ static void woal_pcie_reset_done(struct pci_dev *pdev)
 			ref_handle = (moal_handle *)handle->pref_mac;
 		}
 	}
-	if (!handle->fw_reseting &&
-	    (!ref_handle || !ref_handle->fw_reseting))
-		goto out;
-	failed = handle->fw_reset_prepare_failed ||
-		 (ref_handle && ref_handle->fw_reset_prepare_failed);
-	if (failed)
-		goto reset_failed;
-	/* Republish through the gate after each no-op or rebuilt FLR so a
-	 * non-allowlist chipset does not finish with its producer gates set. */
-	if (MLAN_STATUS_SUCCESS ==
-	    woal_do_flr_locked(handle, false, true) &&
-	    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle)) {
+	handle->surprise_removed = MFALSE;
+	if (MLAN_STATUS_SUCCESS == woal_do_flr(handle, false, true))
 		handle->fw_reseting = MFALSE;
-	} else {
+	else
 		handle = NULL;
-		failed = true;
-	}
 	if (ref_handle) {
-		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_flr_locked(ref_handle, false, true) &&
-		    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle)) {
+		ref_handle->surprise_removed = MFALSE;
+		if (MLAN_STATUS_SUCCESS == woal_do_flr(ref_handle, false, true))
 			ref_handle->fw_reseting = MFALSE;
-		} else {
-			ref_handle = NULL;
-			failed = true;
-		}
 	}
-	if (!failed && moal_bridge_resume_owner())
-		failed = true;
-	if (failed)
-		goto reset_failed;
 	wifi_status = WIFI_STATUS_OK;
 	if (handle)
 		woal_send_auto_recovery_complete_event(handle);
-	goto out;
-
-reset_failed:
-	moal_bridge_discard_suspended_owner();
-	if (handle) {
-		moal_bridge_deinit(handle);
-		handle->driver_status = MTRUE;
-		handle->hardware_status = HardwareStatusNotReady;
-	}
-	if (ref_handle) {
-		moal_bridge_deinit(ref_handle);
-		ref_handle->driver_status = MTRUE;
-		ref_handle->hardware_status = HardwareStatusNotReady;
-	}
-	wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-out:
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 }
 #else
@@ -1332,7 +1066,6 @@ static void woal_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
 	pcie_service_card *card;
 	moal_handle *handle;
 	moal_handle *ref_handle = NULL;
-	bool failed = false;
 
 	ENTER();
 
@@ -1342,11 +1075,12 @@ static void woal_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
 		LEAVE();
 		return;
 	}
-	down(&AddRemoveCardSem);
+
 	handle = card->handle;
 	if (!handle) {
 		PRINTM(MINFO, "Invalid handle\n");
-		goto out;
+		LEAVE();
+		return;
 	}
 
 	PRINTM(MMSG, "%s: vendor=0x%4.04X device=0x%4.04X rev=%d %s\n",
@@ -1369,49 +1103,20 @@ static void woal_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
 		 * PCIe and HW.
 		 * Note. FW might not be healthy.
 		 */
-		if (handle->fw_reseting && !handle->pmlan_adapter &&
-		    (!ref_handle ||
-		     (ref_handle->fw_reseting && !ref_handle->pmlan_adapter)))
-			goto out;
 		handle->surprise_removed = MTRUE;
 		handle->fw_reseting = MTRUE;
-		handle->fw_reset_prepare_failed = MFALSE;
-		if (ref_handle) {
-			ref_handle->surprise_removed = MTRUE;
-			ref_handle->fw_reseting = MTRUE;
-			ref_handle->fw_reset_prepare_failed = MFALSE;
-		}
 		// TODO: Can add more chips once the related code has been
 		// ported to fw v18
 		if (IS_PCIE9097(handle->card_type) ||
 		    IS_PCIE9098(handle->card_type) ||
 		    IS_PCIEAW693(handle->card_type)) {
-			if (woal_reset_adma(handle) != MLAN_STATUS_SUCCESS)
-				failed = true;
+			woal_reset_adma(handle);
 		}
-		if (woal_do_flr_locked(handle, prepare, true) !=
-		    MLAN_STATUS_SUCCESS)
-			failed = true;
+		woal_do_flr(handle, prepare, true);
 		if (ref_handle) {
-			if (woal_do_flr_locked(ref_handle, prepare, true) !=
-			    MLAN_STATUS_SUCCESS) {
-				ref_handle->fw_reset_prepare_failed = MTRUE;
-				failed = true;
-			}
-		}
-		if (failed) {
-			handle->fw_reset_prepare_failed = MTRUE;
-			moal_bridge_discard_suspended_owner();
-			moal_bridge_deinit(handle);
-			handle->driver_status = MTRUE;
-			handle->hardware_status = HardwareStatusNotReady;
-			if (ref_handle)
-				moal_bridge_deinit(ref_handle);
-			if (ref_handle) {
-				ref_handle->driver_status = MTRUE;
-				ref_handle->hardware_status = HardwareStatusNotReady;
-			}
-			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+			ref_handle->surprise_removed = MTRUE;
+			ref_handle->fw_reseting = MTRUE;
+			woal_do_flr(ref_handle, prepare, true);
 		}
 	} else {
 		/* Kernel stores and restores PCIe function context before and
@@ -1419,60 +1124,21 @@ static void woal_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
 		 *
 		 * Reconfigure the sw and fw including fw redownload
 		 */
-		if (!handle->fw_reseting &&
-		    (!ref_handle || !ref_handle->fw_reseting))
-			goto out;
-		failed = handle->fw_reset_prepare_failed ||
-			 (ref_handle && ref_handle->fw_reset_prepare_failed);
-		if (failed)
-			goto reset_failed;
-		/* Republish through the gate after each no-op or rebuilt FLR so
-		 * a non-allowlist chipset does not finish with its producer
-		 * gates set. */
-		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_flr_locked(handle, prepare, true) &&
-		    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle)) {
+		handle->surprise_removed = MFALSE;
+		if (MLAN_STATUS_SUCCESS == woal_do_flr(handle, prepare, true))
 			handle->fw_reseting = MFALSE;
-		} else {
+		else
 			handle = NULL;
-			failed = true;
-		}
 		if (ref_handle) {
+			ref_handle->surprise_removed = MFALSE;
 			if (MLAN_STATUS_SUCCESS ==
-			    woal_do_flr_locked(ref_handle, prepare, true) &&
-			    MLAN_STATUS_SUCCESS ==
-				    woal_pcie_resume_gate(ref_handle)) {
+			    woal_do_flr(ref_handle, prepare, true))
 				ref_handle->fw_reseting = MFALSE;
-			} else {
-				ref_handle = NULL;
-				failed = true;
-			}
 		}
-		if (!failed && moal_bridge_resume_owner())
-			failed = true;
-		if (failed)
-			goto reset_failed;
 		wifi_status = WIFI_STATUS_OK;
 		if (handle)
 			woal_send_auto_recovery_complete_event(handle);
 	}
-	goto out;
-
-reset_failed:
-	moal_bridge_discard_suspended_owner();
-	if (handle) {
-		moal_bridge_deinit(handle);
-		handle->driver_status = MTRUE;
-		handle->hardware_status = HardwareStatusNotReady;
-	}
-	if (ref_handle) {
-		moal_bridge_deinit(ref_handle);
-		ref_handle->driver_status = MTRUE;
-		ref_handle->hardware_status = HardwareStatusNotReady;
-	}
-	wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-out:
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 }
 #endif
@@ -1601,7 +1267,6 @@ static irqreturn_t woal_pcie_interrupt(int irq, void *dev_id)
 	struct pci_dev *pdev;
 	pcie_service_card *card;
 	moal_handle *handle;
-	t_void *pmlan_adapter;
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 
 	pdev = (struct pci_dev *)dev_id;
@@ -1619,15 +1284,9 @@ static irqreturn_t woal_pcie_interrupt(int irq, void *dev_id)
 	handle = card->handle;
 	/* No need to handle Interrupt during FW reload, we can safely return
 	 * success to Kernel */
-	if (READ_ONCE(handle->surprise_removed) == MTRUE) {
+	if (handle->surprise_removed == MTRUE && handle->fw_reseting) {
 		PRINTM(MINFO, "*** SKIP INTR handling during FW reload ***\n");
 		ret = MLAN_STATUS_SUCCESS;
-		return IRQ_HANDLED;
-	}
-	smp_rmb();
-	pmlan_adapter = READ_ONCE(handle->pmlan_adapter);
-	if (!pmlan_adapter) {
-		PRINTM(MINFO, "*** SKIP INTR without MLAN adapter ***\n");
 		return IRQ_HANDLED;
 	}
 	PRINTM(MINFO, "*** IN PCIE IRQ ***\n");
@@ -1639,35 +1298,13 @@ static irqreturn_t woal_pcie_interrupt(int irq, void *dev_id)
 	if (handle->is_suspended) {
 		PRINTM(MERROR, "Receive interrupt in hs_suspended\n");
 	}
-	ret = mlan_interrupt(0xffff, pmlan_adapter);
+	ret = mlan_interrupt(0xffff, handle->pmlan_adapter);
 
 exit:
 	if (ret == MLAN_STATUS_SUCCESS)
 		return IRQ_HANDLED;
 	else
 		return IRQ_NONE;
-}
-
-mlan_status woal_pcie_drv_mode_quiesce(moal_handle *handle)
-{
-	pcie_service_card *card;
-
-	if (!handle || !handle->card)
-		return MLAN_STATUS_FAILURE;
-	card = handle->card;
-	if (!card->dev)
-		return MLAN_STATUS_FAILURE;
-
-	/* Legacy PCIe uses a shared IRQ, so gate only this handle and wait out an
-	 * ISR which observed the old gate state. */
-	WRITE_ONCE(handle->surprise_removed, MTRUE);
-	synchronize_irq(card->dev->irq);
-	return MLAN_STATUS_SUCCESS;
-}
-
-mlan_status woal_pcie_drv_mode_resume(moal_handle *handle)
-{
-	return woal_pcie_resume_gate(handle);
 }
 
 /**
@@ -2060,6 +1697,14 @@ static int woal_pcie_dump_reg_info(moal_handle *phandle, t_u8 *buffer)
 			PRINTM(MERROR, "FW in debug mode (0x%x)\n", value);
 			drv_ptr += sprintf(drv_ptr, "FW in debug mode (0x%x)\n",
 					   value);
+			if (value == FW_STUCK_CODE_VERSION_MISMATCH) {
+				phandle->driver_init = MFALSE;
+				PRINTM(MERROR,
+				       "WLAN and BT FW version mismatch !! Redownload both FWs with correct and same version\n");
+				drv_ptr += sprintf(
+					drv_ptr,
+					"WLAN and BT FW version mismatch !! Redownload both FWs with correct and same version\n");
+			}
 		}
 	}
 
@@ -2222,6 +1867,11 @@ static void woal_pcie_reg_dbg(moal_handle *phandle)
 		value = (value & 0xff00) >> 8;
 		if (value) {
 			PRINTM(MERROR, "FW in debug mode (0x%x)\n", value);
+			if (value == FW_STUCK_CODE_VERSION_MISMATCH) {
+				phandle->driver_init = MFALSE;
+				PRINTM(MERROR,
+				       "WLAN and BT FW version mismatch !! Redownload both FWs with correct and same version\n");
+			}
 		}
 	}
 
@@ -2646,11 +2296,10 @@ static void woal_pcie_dump_fw_info_v1(moal_handle *phandle)
 					       "pre-allocced buf is not enough\n");
 			}
 			if (RDWR_STATUS_DONE == stat) {
-				PRINTM(MMSG, "%s done: size=0x%x\n",
+				PRINTM(MMSG, "%s done: size=0x%lx\n",
 				       mem_type_mapping_tbl[idx].mem_name,
-				       (unsigned int)(dbg_ptr -
-						      mem_type_mapping_tbl[idx]
-							      .mem_Ptr));
+				       (dbg_ptr -
+					mem_type_mapping_tbl[idx].mem_Ptr));
 #ifdef DUMP_TO_PROC
 				woal_save_dump_info_to_buf(
 					phandle,
@@ -2963,7 +2612,8 @@ static void woal_pcie_dump_fw_info(moal_handle *phandle)
 		if (phandle->event_fw_dump) {
 			queue_work(phandle->workqueue, &phandle->main_work);
 			phandle->is_fw_dump_timer_set = MTRUE;
-			woal_mod_timer(&phandle->fw_dump_timer, MOAL_TIMER_5S);
+			woal_mod_timer(&phandle->fw_dump_timer,
+				       MOAL_FW_DUMP_TIMER);
 			return;
 		}
 	}
@@ -3220,18 +2870,28 @@ static mlan_status woal_pcie_get_fw_name(moal_handle *handle)
 				if (boot_mode != 0x03) {
 					/* remove extension .se */
 					if (strstr(handle->card_info->fw_name,
-						   ".se"))
+						   ".se")) {
+						// strstr's output is sanitized
+						// in if condition
+						// coverity[cert_pos54_c_violation:SUPPRESS]
+						// coverity[cert_err33_c_violation:SUPPRESS]
 						memset(strstr(handle->card_info
 								      ->fw_name,
 							      ".se"),
 						       '\0', sizeof(".se"));
+					}
 					if (strstr(handle->card_info
 							   ->fw_name_wlan,
-						   ".se"))
+						   ".se")) {
+						// strstr's output is sanitized
+						// in if condition
+						// coverity[cert_pos54_c_violation:SUPPRESS]
+						// coverity[cert_err33_c_violation:SUPPRESS]
 						memset(strstr(handle->card_info
 								      ->fw_name_wlan,
 							      ".se"),
 						       '\0', sizeof(".se"));
+					}
 				}
 				break;
 			case PCIEAW693_A0:
@@ -3384,17 +3044,16 @@ done:
 static void woal_pcie_work(struct work_struct *work)
 {
 	pcie_service_card *card =
+		// Coverity violation raised for kernel's API
+		// coverity[cert_arr39_c_violation:SUPPRESS]
 		container_of(work, pcie_service_card, reset_work);
 	moal_handle *handle = NULL;
 	moal_handle *ref_handle = NULL;
-	bool failed = false;
-	PRINTM(MMSG, "========START IN-BAND RESET===========\n");
-	down(&AddRemoveCardSem);
 	handle = card->handle;
-	if (!handle) {
-		failed = true;
-		goto done;
-	}
+	if (!handle)
+		return;
+
+	PRINTM(MMSG, "========START IN-BAND RESET===========\n");
 
 	// handle-> mac0 , ref_handle->second mac
 	if (handle->pref_mac) {
@@ -3404,82 +3063,49 @@ static void woal_pcie_work(struct work_struct *work)
 		} else {
 			ref_handle = (moal_handle *)handle->pref_mac;
 		}
+		if (ref_handle) {
+			ref_handle->surprise_removed = MTRUE;
+			woal_clean_up(ref_handle);
+			mlan_ioctl(ref_handle->pmlan_adapter, NULL);
+		}
 	}
-	/* Resolve and mark the complete DBDC pair before the first destructive
-	 * helper.  AddRemoveCardSem pins both raw handle pointers for this phase. */
 	handle->surprise_removed = MTRUE;
 	handle->fw_reseting = MTRUE;
-	if (ref_handle) {
-		ref_handle->surprise_removed = MTRUE;
-		ref_handle->fw_reseting = MTRUE;
-		woal_clean_up(ref_handle);
-		mlan_ioctl(ref_handle->pmlan_adapter, NULL);
-	}
 	// TODO: Can add more chips once the related code has been ported to fw
 	// v18
 	if (IS_PCIE9097(handle->card_type) || IS_PCIE9098(handle->card_type) ||
 	    IS_PCIEAW693(handle->card_type)) {
-		if (woal_reset_adma(handle) != MLAN_STATUS_SUCCESS)
-			failed = true;
+		woal_reset_adma(handle);
 	}
-	if (woal_do_flr_locked(handle, true, true) != MLAN_STATUS_SUCCESS)
-		failed = true;
+	woal_do_flr(handle, true, true);
 	if (ref_handle) {
-		if (woal_do_flr_locked(ref_handle, true, true) != MLAN_STATUS_SUCCESS)
-			failed = true;
+		ref_handle->surprise_removed = MTRUE;
+		ref_handle->fw_reseting = MTRUE;
+		woal_do_flr(ref_handle, true, true);
 	}
-	if (failed)
-		goto done;
 	if (woal_pcie_reset_fw(handle)) {
 		PRINTM(MERROR, "PCIe In-band Reset Fail\n");
-		failed = true;
-		goto done;
+		woal_send_auto_recovery_failure_event(handle);
+		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+		return;
 	}
-	/* Republish through the gate after each no-op or rebuilt FLR so a
-	 * non-allowlist chipset does not finish with its producer gates set. */
-	if (MLAN_STATUS_SUCCESS == woal_do_flr_locked(handle, false, true) &&
-	    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle))
+	handle->surprise_removed = MFALSE;
+	if (MLAN_STATUS_SUCCESS == woal_do_flr(handle, false, true))
 		handle->fw_reseting = MFALSE;
 	else {
 		handle = NULL;
-		failed = true;
+		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+		return;
 	}
 	if (ref_handle) {
-		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_flr_locked(ref_handle, false, true) &&
-		    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle)) {
+		ref_handle->surprise_removed = MFALSE;
+		if (MLAN_STATUS_SUCCESS == woal_do_flr(ref_handle, false, true))
 			ref_handle->fw_reseting = MFALSE;
-		} else {
-			ref_handle = NULL;
-			failed = true;
-		}
 	}
-	if (!failed && moal_bridge_resume_owner())
-		failed = true;
-done:
-	if (failed) {
-		moal_bridge_discard_suspended_owner();
-		if (handle) {
-			moal_bridge_deinit(handle);
-			handle->driver_status = MTRUE;
-			handle->hardware_status = HardwareStatusNotReady;
-			woal_send_auto_recovery_failure_event(handle);
-		}
-		if (ref_handle) {
-			moal_bridge_deinit(ref_handle);
-			ref_handle->driver_status = MTRUE;
-			ref_handle->hardware_status = HardwareStatusNotReady;
-		}
-		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-	} else {
-		wifi_status = WIFI_STATUS_OK;
-		woal_send_auto_recovery_complete_event(handle);
-	}
-	PRINTM(MMSG, "========END IN-BAND RESET===========\n");
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-	spin_lock_bh(&card->reset_lock);
 	card->work_flags = MFALSE;
-	spin_unlock_bh(&card->reset_lock);
+	wifi_status = WIFI_STATUS_OK;
+	woal_send_auto_recovery_complete_event(handle);
+	PRINTM(MMSG, "========END IN-BAND RESET===========\n");
 	return;
 }
 
@@ -3490,26 +3116,13 @@ done:
  *  @return         MTRUE/MFALSE
  *
  */
-static mlan_status woal_pcie_card_reset(moal_handle *handle)
+static void woal_pcie_card_reset(moal_handle *handle)
 {
-	pcie_service_card *card;
-	mlan_status status = MLAN_STATUS_FAILURE;
-
-	if (!handle || !handle->card)
-		return status;
-	card = (pcie_service_card *)handle->card;
-
-	spin_lock_bh(&card->reset_lock);
-	if (!card->reset_stopping &&
-	    !READ_ONCE(driver_exit_in_progress) && !card->work_flags) {
+	pcie_service_card *card = (pcie_service_card *)handle->card;
+	if (!card->work_flags) {
 		card->work_flags = MTRUE;
-		if (schedule_work(&card->reset_work))
-			status = MLAN_STATUS_SUCCESS;
-		else
-			card->work_flags = MFALSE;
+		schedule_work(&card->reset_work);
 	}
-	spin_unlock_bh(&card->reset_lock);
-	return status;
 }
 
 static moal_if_ops pcie_ops = {

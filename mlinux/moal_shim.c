@@ -26,7 +26,7 @@ Change log:
 ********************************************************/
 
 #include "moal_main.h"
-#include "moal_bridge.h"
+#include "moal_cfg80211.h"
 #ifdef USB
 #include "moal_usb.h"
 #endif
@@ -40,13 +40,9 @@ Change log:
 #include "moal_uap.h"
 #endif
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
-#include "moal_cfg80211.h"
 #include "moal_cfg80211_util.h"
 #endif
 #include <asm/div64.h>
-
-/** bridge_debug (moal_init.c): gates the RX deliver-leg enqueue timestamp. */
-extern int bridge_debug;
 
 #if defined(PCIE) || defined(SDIO)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 70)
@@ -60,6 +56,8 @@ extern int bridge_debug;
 #endif /*defined(PCIE) || defined(SDIO)*/
 
 #define NXP_ETH_P_WAPI 0x88B4
+
+#include <linux/crc32.h>
 
 /********************************************************
 		Local Variables
@@ -731,7 +729,7 @@ void moal_tp_accounting(t_void *pmoal, void *buf, t_u32 drop_point)
 	struct sk_buff *skb = NULL;
 	moal_handle *handle = (moal_handle *)pmoal;
 	pmlan_buffer pmbuf = (pmlan_buffer)buf;
-	t_s32 delay;
+	unsigned long delay;
 	wifi_timeval t;
 
 	if (drop_point < MAX_TP_ACCOUNT_DROP_POINT_NUM) {
@@ -767,36 +765,43 @@ void moal_tp_accounting(t_void *pmoal, void *buf, t_u32 drop_point)
 	} else if (drop_point == RX_TIME_PKT) {
 		woal_get_monotonic_time(&t);
 		/* deque - pcie receive */
-		delay = (t_s32)(pmbuf->extra_ts_sec - pmbuf->in_ts_sec) *
-			1000000;
-		delay += (t_s32)(pmbuf->extra_ts_usec - pmbuf->in_ts_usec);
+		delay = ((unsigned long)pmbuf->extra_ts_sec -
+			 (unsigned long)pmbuf->in_ts_sec) *
+			1000000UL;
+		delay += (pmbuf->extra_ts_usec - pmbuf->in_ts_usec);
 		handle->tp_acnt.rx_delay1_driver[handle->tp_acnt.rx_index] =
-			delay;
+			(unsigned long)delay;
 		/* before netif_rx - deque */
-		delay = (t_s32)(pmbuf->out_ts_sec - pmbuf->extra_ts_sec) *
-			1000000;
-		delay += (t_s32)(pmbuf->out_ts_usec - pmbuf->extra_ts_usec);
+		delay = ((unsigned long)pmbuf->out_ts_sec -
+			 (unsigned long)pmbuf->extra_ts_sec) *
+			1000000UL;
+		delay += (pmbuf->out_ts_usec - pmbuf->extra_ts_usec);
 		handle->tp_acnt.rx_delay2_driver[handle->tp_acnt.rx_index] =
-			delay;
+			(unsigned long)delay;
 		/* netif_rx to netif_rx return */
-		delay = (t_s32)(t.time_sec - pmbuf->out_ts_sec) * 1000000;
-		delay += (t_s32)(t.time_usec - pmbuf->out_ts_usec);
+		delay = ((unsigned long)t.time_sec -
+			 (unsigned long)pmbuf->out_ts_sec) *
+			1000000UL;
+		delay += (t.time_usec - pmbuf->out_ts_usec);
 		handle->tp_acnt.rx_delay_kernel[handle->tp_acnt.rx_index] =
-			delay;
+			(unsigned long)delay;
 		handle->tp_acnt.rx_index++;
 		if (handle->tp_acnt.rx_index >= TXRX_MAX_SAMPLE)
 			handle->tp_acnt.rx_index = 0;
 	} else if (drop_point == TX_TIME_PKT) {
-		delay = (t_s32)(pmbuf->extra_ts_sec - pmbuf->in_ts_sec) *
-			1000000;
-		delay += (t_s32)(pmbuf->extra_ts_usec - pmbuf->in_ts_usec);
+		delay = ((unsigned long)pmbuf->extra_ts_sec -
+			 (unsigned long)pmbuf->in_ts_sec) *
+			1000000UL;
+		delay += (pmbuf->extra_ts_usec - pmbuf->in_ts_usec);
 		handle->tp_acnt.tx_delay1_driver[handle->tp_acnt.tx_index] =
-			delay;
+			(unsigned long)delay;
 
-		delay = (t_s32)(pmbuf->out_ts_sec - pmbuf->in_ts_sec) * 1000000;
-		delay += (t_s32)(pmbuf->out_ts_usec - pmbuf->in_ts_usec);
+		delay = ((unsigned long)pmbuf->out_ts_sec -
+			 (unsigned long)pmbuf->in_ts_sec) *
+			1000000UL;
+		delay += (pmbuf->out_ts_usec - pmbuf->in_ts_usec);
 		handle->tp_acnt.tx_delay_driver[handle->tp_acnt.tx_index] =
-			delay;
+			(unsigned long)delay;
 
 		handle->tp_acnt.tx_index++;
 		if (handle->tp_acnt.tx_index >= TXRX_MAX_SAMPLE)
@@ -942,6 +947,7 @@ mlan_status moal_get_hw_spec_complete(t_void *pmoal, mlan_status status,
 					strlen(CARD_PCIEAW690),
 					strlen(driver_version));
 			// coverity[string_null:SUPPRESS]
+			// coverity[cert_str32_c_violation:SUPPRESS]
 			moal_memcpy_ext(handle,
 					driver_version + strlen(INTF_CARDTYPE) +
 						strlen(KERN_VERSION),
@@ -1256,6 +1262,8 @@ mlan_status moal_send_packet_complete(t_void *pmoal, pmlan_buffer pmbuf,
 				    LOW_TX_PENDING) {
 					int i;
 					for (i = 0; i < handle->priv_num; i++) {
+						if (!handle->priv[i])
+							continue;
 #ifdef STA_SUPPORT
 						if ((GET_BSS_ROLE(
 							     handle->priv[i]) ==
@@ -1338,10 +1346,6 @@ mlan_status moal_recv_complete(t_void *pmoal, pmlan_buffer pmbuf, t_u32 port,
 		priv = woal_bss_index_to_priv(handle, pmbuf->bss_index);
 		if (priv && (pmbuf->buf_type == MLAN_BUF_TYPE_DATA) &&
 		    (status == MLAN_STATUS_FAILURE)) {
-			/* [DBG-RXDROP] ratelimited marker — remove after triage */
-			pr_info_ratelimited("[DBG-RXDROP] usb_recv_complete fail bss=%d @%s:%d\n",
-					    pmbuf ? pmbuf->bss_index : -1,
-					    __func__, __LINE__);
 			priv->stats.rx_dropped++;
 		}
 		/* Reuse the buffer in case of command/event */
@@ -1522,7 +1526,15 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 {
 	mlan_status status = MLAN_STATUS_SUCCESS;
 	struct sk_buff *skb = NULL;
-	struct radiotap_header *rth = NULL;
+	struct ieee80211_radiotap_header *rth_hdr = NULL;
+	struct radiotap_body *rth_body = NULL;
+	t_u32 it_present_1;
+	t_u32 it_present_2;
+	radiotap_timestamp *ts_info = NULL;
+	t_u8 *radiotap_buf = NULL;
+	t_u8 *radiotap_pos = NULL;
+	t_u32 radiotap_max_len = 0;
+	t_u32 radiotap_len = 0;
 	radiotap_info rt_info = {};
 	t_u8 format = 0;
 	t_u8 mcs = 0;
@@ -1548,11 +1560,23 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 		return status;
 	}
 
+	radiotap_max_len =
+		sizeof(struct radiotap_header) + sizeof(struct mcs_field) +
+		sizeof(radiotap_timestamp) + sizeof(struct vht_field) +
+		sizeof(struct he_field) + 12; /* 12 is max alignment bytes */
+	radiotap_buf = kzalloc(radiotap_max_len, GFP_ATOMIC);
+	if (radiotap_buf == NULL)
+		goto done;
+
+	radiotap_pos = radiotap_buf;
+
 	skb = (struct sk_buff *)pmbuf->pdesc;
 
-	if ((handle->mon_if) && netif_running(handle->mon_if->mon_ndev)) {
+	// coverity[misra_c_2012_rule_13_5_violation:SUPPRESS]
+	if ((handle->mon_if) && (handle->mon_if->mon_ndev) &&
+	    netif_running(handle->mon_if->mon_ndev)) {
 		if (handle->mon_if->radiotap_enabled) {
-			if (skb_headroom(skb) < sizeof(*rth)) {
+			if (skb_headroom(skb) < radiotap_max_len) {
 				PRINTM(MERROR,
 				       "%s No space to add Radio TAP header\n",
 				       __func__);
@@ -1579,40 +1603,74 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 			mcs = rt_info.rate_info.mcs_index;
 			nss = rt_info.rate_info.nss_index;
 
-			skb_push(skb, sizeof(*rth));
-			rth = (struct radiotap_header *)skb->data;
-			memset(skb->data, 0, sizeof(*rth));
-			rth->hdr.it_version = PKTHDR_RADIOTAP_VERSION;
-			rth->hdr.it_pad = 0;
-			rth->hdr.it_len = cpu_to_le16(sizeof(*rth));
-			rth->hdr.it_present = cpu_to_le32(
+			rth_hdr = (struct ieee80211_radiotap_header *)
+				radiotap_pos;
+			rth_hdr->it_version = PKTHDR_RADIOTAP_VERSION;
+			rth_hdr->it_pad = 0;
+			rth_hdr->it_present = cpu_to_le32(
 				(1 << IEEE80211_RADIOTAP_TSFT) |
 				(1 << IEEE80211_RADIOTAP_FLAGS) |
 				(1 << IEEE80211_RADIOTAP_CHANNEL) |
 				(1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL) |
 				(1 << IEEE80211_RADIOTAP_DBM_ANTNOISE) |
-				(1 << IEEE80211_RADIOTAP_ANTENNA));
-			/** Timstamp */
-			rth->body.timestamp = woal_cpu_to_le64(jiffies);
-			/** Flags */
-			rth->body.flags = (rt_info.extra_info.flags &
+				(1 << IEEE80211_RADIOTAP_ANTENNA) |
+				(1 << IEEE80211_RADIOTAP_RX_FLAGS));
+			radiotap_pos +=
+				sizeof(struct ieee80211_radiotap_header);
+			radiotap_len +=
+				sizeof(struct ieee80211_radiotap_header);
+			if (rt_info.radiotap_extra) {
+				rth_hdr->it_present |= cpu_to_le32(
+					(1 << IEEE80211_RADIOTAP_TIMESTAMP) |
+					(1
+					 << IEEE80211_RADIOTAP_RADIOTAP_NAMESPACE) |
+					(1 << IEEE80211_RADIOTAP_EXT));
+				it_present_1 = cpu_to_le32(
+					(1
+					 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL) |
+					(1 << IEEE80211_RADIOTAP_ANTENNA) |
+					(1
+					 << IEEE80211_RADIOTAP_RADIOTAP_NAMESPACE) |
+					(1 << IEEE80211_RADIOTAP_EXT));
+				it_present_2 = cpu_to_le32(
+					(1
+					 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL) |
+					(1 << IEEE80211_RADIOTAP_ANTENNA));
+
+				moal_memcpy_ext(handle, radiotap_pos,
+						&it_present_1, sizeof(t_u32),
+						sizeof(t_u32));
+				radiotap_pos += sizeof(t_u32);
+				radiotap_len += sizeof(t_u32);
+				moal_memcpy_ext(handle, radiotap_pos,
+						&it_present_2, sizeof(t_u32),
+						sizeof(t_u32));
+				radiotap_pos += sizeof(t_u32);
+				radiotap_len += sizeof(t_u32);
+			}
+
+			rth_body = (struct radiotap_body *)radiotap_pos;
+			/** TSFT: bit number 0 */
+			rth_body->timestamp = woal_cpu_to_le64(jiffies);
+			/** Flags: bit number 1 */
+			rth_body->flags = (rt_info.extra_info.flags &
 					   ~(RADIOTAP_FLAGS_USE_SGI_HT |
 					     RADIOTAP_FLAGS_WITH_FRAGMENT |
 					     RADIOTAP_FLAGS_WEP_ENCRYPTION |
 					     RADIOTAP_FLAGS_FAILED_FCS_CHECK));
 			/** reverse fail fcs, 1 means pass FCS in FW, but means
 			 * fail FCS in radiotap */
-			rth->body.flags |= (~rt_info.extra_info.flags) &
+			rth_body->flags |= (~rt_info.extra_info.flags) &
 					   RADIOTAP_FLAGS_FAILED_FCS_CHECK;
 			if ((format == MLAN_RATE_FORMAT_HT) && (gi == 1))
-				rth->body.flags |= RADIOTAP_FLAGS_USE_SGI_HT;
+				rth_body->flags |= RADIOTAP_FLAGS_USE_SGI_HT;
 			if (ieee80211_is_mgmt(dot11_hdr->frame_control) ||
 			    ieee80211_is_data(dot11_hdr->frame_control)) {
 				if ((ieee80211_has_morefrags(
 					    dot11_hdr->frame_control)) ||
 				    (!ieee80211_is_first_frag(
 					    dot11_hdr->seq_ctrl))) {
-					rth->body.flags |=
+					rth_body->flags |=
 						RADIOTAP_FLAGS_WITH_FRAGMENT;
 				}
 			}
@@ -1624,17 +1682,18 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 				if (!(*(payload + 3) & 0x20)) /** ExtIV bit
 								 shall be 0 for
 								 WEP frame */
-					rth->body.flags |=
+					rth_body->flags |=
 						RADIOTAP_FLAGS_WEP_ENCRYPTION;
 			}
-			/** Rate, t_u8 only apply for LG mode */
+			/** Rate: bit number 2, t_u8 only apply for LG mode */
 			if (format == MLAN_RATE_FORMAT_LG) {
-				rth->hdr.it_present |= cpu_to_le32(
+				// coverity[misra_c_2012_rule_10_8_violation:SUPPRESS]
+				rth_hdr->it_present |= cpu_to_le32(
 					1 << IEEE80211_RADIOTAP_RATE);
-				rth->body.rate = rt_info.rate_info.bitrate;
+				rth_body->rate = rt_info.rate_info.bitrate;
 			}
-			/** Channel */
-			rth->body.channel.flags = 0;
+			/** Channel: bit number 3 */
+			rth_body->channel.flags = 0;
 			if (rt_info.chan_num &&
 			    (handle->mon_if->band_chan_cfg.channel !=
 			     rt_info.chan_num))
@@ -1642,145 +1701,196 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 					rt_info.chan_num;
 			chan_num = handle->mon_if->band_chan_cfg.channel;
 
-			band = (chan_num <= 14) ? IEEE80211_BAND_2GHZ :
-						  IEEE80211_BAND_5GHZ;
-			/** update the band, if different in the Rx frame */
-			if (handle->mon_if->band_chan_cfg.band != band)
-				handle->mon_if->band_chan_cfg.band = band;
+			band = woal_radio_type_to_ieee_band(
+				handle->mon_if->band_chan_cfg.band);
 
-			rth->body.channel.frequency = woal_cpu_to_le16(
+			rth_body->channel.frequency = woal_cpu_to_le16(
 				ieee80211_channel_to_frequency(chan_num, band));
-			rth->body.channel.flags |=
-				woal_cpu_to_le16((band == IEEE80211_BAND_2GHZ) ?
-							 CHANNEL_FLAGS_2GHZ :
-							 CHANNEL_FLAGS_5GHZ);
-			if (rth->body.channel.flags &
+
+			if (band == IEEE80211_BAND_2GHZ)
+				rth_body->channel.flags |=
+					woal_cpu_to_le16(CHANNEL_FLAGS_2GHZ);
+			else if (band == IEEE80211_BAND_5GHZ ||
+				 band == IEEE80211_BAND_6GHZ)
+				rth_body->channel.flags |=
+					woal_cpu_to_le16(CHANNEL_FLAGS_5GHZ);
+
+			if (rth_body->channel.flags &
 			    woal_cpu_to_le16(CHANNEL_FLAGS_2GHZ))
-				rth->body.channel.flags |= woal_cpu_to_le16(
+				rth_body->channel.flags |= woal_cpu_to_le16(
 					CHANNEL_FLAGS_DYNAMIC_CCK_OFDM);
 			else
-				rth->body.channel.flags |=
+				rth_body->channel.flags |=
 					woal_cpu_to_le16(CHANNEL_FLAGS_OFDM);
 			if (handle->mon_if->chandef.chan &&
 			    (handle->mon_if->chandef.chan->flags &
 			     (IEEE80211_CHAN_PASSIVE_SCAN |
 			      IEEE80211_CHAN_RADAR)))
-				rth->body.channel.flags |= woal_cpu_to_le16(
+				rth_body->channel.flags |= woal_cpu_to_le16(
 					CHANNEL_FLAGS_ONLY_PASSIVSCAN_ALLOW);
-			/** Antenna */
-			rth->body.antenna_signal = -(rt_info.nf - rt_info.snr);
-			rth->body.antenna_noise = -rt_info.nf;
-			/* Convert FW antenna value to radiotap spec */
-			rth->body.antenna = (t_u16)rt_info.antenna >> 1;
-			/** MCS */
+			/** Antenna signal: bit number 5 */
+			rth_body->antenna_signal = -(rt_info.nf - rt_info.snr);
+			/** Antenna noise: bit number 6 */
+			rth_body->antenna_noise = -rt_info.nf;
+			/* Antenna: bit number 11, Convert FW antenna value to
+			 * radiotap spec */
+			rth_body->antenna = (t_u8)rt_info.antenna >> 1;
+
+			/** rx_flags: bit number 14 */
+			if (rt_info.radiotap_extra &&
+			    (rt_info.extra_info.plcp_crc_failed == 1))
+				rth_body->rx_flags = 0x0002;
+
+			radiotap_pos += sizeof(struct radiotap_body);
+			radiotap_len += sizeof(struct radiotap_body);
+			/** MCS: bit number 19 */
 			if (format == MLAN_RATE_FORMAT_HT) {
-				rth->hdr.it_present |= cpu_to_le32(
+				struct mcs_field *mcs =
+					(struct mcs_field *)radiotap_pos;
+
+				// coverity[misra_c_2012_rule_10_8_violation:SUPPRESS]
+				rth_hdr->it_present |= cpu_to_le32(
 					1 << IEEE80211_RADIOTAP_MCS);
-				rth->body.u.mcs.known =
-					rt_info.extra_info.mcs_known;
-				rth->body.u.mcs.flags =
-					rt_info.extra_info.mcs_flags;
+				mcs->known = rt_info.extra_info.mcs_known;
+				mcs->flags = rt_info.extra_info.mcs_flags;
 				/** MCS mcs */
-				rth->body.u.mcs.known |=
-					MCS_KNOWN_MCS_INDEX_KNOWN;
-				rth->body.u.mcs.mcs =
-					rt_info.rate_info.mcs_index;
+				mcs->known |= MCS_KNOWN_MCS_INDEX_KNOWN;
+				mcs->mcs = rt_info.rate_info.mcs_index;
 				/** MCS bw */
-				rth->body.u.mcs.known |= MCS_KNOWN_BANDWIDTH;
-				rth->body.u.mcs.flags &= ~(0x03); /** Clear,
+				mcs->known |= MCS_KNOWN_BANDWIDTH;
+				mcs->flags &= ~(0x03); /** Clear,
 								     20MHz as
 								     default */
 				if (bw == 1)
-					rth->body.u.mcs.flags |= RX_BW_40;
+					mcs->flags |= RX_BW_40;
 				/** MCS gi */
-				rth->body.u.mcs.known |=
-					MCS_KNOWN_GUARD_INTERVAL;
-				rth->body.u.mcs.flags &= ~(1 << 2);
+				mcs->known |= MCS_KNOWN_GUARD_INTERVAL;
+				mcs->flags &= ~(1 << 2);
 				if (gi)
-					rth->body.u.mcs.flags |= gi << 2;
+					mcs->flags |= gi << 2;
 				/** MCS FEC */
-				rth->body.u.mcs.known |= MCS_KNOWN_FEC_TYPE;
-				rth->body.u.mcs.flags &= ~(1 << 4);
+				mcs->known |= MCS_KNOWN_FEC_TYPE;
+				mcs->flags &= ~(1 << 4);
 				if (ldpc)
-					rth->body.u.mcs.flags |= ldpc << 4;
+					mcs->flags |= ldpc << 4;
+
+				radiotap_pos += sizeof(struct mcs_field);
+				radiotap_len += sizeof(struct mcs_field);
 			}
-			/** VHT */
+			/** VHT: bit number 21, Required Alignment is 2 */
 			if (format == MLAN_RATE_FORMAT_VHT) {
+				struct vht_field *vht = NULL;
+
+				/* ensure 2 byte alignment */
+				if (radiotap_len & 1) {
+					radiotap_pos++;
+					radiotap_len++;
+				}
+				vht = (struct vht_field *)radiotap_pos;
 				vht_sig1 = rt_info.extra_info.vht_he_sig1;
 				vht_sig2 = rt_info.extra_info.vht_he_sig2;
 				/** Present Flag */
-				rth->hdr.it_present |= cpu_to_le32(
+				// coverity[misra_c_2012_rule_10_8_violation:SUPPRESS]
+				rth_hdr->it_present |= cpu_to_le32(
 					1 << IEEE80211_RADIOTAP_VHT);
 				/** STBC */
-				rth->body.u.vht.known |=
-					woal_cpu_to_le16(VHT_KNOWN_STBC);
+				vht->known |= woal_cpu_to_le16(VHT_KNOWN_STBC);
 				if (vht_sig1 & MBIT(3))
-					rth->body.u.vht.flags |= VHT_FLAG_STBC;
+					vht->flags |= VHT_FLAG_STBC;
 				/** TXOP_PS_NA */
 				/** TODO: Not support now */
 				/** GI */
-				rth->body.u.vht.known |=
-					woal_cpu_to_le16(VHT_KNOWN_GI);
+				vht->known |= woal_cpu_to_le16(VHT_KNOWN_GI);
 				if (vht_sig2 & MBIT(0))
-					rth->body.u.vht.flags |= VHT_FLAG_SGI;
+					vht->flags |= VHT_FLAG_SGI;
 				/** SGI NSYM DIS */
-				rth->body.u.vht.known |= woal_cpu_to_le16(
+				vht->known |= woal_cpu_to_le16(
 					VHT_KNOWN_SGI_NSYM_DIS);
 				if (vht_sig2 & MBIT(1))
-					rth->body.u.vht.flags |=
-						VHT_FLAG_SGI_NSYM_M10_9;
+					vht->flags |= VHT_FLAG_SGI_NSYM_M10_9;
 				/** LDPC_EXTRA_OFDM_SYM */
 				/** TODO: Not support now */
 				/** BEAMFORMED */
-				rth->body.u.vht.known |=
+				vht->known |=
 					woal_cpu_to_le16(VHT_KNOWN_BEAMFORMED);
 				if (vht_sig2 & MBIT(8))
-					rth->body.u.vht.flags |=
-						VHT_FLAG_BEAMFORMED;
+					vht->flags |= VHT_FLAG_BEAMFORMED;
 				/** BANDWIDTH */
-				rth->body.u.vht.known |=
+				vht->known |=
 					woal_cpu_to_le16(VHT_KNOWN_BANDWIDTH);
 				if (bw == 1)
-					rth->body.u.vht.bandwidth = RX_BW_40;
+					vht->bandwidth = RX_BW_40;
 				else if (bw == 2)
-					rth->body.u.vht.bandwidth = RX_BW_80;
+					vht->bandwidth = RX_BW_80;
 				/** GROUP_ID */
-				rth->body.u.vht.known |=
+				vht->known |=
 					woal_cpu_to_le16(VHT_KNOWN_GROUP_ID);
-				rth->body.u.vht.group_id =
-					(vht_sig1 & (0x3F0)) >> 4;
+				vht->group_id = (vht_sig1 & (0x3F0)) >> 4;
 				/** PARTIAL_AID */
 				/** TODO: Not support now */
 				/** mcs_nss */
-				rth->body.u.vht.mcs_nss[0] = vht_sig2 & (0xF0);
+				vht->mcs_nss[0] = vht_sig2 & (0xF0);
 				/* Convert FW NSS value to radiotap spec */
-				rth->body.u.vht.mcs_nss[0] |=
+				vht->mcs_nss[0] |=
 					((vht_sig1 & (0x1C00)) >> 10) + 1;
 				/** gi */
-				rth->body.u.vht.known |=
-					woal_cpu_to_le16(VHT_KNOWN_GI);
+				vht->known |= woal_cpu_to_le16(VHT_KNOWN_GI);
 				if (gi)
-					rth->body.u.vht.flags |= VHT_FLAG_SGI;
+					vht->flags |= VHT_FLAG_SGI;
 				/** coding */
 				if (vht_sig2 & MBIT(2))
-					rth->body.u.vht.coding |=
-						VHT_CODING_LDPC_USER0;
+					vht->coding |= VHT_CODING_LDPC_USER0;
+
+				radiotap_pos += sizeof(struct vht_field);
+				radiotap_len += sizeof(struct vht_field);
 			}
+			/** Timstamp: bit number 22, Required Alignment is 8 */
+			if (rt_info.radiotap_extra) {
+				/* ensure 8 byte alignment */
+				while (radiotap_len & 7) {
+					radiotap_pos++;
+					radiotap_len++;
+				}
+				ts_info = (radiotap_timestamp *)radiotap_pos;
+				ts_info->device_timestamp =
+					cpu_to_le64(rt_info.extra_info.timestamp
+							    .device_timestamp);
+				ts_info->accuracy =
+					rt_info.extra_info.timestamp.accuracy;
+				ts_info->unit =
+					rt_info.extra_info.timestamp.unit;
+				ts_info->position =
+					rt_info.extra_info.timestamp.position;
+				ts_info->flags =
+					rt_info.extra_info.timestamp.flags;
+				radiotap_pos += sizeof(radiotap_timestamp);
+				radiotap_len += sizeof(radiotap_timestamp);
+			}
+
+			/** HE: bit number 23, Required Alignment is 2 */
 			if (format == MLAN_RATE_FORMAT_HE) {
+				struct he_field *he = NULL;
+
+				/* ensure 2 byte alignment */
+				if (radiotap_len & 1) {
+					radiotap_pos++;
+					radiotap_len++;
+				}
+				he = (struct he_field *)radiotap_pos;
 				he_sig1 = rt_info.extra_info.vht_he_sig1;
 				he_sig2 = rt_info.extra_info.vht_he_sig2;
 				usr_idx = rt_info.extra_info.user_idx;
-				rth->hdr.it_present |=
+				// coverity[misra_c_2012_rule_10_8_violation:SUPPRESS]
+				rth_hdr->it_present |=
 					cpu_to_le32(1 << IEEE80211_RADIOTAP_HE);
-				rth->body.u.he.data1 |= (HE_CODING_KNOWN);
+				he->data1 |= (HE_CODING_KNOWN);
 				if (ldpc)
-					rth->body.u.he.data3 |=
-						HE_CODING_LDPC_USER0;
-				rth->body.u.he.data1 |= (HE_BW_KNOWN);
+					he->data3 |= HE_CODING_LDPC_USER0;
+				he->data1 |= (HE_BW_KNOWN);
 				if (he_sig1)
-					rth->body.u.he.data1 |= (HE_MU_DATA);
+					he->data1 |= (HE_MU_DATA);
 				if (bw == 1) {
-					rth->body.u.he.data5 |= RX_HE_BW_40;
+					he->data5 |= RX_HE_BW_40;
 					if (he_sig2) {
 						MLAN_DECODE_RU_SIGNALING_CH1(
 							out, he_sig1, he_sig2);
@@ -1795,14 +1905,13 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 								tone);
 						}
 						if (tone != 0) {
-							rth->body.u.he.data5 &=
+							he->data5 &=
 								~RX_HE_BW_40;
-							rth->body.u.he.data5 |=
-								tone;
+							he->data5 |= tone;
 						}
 					}
 				} else if (bw == 2) {
-					rth->body.u.he.data5 |= RX_HE_BW_80;
+					he->data5 |= RX_HE_BW_80;
 					if (he_sig2) {
 						MLAN_DECODE_RU_SIGNALING_CH1(
 							out, he_sig1, he_sig2);
@@ -1842,14 +1951,13 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 								tone);
 						}
 						if (tone != 0) {
-							rth->body.u.he.data5 &=
+							he->data5 &=
 								~RX_HE_BW_80;
-							rth->body.u.he.data5 |=
-								tone;
+							he->data5 |= tone;
 						}
 					}
 				} else if (bw == 3) {
-					rth->body.u.he.data5 |= RX_HE_BW_160;
+					he->data5 |= RX_HE_BW_160;
 					if (he_sig2) {
 						MLAN_DECODE_RU_SIGNALING_CH1(
 							out, he_sig1, he_sig2);
@@ -1889,10 +1997,9 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 								tone);
 						}
 						if (tone != 0) {
-							rth->body.u.he.data5 &=
+							he->data5 &=
 								~RX_HE_BW_160;
-							rth->body.u.he.data5 |=
-								tone;
+							he->data5 |= tone;
 						}
 					}
 				} else {
@@ -1902,27 +2009,38 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 						MLAN_DECODE_RU_TONE(
 							out, usr_idx, tone);
 						if (tone) {
-							rth->body.u.he.data5 |=
-								tone;
+							he->data5 |= tone;
 						}
 					}
 				}
 
-				rth->body.u.he.data2 |= (HE_DATA_GI_KNOWN);
-				rth->body.u.he.data5 |= ((gi & 3) << 4);
-				rth->body.u.he.data1 |= (HE_MCS_KNOWN);
+				he->data2 |= (HE_DATA_GI_KNOWN);
+				he->data5 |= ((gi & 3) << 4);
+				he->data1 |= (HE_MCS_KNOWN);
 
-				rth->body.u.he.data3 |= (mcs << 8);
-				rth->body.u.he.data6 |= nss;
-				rth->body.u.he.data1 |= (HE_DCM_KNOWN);
-				rth->body.u.he.data1 =
-					cpu_to_le16(rth->body.u.he.data1);
-				rth->body.u.he.data5 |= (dcm << 12);
-				rth->body.u.he.data5 =
-					cpu_to_le16(rth->body.u.he.data5);
-				rth->body.u.he.data3 =
-					cpu_to_le16(rth->body.u.he.data3);
+				he->data3 |= (mcs << 8);
+				he->data6 |= nss;
+				he->data1 |= (HE_DCM_KNOWN);
+				he->data1 = cpu_to_le16(he->data1);
+				he->data5 |= (dcm << 12);
+				he->data5 = cpu_to_le16(he->data5);
+				he->data3 = cpu_to_le16(he->data3);
+
+				radiotap_pos += sizeof(struct he_field);
+				radiotap_len += sizeof(struct he_field);
 			}
+			if (rt_info.radiotap_extra) {
+				radiotap_pos[0] = rt_info.extra_info.rssi_dbm_a;
+				radiotap_pos[1] = 0;
+				radiotap_pos[2] = rt_info.extra_info.rssi_dbm_b;
+				radiotap_pos[3] = 1;
+				radiotap_pos += 4;
+				radiotap_len += 4;
+			}
+			rth_hdr->it_len = cpu_to_le16(radiotap_len);
+			skb_push(skb, radiotap_len);
+			moal_memcpy_ext(handle, skb->data, radiotap_buf,
+					radiotap_len, radiotap_len);
 		}
 		skb_set_mac_header(skb, 0);
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
@@ -1947,6 +2065,8 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 	}
 
 done:
+	if (radiotap_buf)
+		kfree(radiotap_buf);
 
 	LEAVE();
 	return status;
@@ -2012,7 +2132,7 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 #endif
 
 	wifi_timeval t1, t2;
-	t_s32 delay;
+	unsigned long delay;
 	t_u32 in_ts_sec = 0;
 	t_u32 in_ts_usec = 0;
 
@@ -2036,9 +2156,6 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 	if (pmbuf->flags & MLAN_BUF_FLAG_EASYMESH) {
 		aid = (pmbuf->priority & 0xFF000000) >> 24;
 		if (!priv->vlan_sta_list[(aid - 1) % MAX_STA_COUNT]->is_valid) {
-			/* [DBG-RXDROP] ratelimited marker — remove after triage */
-			pr_info_ratelimited("[DBG-RXDROP] easymesh_invalid_pre_skb aid=%u @%s:%d\n",
-					    aid, __func__, __LINE__);
 			priv->stats.rx_dropped++;
 			goto done;
 		}
@@ -2075,18 +2192,6 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 		dev_kfree_skb(skb);
 		goto done;
 	}
-
-	/* IA-M10: hoist bridge RCU-deref outside the A-MSDU subframe loop.
-	 * A single rcu_read_lock spans the whole batch (bounded ~16 subframes,
-	 * non-sleeping ops only) — eliminates N× rcu_dereference + atomic_read
-	 * per burst. Cached pointer remains valid for the entire critical
-	 * section; deinit's rcu_assign_pointer(NULL) + synchronize_rcu waits
-	 * until this read side exits before kfree(br). */
-	struct moal_bridge *br_amsdu = NULL;
-	int br_amsdu_active = 0;
-	rcu_read_lock();
-	br_amsdu = rcu_dereference(handle->bridge);
-	br_amsdu_active = br_amsdu && atomic_read(&br_amsdu->active);
 
 	while (skb != frame) {
 		__be16 len;
@@ -2125,6 +2230,7 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			eth = (struct ethhdr *)skb_pull(skb, len + padding);
 			if (!eth) {
 				PRINTM(MERROR, "Invalid amsdu packet\n");
+				dev_kfree_skb(frame);
 				break;
 			}
 		}
@@ -2155,13 +2261,6 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			dev_kfree_skb(frame);
 			continue;
 		}
-		/* L2 bridge fast path (A-MSDU sub-frame, before eth_type_trans).
-		 * IA-M10: uses hoisted br_amsdu cache under a single RCU read
-		 * critical section instead of re-dereferencing per subframe. */
-		if (br_amsdu_active &&
-		    moal_bridge_rx_fast(br_amsdu, frame, priv))
-			continue;
-
 		frame->protocol = eth_type_trans(frame, netdev);
 		frame->ip_summed = CHECKSUM_NONE;
 
@@ -2170,40 +2269,75 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 
 		if (in_interrupt())
 			netif_rx(frame);
-		else if (atomic_read(&handle->rx_pending) >
-			 MAX_RX_PENDING_THRHLD)
-			netif_rx(frame);
-		else if (handle->params.net_rx >= 1) {
-			local_bh_disable();
-			netif_receive_skb(frame);
-			local_bh_enable();
-		} else {
+		else {
+			if (atomic_read(&handle->rx_pending) >
+			    MAX_RX_PENDING_THRHLD)
+				netif_rx(frame);
+			else {
+				if (handle->params.net_rx == MTRUE) {
+					local_bh_disable();
+					netif_receive_skb(frame);
+					local_bh_enable();
+				} else {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
-			netif_rx(frame);
+					netif_rx(frame);
 #else
-			netif_rx_ni(frame);
+					netif_rx_ni(frame);
 #endif
+				}
+			}
 		}
 	}
-	/* IA-M10 hotfix: balance rcu_read_lock() taken before the while loop.
-	 * Missing unlock leaks one read-side critical section per A-MSDU RX
-	 * call → any synchronize_rcu() elsewhere blocks forever (observed as
-	 * WiFi module load / shell login hang). */
-	rcu_read_unlock();
 	if (handle->tp_acnt.on) {
 		if (pmbuf->in_ts_sec)
 			moal_tp_accounting(handle, pmbuf, RX_TIME_PKT);
 
 		woal_get_monotonic_time(&t2);
-		delay = (t_s32)(t2.time_sec - in_ts_sec) * 1000000;
-		delay += (t_s32)(t2.time_usec - in_ts_usec);
-		moal_amsdu_tp_accounting(pmoal, delay, 0);
+		delay = ((unsigned long)t2.time_sec -
+			 (unsigned long)in_ts_sec) *
+			1000000UL;
+		delay += (t2.time_usec - in_ts_usec);
+		moal_amsdu_tp_accounting(pmoal, (t_s32)delay, 0);
 	}
 done:
 	if (status == MLAN_STATUS_PENDING)
 		atomic_dec(&handle->mbufalloc_count);
 	LEAVE();
 	return status;
+}
+
+static t_u8 moal_user_priority_to_qos(t_u32 userPriority)
+{
+	t_u8 aci;
+
+	switch (userPriority) {
+	default:
+	case 0:
+	case 3:
+		/* BE */
+		aci = 3;
+		break;
+
+	case 1:
+	case 2:
+		/* BK */
+		aci = 2;
+		break;
+
+	case 4:
+	case 5:
+		/* VI */
+		aci = 1;
+		break;
+
+	case 6:
+	case 7:
+		/* VO */
+		aci = 0;
+		break;
+	}
+
+	return aci;
 }
 
 /**
@@ -2270,11 +2404,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					       skb_tailroom(skb),
 					       pmbuf->data_len);
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] skb_overflow tail=%d len=%d @%s:%d\n",
-							    skb_tailroom(skb),
-							    pmbuf->data_len,
-							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -2298,24 +2427,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				 * free by mlan*/
 				status = MLAN_STATUS_PENDING;
 				atomic_dec(&handle->mbufalloc_count);
-
-				/* L2 bridge fast path — before eth_type_trans
-				 * skb->data = ETH header, no skb_push needed.
-				 * RCU-protected pointer read. */
-				{
-					struct moal_bridge *br;
-					int consumed = 0;
-
-					rcu_read_lock();
-					br = rcu_dereference(handle->bridge);
-					if (unlikely(br) &&
-					    atomic_read(&br->active))
-						consumed = moal_bridge_rx_fast(
-							br, skb, priv);
-					rcu_read_unlock();
-					if (consumed)
-						goto done;
-				}
 			} else {
 				PRINTM(MERROR, "%s without skb attach!!!\n",
 				       __func__);
@@ -2328,9 +2439,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					       "%s Drop packet without skb\n",
 					       __func__);
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] mon_no_skb @%s:%d\n",
-							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -2342,10 +2450,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					PRINTM(MERROR, "%s fail to alloc skb\n",
 					       __func__);
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] alloc_skb_fail len=%d @%s:%d\n",
-							    pmbuf->data_len,
-							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
@@ -2398,9 +2502,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 							 MAX_STA_COUNT]
 					     ->is_valid) {
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] easymesh_invalid_post_skb aid=%u @%s:%d\n",
-							    aid, __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -2420,10 +2521,10 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				if (transaction_id &&
 				    woal_get_dhcp_discover_info(
 					    priv, transaction_id)) {
+					status = MLAN_STATUS_FAILURE;
 					PRINTM(MDATA,
 					       "Drop dhcp pkt, transation_id=%x\n",
 					       transaction_id);
-					dev_kfree_skb(skb);
 					goto done;
 				}
 
@@ -2431,14 +2532,18 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				// TODO: Drop too old entry
 				if (hash_key) {
 					struct arp_entry *node;
+					// Coverity violation raised for
+					// kernel's API
+					// coverity[cert_arr39_c_violation:SUPPRESS]
 					hash_for_each_possible (priv->hlist,
 								node, arp_hlist,
 								hash_key) {
 						if (node->hash_key ==
 						    hash_key) {
+							status =
+								MLAN_STATUS_FAILURE;
 							PRINTM(MDATA,
 							       "ARP entry exists, drop pkt\n");
-							dev_kfree_skb(skb);
 							goto done;
 						}
 					}
@@ -2492,10 +2597,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				PRINTM(MEVENT, "drop filtered packet %s\n",
 				       priv->netdev->name);
 				status = MLAN_STATUS_FAILURE;
-				/* [DBG-RXDROP] ratelimited marker — remove after triage */
-				pr_info_ratelimited("[DBG-RXDROP] filter_reject len=%u proto=0x%04x @%s:%d\n",
-						    skb->len, ntohs(skb->protocol),
-						    __func__, __LINE__);
 				priv->stats.rx_dropped++;
 				if (drvdbg & MDAT_D)
 					woal_packet_fate_monitor(
@@ -2503,13 +2604,14 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 						RX_PKT_FATE_DRV_DROP_FILTER,
 						FRAME_TYPE_ETHERNET_II, 0, 0,
 						skb->data, skb->len);
-				dev_kfree_skb(skb);
 				goto done;
 			}
 #endif
 #endif
 			priv->stats.rx_bytes += skb->len;
 			priv->stats.rx_packets++;
+			priv->rx_pkt_ac[moal_user_priority_to_qos(
+				pmbuf->priority)]++;
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
 			if (drvdbg & MDAT_D)
@@ -2569,25 +2671,28 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					pmbuf->out_ts_usec = t.time_usec;
 				}
 			}
-			/* L2 bridge: moved to fast path (before eth_type_trans) */
 			if (priv->phandle->tp_acnt.drop_point == RX_DROP_P4) {
 				status = MLAN_STATUS_PENDING;
 				dev_kfree_skb(skb);
 			} else if (in_interrupt())
 				netif_rx(skb);
-			else if (atomic_read(&handle->rx_pending) >
-				 MAX_RX_PENDING_THRHLD)
-				netif_rx(skb);
-			else if (handle->params.net_rx >= 1) {
-				local_bh_disable();
-				netif_receive_skb(skb);
-				local_bh_enable();
-			} else {
+			else {
+				if (atomic_read(&handle->rx_pending) >
+				    MAX_RX_PENDING_THRHLD)
+					netif_rx(skb);
+				else {
+					if (handle->params.net_rx == MTRUE) {
+						local_bh_disable();
+						netif_receive_skb(skb);
+						local_bh_enable();
+					} else {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
-				netif_rx(skb);
+						netif_rx(skb);
 #else
-				netif_rx_ni(skb);
+						netif_rx_ni(skb);
 #endif
+					}
+				}
 			}
 			if (priv->phandle->tp_acnt.on) {
 				if (pmbuf && pmbuf->in_ts_sec)
@@ -2597,6 +2702,8 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 		}
 	}
 done:
+	if (status != MLAN_STATUS_PENDING && pmbuf && !pmbuf->pdesc && skb)
+		dev_kfree_skb(skb);
 	LEAVE();
 	return status;
 }
@@ -2842,7 +2949,8 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 		break;
 	case MLAN_EVENT_ID_DRV_DELAY_TX_COMPLETE:
 		status = MLAN_STATUS_SUCCESS;
-		schedule_delayed_work(&handle->pcie_delayed_tx_work, 1);
+		if (!handle->driver_status)
+			schedule_delayed_work(&handle->pcie_delayed_tx_work, 1);
 		break;
 #endif /* PCIE */
 
@@ -2877,15 +2985,7 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 	case MLAN_EVENT_ID_DRV_DEFER_RX_WORK:
 		status = MLAN_STATUS_SUCCESS;
 		if (moal_extflg_isset(handle, EXT_NAPI)) {
-			/* Capture NAPI deliver-leg enqueue ts on the
-			 * not-scheduled->scheduled transition (bridge_debug
-			 * gated); woal_netdev_poll_rx reads it for the gap. */
-			if (napi_schedule_prep(&handle->napi_rx)) {
-				if (READ_ONCE(bridge_debug))
-					WRITE_ONCE(handle->rx_enqueue_ns,
-						   ktime_get_ns());
-				__napi_schedule(&handle->napi_rx);
-			}
+			napi_schedule(&handle->napi_rx);
 			break;
 		}
 #ifdef PCIE
@@ -2900,9 +3000,7 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 		}
 #endif
 #if defined(USB) || defined(SDIO)
-		if (queue_work(handle->rx_workqueue, &handle->rx_work) &&
-		    READ_ONCE(bridge_debug))
-			WRITE_ONCE(handle->rx_enqueue_ns, ktime_get_ns());
+		queue_work(handle->rx_workqueue, &handle->rx_work);
 #endif
 		break;
 	default:
@@ -3032,6 +3130,10 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	moal_handle *handle = (moal_handle *)pmoal;
 	moal_handle *ref_handle = NULL;
 
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+	t_u8 band_config = 0;
+	t_u8 chan_num = 0;
+#endif
 #ifdef STA_CFG80211
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
 	t_u8 enable = 1;
@@ -3074,6 +3176,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	unsigned long wait_time, wait_time_ms, timeout;
 #endif
 #endif
+#if defined(STA_SUPPORT)
+	chan_band_reginfo_t *psta_reg_info = NULL;
+#endif
 	char iwevent_str[256];
 	addba_timeout_event *evtbuf = NULL;
 
@@ -3083,7 +3188,8 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		if (!handle->is_fw_dump_timer_set) {
 			PRINTM(MMSG, "FW trigger fw dump\n");
 			handle->is_fw_dump_timer_set = MTRUE;
-			woal_mod_timer(&handle->fw_dump_timer, MOAL_TIMER_5S);
+			woal_mod_timer(&handle->fw_dump_timer,
+				       MOAL_FW_DUMP_TIMER);
 		}
 		handle->init_wait_q_woken = MTRUE;
 		wake_up(&handle->init_wait_q);
@@ -3173,25 +3279,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			netif_carrier_on(priv->netdev);
 		woal_wake_queue(priv->netdev);
 		moal_connection_status_check_pmqos(pmoal);
-
-		/* Register mgmt frame subtypes for logging:
-		 * net_rx=2: roaming frames only
-		 * net_rx=3: all management frames */
-		if (handle->params.net_rx >= 2) {
-			t_u32 mgmt_mask = ((handle->params.net_rx & 0x3) == 3)
-					  ? MGMT_LOG_MASK_ALL
-					  : MGMT_LOG_MASK_ROAMING;
-			if (priv->mgmt_subtype_mask != mgmt_mask) {
-				PRINTM(MINFO,
-				       "[%s] MGMT[--] mask change: 0x%x -> 0x%x\n",
-				       priv->netdev->name,
-				       priv->mgmt_subtype_mask, mgmt_mask);
-				woal_reg_rx_mgmt_ind(priv, MLAN_ACT_SET,
-						     &mgmt_mask, MOAL_NO_WAIT);
-				priv->mgmt_subtype_mask = mgmt_mask;
-			}
-		}
-
 		break;
 	case MLAN_EVENT_ID_DRV_ASSOC_FAILURE:
 		PRINTM(MERROR, "wlan:MLAN_EVENT_ASSOC_FAILURE\n");
@@ -3217,6 +3304,8 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			priv->report_scan_result = MFALSE;
 #ifdef STA_CFG80211
 			if (IS_STA_CFG80211(cfg80211_wext)) {
+				spin_lock_irqsave(&priv->phandle->scan_req_lock,
+						  flags);
 				if (priv->phandle->scan_request) {
 					PRINTM(MINFO,
 					       "Reporting scan results\n");
@@ -3233,9 +3322,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 								PASSIVE_SCAN_CHAN_TIME,
 								SPECIFIC_SCAN_CHAN_TIME);
 					}
-					spin_lock_irqsave(
-						&priv->phandle->scan_req_lock,
-						flags);
 					if (priv->phandle->scan_request) {
 						cancel_delayed_work(
 							&priv->phandle
@@ -3247,10 +3333,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						priv->phandle->scan_request =
 							NULL;
 					}
-					spin_unlock_irqrestore(
-						&priv->phandle->scan_req_lock,
-						flags);
 				}
+				spin_unlock_irqrestore(
+					&priv->phandle->scan_req_lock, flags);
 			}
 #endif /* STA_CFG80211 */
 
@@ -3303,13 +3388,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_OBSS_SCAN_PARAM),
 				strlen(CUS_EVT_OBSS_SCAN_PARAM));
 		pmevent->event_buf[strlen(CUS_EVT_OBSS_SCAN_PARAM)] = 0;
-		/* payload 는 strlen(CUS_EVT_OBSS_SCAN_PARAM) + 1 오프셋에 놓이므로
-		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
-		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_OBSS_SCAN_PARAM) +
-					     1);
+					     strlen(CUS_EVT_OBSS_SCAN_PARAM));
 
 #ifdef STA_WEXT
 		if (IS_STA_WEXT(cfg80211_wext)) {
@@ -3330,12 +3411,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_BW_CHANGED),
 				strlen(CUS_EVT_BW_CHANGED));
 		pmevent->event_buf[strlen(CUS_EVT_BW_CHANGED)] = 0;
-		/* payload 는 strlen(CUS_EVT_BW_CHANGED) + 1 오프셋에 놓이므로
-		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
-		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_BW_CHANGED) + 1);
+					     strlen(CUS_EVT_BW_CHANGED));
 
 #ifdef STA_WEXT
 		if (IS_STA_WEXT(cfg80211_wext)) {
@@ -3350,6 +3428,17 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		break;
 
 	case MLAN_EVENT_ID_FW_DISCONNECTED:
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+		/* 6E Indoor/Outdoor, download the default power table
+		 * after disconnect/link-loss */
+		PRINTM(MEVENT, "Downloading default 6E table!!\n");
+		if (priv->phandle->fw_bands & BAND_6G) {
+			if (MLAN_STATUS_SUCCESS !=
+			    woal_dnld_default_6e_psd_table(priv))
+				PRINTM(MERROR,
+				       "Default 6E table download failed!!\n");
+		}
+#endif
 		if (priv->media_connected)
 			woal_send_disconnect_to_system(
 				priv, (t_u16)*pmevent->event_buf);
@@ -3783,15 +3872,19 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		if (priv->chan_rpt_req.chanNum && priv->chan_rpt_pending) {
 			radar_chan = pmevent->event_buf[1];
 			if (radar_detected) {
-				snprintf(event_buf, sizeof(event_buf) - 1,
-					 "%s %d", CUS_EVT_RADAR_DETECTED,
-					 radar_chan);
+				if (snprintf(event_buf, sizeof(event_buf) - 1,
+					     "%s %d", CUS_EVT_RADAR_DETECTED,
+					     radar_chan) <= 0)
+					PRINTM(MERROR,
+					       "Failed to write event name and chan num in event_buf\n");
 				woal_broadcast_event(priv, event_buf,
 						     strlen(event_buf));
 			} else {
-				snprintf(event_buf, sizeof(event_buf) - 1,
-					 "%s %d", CUS_EVT_CAC_FINISHED,
-					 priv->chan_rpt_req.chanNum);
+				if (snprintf(event_buf, sizeof(event_buf) - 1,
+					     "%s %d", CUS_EVT_CAC_FINISHED,
+					     priv->chan_rpt_req.chanNum) <= 0)
+					PRINTM(MERROR,
+					       "Failed to write event name and chan num in event_buf\n");
 				woal_broadcast_event(priv, event_buf,
 						     strlen(event_buf));
 			}
@@ -3891,6 +3984,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 							 priv->wdev
 								 ->cac_time_ms));
 #endif
+					// coverity[misra_c_2012_rule_10_8_violation:SUPPRESS]
 					if (!time_after_eq(jiffies, timeout)) {
 						/* Exact time to make host and
 						 * device timer in sync */
@@ -3933,8 +4027,11 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	case MLAN_EVENT_ID_FW_RADAR_DETECTED:
 		radar_chan = pmevent->event_buf[0];
 		bandwidth = pmevent->event_buf[1];
-		snprintf(event_buf, sizeof(event_buf) - 1, "%s %d",
-			 CUS_EVT_RADAR_DETECTED, radar_chan);
+		if (snprintf(event_buf, sizeof(event_buf) - 1, "%s %d",
+			     CUS_EVT_RADAR_DETECTED, radar_chan) <= 0) {
+			PRINTM(MERROR, "Failed to write RADAR detect event\n");
+			break;
+		}
 		woal_broadcast_event(priv, event_buf, strlen(event_buf));
 		PRINTM(MEVENT, "%s: Radar detected on channel %d\n",
 		       priv->netdev->name, radar_chan);
@@ -4061,8 +4158,11 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			wake_up_interruptible(&priv->phandle->chsw_wait_q);
 		}
 #endif
-		snprintf(event_buf, sizeof(event_buf) - 1, "%s %d",
-			 CUS_EVT_CHAN_SWITCH_COMPLETE, pchan_info->channel);
+		if (snprintf(event_buf, sizeof(event_buf) - 1, "%s %d",
+			     CUS_EVT_CHAN_SWITCH_COMPLETE,
+			     pchan_info->channel) <= 0)
+			PRINTM(MERROR,
+			       "Failed to write switched chan num in event buf\n");
 		woal_broadcast_event(priv, event_buf, strlen(event_buf));
 		if (IS_STA_OR_UAP_CFG80211(cfg80211_wext)) {
 			PRINTM(MMSG,
@@ -4417,12 +4517,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_STA_CONNECTED),
 				strlen(CUS_EVT_STA_CONNECTED));
 		pmevent->event_buf[strlen(CUS_EVT_STA_CONNECTED)] = 0;
-		/* payload 는 strlen(CUS_EVT_STA_CONNECTED) + 1 오프셋에 놓이므로
-		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
-		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_STA_CONNECTED) + 1);
+					     strlen(CUS_EVT_STA_CONNECTED));
 #ifdef UAP_WEXT
 		if (IS_UAP_WEXT(cfg80211_wext)) {
 			memset(&wrqu, 0, sizeof(union iwreq_data));
@@ -4483,13 +4580,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_STA_DISCONNECTED),
 				strlen(CUS_EVT_STA_DISCONNECTED));
 		pmevent->event_buf[strlen(CUS_EVT_STA_DISCONNECTED)] = 0;
-		/* payload 는 strlen(CUS_EVT_STA_DISCONNECTED) + 1 오프셋에 놓이므로
-		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
-		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_STA_DISCONNECTED) +
-					     1);
+					     strlen(CUS_EVT_STA_DISCONNECTED));
 
 #ifdef UAP_WEXT
 		if (IS_UAP_WEXT(cfg80211_wext)) {
@@ -4502,102 +4595,17 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		}
 #endif /* UAP_WEXT */
 		break;
-	case MLAN_EVENT_ID_DRV_MGMT_FRAME: {
-		t_u8 rx_snr = pmevent->event_buf[2];
-		t_u8 rx_nf = pmevent->event_buf[3];
-		bool ret = 0;
-
-		/* RX management frame logging */
-		if (priv->phandle->params.net_rx >= 2) {
-			int _buf_len = pmevent->event_len -
-				       sizeof(pmevent->event_id);
-			t_u8 *_pkt = ((t_u8 *)pmevent->event_buf +
-				      sizeof(pmevent->event_id));
-
-			if (_buf_len >= 24) {
-				const struct ieee80211_mgmt *_mgmt =
-					(const struct ieee80211_mgmt *)_pkt;
-				t_u16 _fc = le16_to_cpu(
-					_mgmt->frame_control);
-				t_u8 _type = (_fc >> 2) & 0x3;
-				t_u8 _sub = (_fc >> 4) & 0xF;
-				t_u16 _seq = le16_to_cpu(
-					_mgmt->seq_ctrl) >> 4;
-				t_u16 _retry = !!(_fc & 0x0800);
-				const char *_ts = "?";
-				t_u8 _do_log = MTRUE;
-
-				if (_type == 0) { /* management */
-					switch (_sub) {
-					case 0:  _ts = "Assoc Request "; break;
-					case 1:  _ts = "Assoc Response"; break;
-					case 2:  _ts = "Reassoc Req   "; break;
-					case 3:  _ts = "Reassoc Resp  "; break;
-					case 4:  _ts = "Probe Request "; break;
-					case 5:  _ts = "Probe Response"; break;
-					case 8:  _ts = "Beacon        "; break;
-					case 10: _ts = "Disassoc      "; break;
-					case 11: _ts = "Auth          "; break;
-					case 12: _ts = "Deauth        "; break;
-					case 13: _ts = "Action        "; break;
-					default: _ts = "Mgmt Other    "; break;
-					}
-
-					/* net_rx=2: skip noisy frames */
-					if ((priv->phandle->params.net_rx &
-					     0x3) == 2 &&
-					    (_sub == 4 || _sub == 5 ||
-					     _sub == 8))
-						_do_log = MFALSE;
-				}
-				if (_do_log) {
-					mgmt_log_printf(
-					       &priv->phandle->mgmt_log,
-					       "[%s] MGMT[RX] %s(%2d) : SA=%pM DA=%pM RSSI=%4d NF=%4d SNR=%4d Retry=%d Seq=%4u\n",
-					       priv->netdev->name, _ts, _sub,
-					       _mgmt->sa, _mgmt->da,
-					       (int)((int)rx_snr - (int)rx_nf),
-					       -(int)rx_nf, (int)rx_snr,
-					       _retry, _seq);
-					if (priv->phandle->params.mgmt_hex_dump) {
-						t_u32 _ie_off = 0;
-						mgmt_log_printf(
-						       &priv->phandle->mgmt_dump,
-						       "[%s] MGMT[RX] %s(%2d) : SA=%pM DA=%pM RSSI=%4d NF=%4d SNR=%4d Retry=%d Seq=%4u\n",
-						       priv->netdev->name, _ts, _sub,
-						       _mgmt->sa, _mgmt->da,
-						       (int)((int)rx_snr - (int)rx_nf),
-						       -(int)rx_nf, (int)rx_snr,
-						       _retry, _seq);
-						/* NXP RX path inserts 6-byte vendor
-						 * metadata after mgmt header before
-						 * mgmt body fixed-fields.
-						 */
-						{
-						const t_u32 _vp = 6;
-						switch (_sub) {
-						case 0:  _ie_off = 24 + _vp + 4;  break;
-						case 1:  _ie_off = 24 + _vp + 6;  break;
-						case 2:  _ie_off = 24 + _vp + 10; break;
-						case 3:  _ie_off = 24 + _vp + 6;  break;
-						case 4:  _ie_off = 24 + _vp;      break;
-						case 5:  _ie_off = 24 + _vp + 12; break;
-						case 8:  _ie_off = 24 + _vp + 12; break;
-						case 11: _ie_off = 24 + _vp + 6;  break;
-						default: _ie_off = 0;             break;
-						}
-						}
-						if (_ie_off &&
-						    (t_u32)_buf_len > _ie_off)
-							mgmt_dump_append_ies(
-							       &priv->phandle->mgmt_dump,
-							       _pkt + _ie_off,
-							       (t_u32)_buf_len - _ie_off);
-					}
-				}
-			}
-		}
-
+	case MLAN_EVENT_ID_DRV_MGMT_FRAME:
+		/** We use the event_id field to pass the band_config and
+		 * chan_num */
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+		band_config = pmevent->event_buf[0];
+		chan_num = pmevent->event_buf[1];
+#endif
+		moal_memcpy_ext(priv->phandle, (t_u8 *)pmevent->event_buf,
+				(t_u8 *)&pmevent->event_id,
+				sizeof(pmevent->event_id),
+				sizeof(pmevent->event_id));
 #ifdef UAP_WEXT
 		if (IS_UAP_WEXT(cfg80211_wext)) {
 			woal_broadcast_event(priv, pmevent->event_buf,
@@ -4615,10 +4623,8 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				 * seqctl */
 #define PACKET_ADDR4_POS (2 + 2 + 6 + 6 + 6 + 2)
 				t_u8 *pkt;
-				int freq =
-					priv->phandle->remain_on_channel ?
-						priv->phandle->chan.center_freq :
-						woal_get_active_intf_freq(priv);
+				int freq = woal_get_rx_freq(priv, band_config,
+							    chan_num);
 				if (!freq) {
 					if (!priv->phandle->chan.center_freq) {
 						PRINTM(MINFO,
@@ -4637,22 +4643,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					pmevent->event_len -
 						sizeof(pmevent->event_id) -
 						PACKET_ADDR4_POS - ETH_ALEN);
-
-#if 0 //JHW_TEST
-				if (pmevent->event_len - sizeof(pmevent->event_id) >= 24) {
-					struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)pkt;
-					u16 fc = le16_to_cpu(mgmt->frame_control);
-					u8 subtype = (fc >> 4) & 0x0F;
-					u8 *sa = mgmt->sa;
-					u8 *da = mgmt->da;
-					u16 seq_ctrl = le16_to_cpu(mgmt->seq_ctrl);
-					u16 seq = seq_ctrl >> 4;
-
-					printk("MGMT subtype=%d SA=%pM DA=%pM SEQ=%u\n",
-						subtype, sa, da, seq);
-				}
-#endif
-
 #ifdef WIFI_DIRECT_SUPPORT
 				if (ieee80211_is_action(
 					    ((struct ieee80211_mgmt *)pkt)
@@ -4686,7 +4676,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 							     pkt)
 							    ->frame_control)) {
 						priv->auth_tx_cnt = 0;
-						//printk("JHW_TEST %s: Received auth frame type = 0x%x\n",priv->netdev->name,priv->auth_alg);
 						PRINTM(MEVENT,
 						       "HostMlme %s: Received auth frame type = 0x%x\n",
 						       priv->netdev->name,
@@ -4719,7 +4708,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 							break;
 						}
 					} else {
-						//printk("JHW_TEST %s: Receive deauth/disassociate\n",priv->netdev->name);
 						PRINTM(MEVENT,
 						       "HostMlme %s: Receive deauth/disassociate\n",
 						       priv->netdev->name);
@@ -4806,7 +4794,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				} else
 #endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 4, 0)
-					ret = cfg80211_rx_mgmt(
+					cfg80211_rx_mgmt(
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
 						priv->wdev,
 #else
@@ -4860,41 +4848,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 #endif /* KERNEL_VERSION */
 		}
 #endif /* STA_CFG80211 || UAP_CFG80211 */
-#ifdef JHW_TEST
-					frame = ((const u8 *)pmevent->event_buf) + sizeof(pmevent->event_id);
-					frame_len = pmevent->event_len - sizeof(pmevent->event_id) - MLAN_MAC_ADDR_LENGTH;
-					if (frame_len >= 24) {
-						u16 fc = frame[0] | (frame[1] << 8);
-						u8 type = (fc >> 2) & 0x3;
-						u8 subtype = (fc >> 4) & 0xf;
-
-						type_str = "Unknown";
-						if (type == 0) {
-							switch (subtype) {
-							case 0: type_str = "Assoc Req"; break;
-							case 1: type_str = "Assoc Resp"; break;
-							case 4: type_str = "Probe Req"; break;
-							case 5: type_str = "Probe Resp"; break;
-							case 8: type_str = "Beacon"; break;
-							case 10: type_str = "Disassoc"; break;
-							case 11: type_str = "Auth"; break;
-							case 12: type_str = "Deauth"; break;
-							case 13: type_str = "Action"; break;
-							default: type_str = "Mgmt Other"; break;
-							}
-						}
-
-						da = &frame[4];
-						sa = &frame[10];
-						u16 seq_ctrl = frame[22] | (frame[23] << 8);
-						u16 seq_num = (seq_ctrl >> 4);
-
-						printk(KERN_INFO "JHW_TEST : ret %d, %s frame, SA %pM → DA %pM, len %d, seq %u\n",
-							ret, type_str, sa, da, frame_len, seq_num);
-					}
-#endif
 		break;
-	} /* MLAN_EVENT_ID_DRV_MGMT_FRAME */
 #endif /* UAP_SUPPORT */
 	case MLAN_EVENT_ID_DRV_PASSTHRU:
 		woal_broadcast_event(priv, pmevent->event_buf,
@@ -5280,6 +5234,22 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		if (handle->sec_rgpower)
 			woal_rgpower_key_mismatch_event(priv);
 		break;
+	case MLAN_EVENT_ID_FW_CHAN_SWITCH_REGINFO:
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+		psta_reg_info = (chan_band_reginfo_t *)pmevent->event_buf;
+		if (psta_reg_info->bandcfg.chanBand == BAND_6GHZ) {
+			PRINTM(MEVENT,
+			       "CSA/ECSA: STA switch to new channel=%d band=%d regInfo=%d!\n",
+			       psta_reg_info->channel,
+			       psta_reg_info->bandcfg.chanBand,
+			       psta_reg_info->regInfo);
+			woal_dnld_sta_6e_psd_table(priv, NULL, 0,
+						   psta_reg_info);
+		} else
+			PRINTM(MEVENT,
+			       "Ignoring the Channel Switch Reg Info Event\n");
+#endif
+		break;
 	default:
 		break;
 	}
@@ -5425,6 +5395,8 @@ t_void moal_updata_peer_signal(t_void *pmoal, t_u32 bss_index, t_u8 *peer_addr,
 	priv = woal_bss_index_to_priv(pmoal, bss_index);
 	if (priv && priv->enable_auto_tdls) {
 		spin_lock_irqsave(&priv->tdls_lock, flags);
+		// Coverity violation raised for kernel's API
+		// coverity[cert_arr39_c_violation:SUPPRESS]
 		list_for_each_entry (peer, &priv->tdls_list, link) {
 			if (!memcmp(peer->peer_addr, peer_addr, ETH_ALEN)) {
 				peer->rssi = nflr - snr;
@@ -5501,4 +5473,15 @@ t_u64 moal_do_div(t_u64 num, t_u32 base)
 	t_u64 val = num;
 	do_div(val, base);
 	return val;
+}
+
+mlan_status moal_calc_short_ssid(t_u8 *pssid, t_u32 ssid_len,
+				 t_u32 *pshort_ssid)
+{
+	if (!pssid || !ssid_len) {
+		PRINTM(MWARN, "%s: incorrect SSID\n", __func__);
+		return MLAN_STATUS_FAILURE;
+	}
+	*pshort_ssid = ~crc32_le(~0, pssid, ssid_len);
+	return MLAN_STATUS_SUCCESS;
 }

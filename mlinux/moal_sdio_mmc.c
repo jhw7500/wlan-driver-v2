@@ -166,6 +166,7 @@ static const struct sdio_device_id wlan_ids[] = {
 	{},
 };
 
+
 int woal_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id);
 void woal_sdio_remove(struct sdio_func *func);
 static void woal_sdiommc_work(struct work_struct *work);
@@ -1215,8 +1216,10 @@ void woal_sdio_shutdown(struct device *dev)
 		return;
 	}
 	handle = cardp->handle;
-	for (i = 0; i < handle->priv_num; i++)
-		netif_device_detach(handle->priv[i]->netdev);
+	for (i = 0; i < handle->priv_num; i++) {
+		if (handle->priv[i])
+			netif_device_detach(handle->priv[i]->netdev);
+	}
 
 	if (moal_extflg_isset(handle, EXT_SHUTDOWN_HS)) {
 		handle->shutdown_hs_in_process = MTRUE;
@@ -1349,8 +1352,10 @@ int woal_sdio_suspend(struct device *dev)
 		goto done;
 	}
 
-	for (i = 0; i < handle->priv_num; i++)
-		netif_device_detach(handle->priv[i]->netdev);
+	for (i = 0; i < handle->priv_num; i++) {
+		if (handle->priv[i])
+			netif_device_detach(handle->priv[i]->netdev);
+	}
 
 	if (moal_extflg_isset(handle, EXT_PM_KEEP_POWER)) {
 		/* Enable the Host Sleep */
@@ -1386,8 +1391,12 @@ int woal_sdio_suspend(struct device *dev)
 		} else {
 			PRINTM(MMSG, "HS not actived, suspend fail!");
 			handle->suspend_fail = MTRUE;
-			for (i = 0; i < handle->priv_num; i++)
-				netif_device_attach(handle->priv[i]->netdev);
+			for (i = 0; i < handle->priv_num; i++) {
+				if (handle->priv[i]) {
+					netif_device_attach(
+						handle->priv[i]->netdev);
+				}
+			}
 			ret = -EBUSY;
 			goto done;
 		}
@@ -1441,8 +1450,10 @@ int woal_sdio_resume(struct device *dev)
 		LEAVE();
 		return MLAN_STATUS_SUCCESS;
 	}
-	for (i = 0; i < handle->priv_num; i++)
-		netif_device_attach(handle->priv[i]->netdev);
+	for (i = 0; i < handle->priv_num; i++) {
+		if (handle->priv[i])
+			netif_device_attach(handle->priv[i]->netdev);
+	}
 
 	/* Disable Host Sleep */
 	woal_cancel_hs(woal_get_priv(handle, MLAN_BSS_ROLE_ANY), MOAL_NO_WAIT);
@@ -1590,7 +1601,7 @@ static mlan_status woal_sdio_rw_mb(moal_handle *handle, pmlan_buffer pmbuf_list,
 	struct mmc_data mmc_dat;
 	struct sdio_func *func = ((sdio_mmc_card *)handle->card)->func;
 	t_u32 ioport = (port & MLAN_SDIO_IO_PORT_MASK);
-	t_u32 blkcnt = pmbuf_list->data_len / MLAN_SDIO_BLOCK_SIZE;
+	t_u32 blkcnt = pmbuf_list->data_len / handle->sdio_blk_size;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 0, 0)
 	int status;
 #endif
@@ -1614,7 +1625,7 @@ static mlan_status woal_sdio_rw_mb(moal_handle *handle, pmlan_buffer pmbuf_list,
 
 	mmc_dat.sg = sg_list;
 	mmc_dat.sg_len = num_sg;
-	mmc_dat.blksz = MLAN_SDIO_BLOCK_SIZE;
+	mmc_dat.blksz = handle->sdio_blk_size;
 	mmc_dat.blocks = blkcnt;
 	mmc_dat.flags = write ? MMC_DATA_WRITE : MMC_DATA_READ;
 
@@ -1669,9 +1680,9 @@ static mlan_status woal_sdiommc_write_data_sync(moal_handle *handle,
 	t_u8 *buffer = (t_u8 *)(pmbuf->pbuf + pmbuf->data_offset);
 	t_u8 blkmode =
 		(port & MLAN_SDIO_BYTE_MODE_MASK) ? BYTE_MODE : BLOCK_MODE;
-	t_u32 blksz = (blkmode == BLOCK_MODE) ? MLAN_SDIO_BLOCK_SIZE : 1;
+	t_u32 blksz = (blkmode == BLOCK_MODE) ? handle->sdio_blk_size : 1;
 	t_u32 blkcnt = (blkmode == BLOCK_MODE) ?
-			       (pmbuf->data_len / MLAN_SDIO_BLOCK_SIZE) :
+			       (pmbuf->data_len / handle->sdio_blk_size) :
 			       pmbuf->data_len;
 	t_u32 ioport = (port & MLAN_SDIO_IO_PORT_MASK);
 	int status = 0;
@@ -1730,9 +1741,9 @@ static mlan_status woal_sdiommc_read_data_sync(moal_handle *handle,
 	t_u8 *buffer = (t_u8 *)(pmbuf->pbuf + pmbuf->data_offset);
 	t_u8 blkmode =
 		(port & MLAN_SDIO_BYTE_MODE_MASK) ? BYTE_MODE : BLOCK_MODE;
-	t_u32 blksz = (blkmode == BLOCK_MODE) ? MLAN_SDIO_BLOCK_SIZE : 1;
+	t_u32 blksz = (blkmode == BLOCK_MODE) ? handle->sdio_blk_size : 1;
 	t_u32 blkcnt = (blkmode == BLOCK_MODE) ?
-			       (pmbuf->data_len / MLAN_SDIO_BLOCK_SIZE) :
+			       (pmbuf->data_len / handle->sdio_blk_size) :
 			       pmbuf->data_len;
 	t_u32 ioport = (port & MLAN_SDIO_IO_PORT_MASK);
 	int status = 0;
@@ -1891,7 +1902,7 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 	}
 
 	/* Set block size */
-	ret = sdio_set_block_size(card->func, MLAN_SDIO_BLOCK_SIZE);
+	ret = sdio_set_block_size(card->func, handle->sdio_blk_size);
 	if (ret) {
 		PRINTM(MERROR,
 		       "sdio_set_block_seize(): cannot set SDIO block size\n");
@@ -2074,9 +2085,7 @@ static t_u8 woal_sdiommc_is_second_mac(moal_handle *handle)
 static mlan_status woal_sdiommc_get_fw_name(moal_handle *handle)
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
-#ifdef SD9098
 	sdio_mmc_card *card = (sdio_mmc_card *)handle->card;
-#endif
 	t_u32 revision_id = 0;
 	t_u32 rev_id_reg = handle->card_info->rev_id_reg;
 
@@ -2091,6 +2100,8 @@ static mlan_status woal_sdiommc_get_fw_name(moal_handle *handle)
 
 	ENTER();
 
+	handle->sdio_blk_size =
+		MIN(MLAN_SDIO_BLOCK_SIZE, card->func->card->host->max_blk_size);
 	if (handle->params.fw_name)
 		goto done;
 #ifdef SD8801
@@ -2099,7 +2110,8 @@ static mlan_status woal_sdiommc_get_fw_name(moal_handle *handle)
 #endif
 	/** Revision ID register */
 	woal_sdiommc_read_reg(handle, rev_id_reg, &revision_id);
-	PRINTM(MCMND, "revision_id=0x%x\n", revision_id);
+	PRINTM(MCMND, "revision_id=0x%x sdio_blk_size=%d\n", revision_id,
+	       handle->sdio_blk_size);
 
 #if defined(SD8987) || defined(SD8997) || defined(SD9098) ||                   \
 	defined(SD9097) || defined(SDIW624) || defined(SDAW693) ||             \
@@ -2516,8 +2528,9 @@ static rdwr_status woal_cmd52_rdwr_firmware(moal_handle *phandle, t_u8 doneflag,
 	t_u8 dbg_dump_ctrl_reg = phandle->card_info->dump_fw_ctrl_reg;
 	t_u8 debug_host_ready = phandle->card_info->dump_fw_host_ready;
 
-#ifdef SD9177
-	if (IS_SD9177(phandle->card_type)) {
+#if defined(SDAW693) || defined(SD9177) || defined(SD9098)
+	if (IS_SD9177(phandle->card_type) || IS_SDAW693(phandle->card_type) ||
+	    IS_SD9098(phandle->card_type)) {
 		if (phandle->event_fw_dump)
 			debug_host_ready = 0xAA;
 	}
@@ -2537,8 +2550,9 @@ static rdwr_status woal_cmd52_rdwr_firmware(moal_handle *phandle, t_u8 doneflag,
 		}
 	}
 
-#ifdef SD9177
-	if (IS_SD9177(phandle->card_type)) {
+#if defined(SDAW693) || defined(SD9177) || defined(SD9098)
+	if (IS_SD9177(phandle->card_type) || IS_SDAW693(phandle->card_type) ||
+	    IS_SD9098(phandle->card_type)) {
 		if (phandle->event_fw_dump)
 			return RDWR_STATUS_SUCCESS;
 	}
@@ -3101,8 +3115,9 @@ void woal_dump_firmware_info_v3(moal_handle *phandle)
 		PRINTM(MERROR, "Could not dump firmwware info\n");
 		return;
 	}
-#ifdef SD9177
-	if (IS_SD9177(phandle->card_type)) {
+#if defined(SDAW693) || defined(SD9177) || defined(SD9098)
+	if (IS_SD9177(phandle->card_type) || IS_SDAW693(phandle->card_type) ||
+	    IS_SD9098(phandle->card_type)) {
 		if (phandle->event_fw_dump) {
 			if (RDWR_STATUS_FAILURE !=
 			    woal_cmd52_rdwr_firmware(phandle, doneflag,
@@ -3314,6 +3329,11 @@ static void woal_sdiommc_reg_dbg(moal_handle *phandle)
 		ret = woal_sdio_readb(phandle, reg, &data);
 		if (!ret && data) {
 			PRINTM(MERROR, "FW in debug mode (0x%x)\n", data);
+			if (data == FW_STUCK_CODE_VERSION_MISMATCH) {
+				phandle->driver_init = MFALSE;
+				PRINTM(MERROR,
+				       "WLAN and BT FW version mismatch !! Redownload both FWs with correct and same version\n");
+			}
 		}
 	}
 
@@ -3401,6 +3421,7 @@ static void woal_sdiommc_dump_fw_info(moal_handle *phandle)
 	mlan_ioctl(phandle->pmlan_adapter, NULL);
 
 	mlan_pm_wakeup_card(phandle->pmlan_adapter, MTRUE);
+	msleep(5);
 	phandle->fw_dump = MTRUE;
 	if (phandle->card_info->dump_fw_info == DUMP_FW_SDIO_V2) {
 		woal_dump_firmware_info_v2(phandle);
@@ -3410,7 +3431,8 @@ static void woal_sdiommc_dump_fw_info(moal_handle *phandle)
 			woal_trigger_nmi_on_no_dump_event(phandle);
 			queue_work(phandle->workqueue, &phandle->main_work);
 			phandle->is_fw_dump_timer_set = MTRUE;
-			woal_mod_timer(&phandle->fw_dump_timer, MOAL_TIMER_5S);
+			woal_mod_timer(&phandle->fw_dump_timer,
+				       MOAL_FW_DUMP_TIMER);
 			return;
 		}
 	}
@@ -3471,6 +3493,14 @@ static int woal_sdiommc_dump_reg_info(moal_handle *phandle, t_u8 *drv_buf)
 			PRINTM(MERROR, "FW in debug mode (0x%x)\n", data);
 			drv_ptr += snprintf(drv_ptr, MAX_BUF_LEN,
 					    "FW in debug mode (0x%x)\n", data);
+			if (data == FW_STUCK_CODE_VERSION_MISMATCH) {
+				phandle->driver_init = MFALSE;
+				PRINTM(MERROR,
+				       "WLAN and BT FW version mismatch !! Redownload both FWs with correct and same version\n");
+				drv_ptr += snprintf(
+					drv_ptr, MAX_BUF_LEN,
+					"WLAN and BT FW version mismatch !! Redownload both FWs with correct and same version!\n");
+			}
 		}
 	}
 
@@ -3596,7 +3626,7 @@ void woal_sdio_reset_hw(moal_handle *handle)
 	else
 #endif
 		sdio_claim_irq(func, woal_sdio_interrupt);
-	sdio_set_block_size(card->func, MLAN_SDIO_BLOCK_SIZE);
+	sdio_set_block_size(card->func, handle->sdio_blk_size);
 	sdio_release_host(func);
 	LEAVE();
 	return;
