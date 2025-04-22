@@ -4,7 +4,7 @@
  *  @brief This file contains FW event ID definitions.
  *
  *
- *  Copyright 2023-2026 NXP
+ *  Copyright 2023-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -219,27 +219,6 @@ ENUM_ELEMENT(EVENT_DUMMY_HOST_WAKEUP_SIGNAL, 0x0001),
 	/** Event ID: Ex-AP 6E Reg mode */
 	ENUM_ELEMENT(EVENT_CHANNEL_SWITCH_REGINFO, 0x00A5),
 #endif
-
-	ENUM_ELEMENT(EVENT_EMERGENCY_TEMP_REACHED, 0x00A9),
-
-#ifdef UAP_SUPPORT
-	/** Event ID: Agiled Channel Switch report */
-	ENUM_ELEMENT(EVENT_AGCS_REPORT, 0x00AA),
-#endif /* UAP_SUPPORT */
-
-	ENUM_ELEMENT(EVENT_TSP_CONFIG, 0x00AB),
-
-#if defined(PCIE) || defined(SDIO)
-	/** Card Event definition : In Band reset triggered by FW */
-	ENUM_ELEMENT(EVENT_FW_IN_BAND_RESET, 0x00AD),
-#endif
-
-#ifdef SECURE_HOST
-	ENUM_ELEMENT(EVENT_SECURE_HOST_COMM, 0x00AE),
-#endif
-
-	/** Event ID: WiFi uAP Channel Avoidance */
-	ENUM_ELEMENT(EVENT_WIFI_CHANNEL_AVOID_LIST, 0x00AF),
 
 	/* Always keep this last */
 	ENUM_ELEMENT_LAST(__HostEvent_Last)

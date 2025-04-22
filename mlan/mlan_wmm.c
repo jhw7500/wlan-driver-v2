@@ -4,7 +4,7 @@
  *  @brief This file contains functions for WMM.
  *
  *
- *  Copyright 2008-2021, 2025-2026 NXP
+ *  Copyright 2008-2021, 2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -4216,8 +4216,7 @@ mlan_status wlan_ret_wmm_addts_req(pmlan_private pmpriv,
 				       S_DS_GEN);
 
 			/* Copy the TSPEC data include any extra IEs after the
-			 * TSPEC
-			 */
+			 * TSPEC */
 			// coverity[cert_arr30_c_violation: SUPPRESS]
 			memcpy_ext(pmpriv->adapter, paddts->ie_data,
 				   presp_addts->tspec_data, paddts->ie_data_len,

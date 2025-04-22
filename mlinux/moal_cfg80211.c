@@ -3077,25 +3077,15 @@ static int woal_mgmt_tx(moal_private *priv, const u8 *buf, size_t len,
 	/* Remove 11ax IEs and reduce IE length if band support disabled
 	 * and assoc response includes 11ax IEs
 	 */
-	if (chan &&
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
-	    /* Kernel >= 4.7: Use NL80211_BAND_* enum */
-	    ((chan->band == NL80211_BAND_2GHZ &&
-	      !(priv->phandle->fw_bands & BAND_GAX)) ||
-	     (chan->band == NL80211_BAND_5GHZ &&
-	      !(priv->phandle->fw_bands & BAND_AAX))
-#else
-	    /* Kernel < 4.7 (including 4.4): Use IEEE80211_BAND_* enum */
-	    ((chan->band == IEEE80211_BAND_2GHZ &&
-	      !(priv->phandle->fw_bands & BAND_GAX)) ||
-	     (chan->band == IEEE80211_BAND_5GHZ &&
-	      !(priv->phandle->fw_bands & BAND_AAX))
-#endif
+	if (chan && ((chan->band == NL80211_BAND_2GHZ &&
+		      !(priv->phandle->fw_bands & BAND_GAX)) ||
+		     (chan->band == NL80211_BAND_5GHZ &&
+		      !(priv->phandle->fw_bands & BAND_AAX))
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	     || (chan->band == NL80211_BAND_6GHZ &&
-		 !(priv->phandle->fw_bands & BAND_6G))
+		     || (chan->band == NL80211_BAND_6GHZ &&
+			 !(priv->phandle->fw_bands & BAND_6G))
 #endif
-		     )) {
+			     )) {
 		fc = le16_to_cpu(
 			((const struct ieee80211_mgmt *)buf)->frame_control);
 		type = fc & IEEE80211_FCTL_FTYPE;
@@ -3683,8 +3673,8 @@ int woal_cfg80211_mgmt_tx(struct wiphy *wiphy,
 		priv->host_mlme = MTRUE;
 	}
 #if KERNEL_VERSION(2, 6, 39) <= CFG80211_VERSION_CODE
-	else if ((ieee80211_is_action(
-			 ((const struct ieee80211_mgmt *)buf)->frame_control))
+	if ((ieee80211_is_action(
+		    ((const struct ieee80211_mgmt *)buf)->frame_control))
 #if KERNEL_VERSION(3, 8, 0) <= CFG80211_VERSION_CODE
 		 || moal_extflg_isset(priv->phandle, EXT_HOST_MLME)
 #endif
@@ -3703,6 +3693,16 @@ int woal_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			woal_remain_timer_func(priv->phandle);
 		}
 
+		if (ieee80211_is_auth(
+			    ((struct ieee80211_mgmt *)buf)->frame_control) &&
+		    (priv->bss_type == MLAN_BSS_TYPE_STA)) {
+			woal_mgmt_frame_register(priv, IEEE80211_STYPE_AUTH,
+						 MTRUE);
+			priv->auth_flag = HOST_MLME_AUTH_PENDING;
+			priv->auth_alg = woal_cpu_to_le16(
+				((struct ieee80211_mgmt *)buf)->u.auth.auth_alg);
+			priv->host_mlme = MTRUE;
+		}
 		/* With sd8777 We have difficulty to receive response packet in
 		 * 500ms
 		 */
@@ -4497,11 +4497,11 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 		case WAPI_IE:
 			break;
 		case EXTENSION:
-			/* skip 2G-HE, 5G-HE, 6G if bands are not enabled */
-			if (!(priv->phandle->fw_bands & BAND_GAX) &&
+			/* skip 11ax, 6G if bands are not enabled */
+			if (!(priv->phandle->fw_bands & BAND_GAX) ||
 			    !(priv->phandle->fw_bands & BAND_AAX)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-			    && !(priv->phandle->fw_bands & BAND_6G)
+			    || !(priv->phandle->fw_bands & BAND_6G)
 #endif
 			)
 				break;
@@ -4606,10 +4606,10 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 			/* filter out EXTCAP */
 			if (wps_flag & IE_MASK_EXTCAP) {
 				ie_len = length + 2;
-				if (woal_set_get_gen_ie(priv, MLAN_ACT_SET, pos,
+				if (MLAN_STATUS_SUCCESS !=
+				    woal_set_get_gen_ie(priv, MLAN_ACT_SET, pos,
 							NULL, &ie_len,
-							MOAL_IOCTL_WAIT) !=
-				    MLAN_STATUS_SUCCESS)
+							MOAL_IOCTL_WAIT))
 					PRINTM(MERROR,
 					       "Fail to set EXTCAP IE\n");
 				break;
@@ -4673,7 +4673,7 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 			if (priv->chan.chan->band != NL80211_BAND_6GHZ)
 				break;
 #endif
-			fallthrough;
+			/* FALLTHRU */
 		default:
 			if ((out_len + length + 2) < (int)ie_out_len) {
 				moal_memcpy_ext(priv->phandle, ie_out + out_len,
@@ -5055,10 +5055,6 @@ int woal_cfg80211_mgmt_frame_ie(
 			beacon_ies_data->mgmt_subtype_mask =
 				MGMT_MASK_BEACON | MGMT_MASK_ASSOC_RESP |
 				MGMT_MASK_PROBE_RESP;
-			/* woal_filter_beacon_ies() enforces bounds internally
-			 * and output is limited by MAX_IE_SIZE, preventing
-			 * overflow
-			 */
 			// coverity[integer_overflow:SUPPRESS]
 			beacon_ies_data->ie_length = woal_filter_beacon_ies(
 				priv, beacon_ies, beacon_ies_len,
@@ -5067,7 +5063,6 @@ int woal_cfg80211_mgmt_frame_ie(
 					IE_MASK_VENDOR,
 				proberesp_ies, proberesp_ies_len);
 			if (beacon_ies_data->ie_length)
-				/* ie_length is already checked as non-zero */
 				// coverity[integer_overflow:SUPPRESS]
 				DBG_HEXDUMP(MCMD_D, "beacon ie",
 					    beacon_ies_data->ie_buffer,
@@ -6165,8 +6160,6 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 					mcs_nss[1] = mcs_nss[0] |= 0x0c;
 					moal_memcpy_ext(
 						priv->phandle,
-						/* This cast is safe and
-						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6197,8 +6190,6 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 
 					moal_memcpy_ext(
 						priv->phandle,
-						/* This cast is safe and
-						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6247,8 +6238,6 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 					mcs_nss[1] = mcs_nss[0] |= 0x0c;
 					moal_memcpy_ext(
 						priv->phandle,
-						/* This cast is safe and
-						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6291,8 +6280,6 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 
 					moal_memcpy_ext(
 						priv->phandle,
-						/* This cast is safe and
-						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6697,95 +6684,3 @@ done:
 	return status;
 }
 #endif
-
-/**
- *  @brief Process the WiFi channel list avoidance event
- *
- *  @param priv A pointer to the moal_private structure
- *  @param pwifi_chan_info Pointer to the WiFi channel list
- *                         avoidance structure
- *
- *  @return void
- */
-void process_wifi_channel_avoid_list_event(
-	moal_private *priv, wifi_chan_avoid_list_t *pwifi_chan_info)
-{
-	struct ieee80211_supported_band *sband = NULL;
-	struct ieee80211_channel *channel = NULL;
-	int index = 0, i = 0, j = 0;
-	t_u8 ieee_band = 0;
-
-	if (!pwifi_chan_info)
-		return;
-
-	/* Process the event */
-	if (pwifi_chan_info->bandcfg.chanBand == BAND_2GHZ) {
-		ieee_band = IEEE80211_BAND_2GHZ;
-		PRINTM(MEVENT, "WiFi Channel Avoidance List band=%d len=%d\n",
-		       ieee_band, pwifi_chan_info->length);
-	} else if (pwifi_chan_info->bandcfg.chanBand == BAND_5GHZ) {
-		ieee_band = IEEE80211_BAND_5GHZ;
-		PRINTM(MEVENT, "WiFi Channel Avoidance List band=%d len=%d\n",
-		       ieee_band, pwifi_chan_info->length);
-	}
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-	else if (pwifi_chan_info->bandcfg.chanBand == BAND_6GHZ) {
-		ieee_band = IEEE80211_BAND_6GHZ;
-		PRINTM(MEVENT, "WiFi Channel Avoidance List band=%d len=%d\n",
-		       ieee_band, pwifi_chan_info->length);
-	}
-#endif
-	else {
-		PRINTM(MEVENT,
-		       "Ignoring the WiFi Channel Avoidance List Event\n");
-		return;
-	}
-
-	for (index = 0; index < MAX_MLAN_ADAPTER; index++) {
-		/* Reinitialize the sband for every adapter */
-		sband = NULL;
-
-		if (m_handle[index] && m_handle[index]->wiphy) {
-			sband = m_handle[index]->wiphy->bands[ieee_band];
-
-			/* Move to next adapter with supporting band */
-			if (!sband)
-				continue;
-
-			PRINTM(MINFO, "====== Iteration=%d ======", index);
-			/* Clearing NO-IR flags for all channels,
-			 * except for the channels marked as INDOOR-ONLY
-			 */
-			for (i = 0; i < sband->n_channels; i++) {
-				channel = &sband->channels[i];
-				if (!(channel->flags &
-				      IEEE80211_CHAN_INDOOR_ONLY))
-					channel->flags &= ~IEEE80211_CHAN_NO_IR;
-			}
-
-			/* Setting NO-IR flags as per the channel list */
-			for (j = 0; j < pwifi_chan_info->length; j++) {
-				for (i = 0; i < sband->n_channels; i++) {
-					channel = &sband->channels[i];
-					if (channel->hw_value ==
-					    pwifi_chan_info->chanList[j]) {
-						PRINTM(MMSG,
-						       "Marking channel = %d as NO-IR\n",
-						       pwifi_chan_info
-							       ->chanList[j]);
-						channel->flags |=
-							IEEE80211_CHAN_NO_IR;
-						break;
-					}
-				}
-			}
-
-			/* Disabling beacon hints to avoid re-enabling of
-			 * channels marked as NO-IR */
-			m_handle[index]->wiphy->regulatory_flags =
-				m_handle[index]->wiphy->regulatory_flags |
-				REGULATORY_DISABLE_BEACON_HINTS;
-		}
-	}
-	return;
-}

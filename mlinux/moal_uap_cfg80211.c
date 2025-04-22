@@ -4,7 +4,7 @@
  * @brief This file contains the functions for uAP CFG80211.
  *
  *
- * Copyright 2011-2026 NXP
+ * Copyright 2011-2025 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -55,18 +55,9 @@ static mode_psd_t mode_psd_uap_FCC_6G[] = {
  * @brief Band: 6G, Region: EU UAP-Mode-PSD Table
  */
 static mode_psd_t mode_psd_uap_EU_6G[] = {
-	{"indoor_", "plus10"},
+	{"indoor_", "plus7"},
 	{"sp_", ""},
-	{"vlp_", "plus1"},
-};
-
-/**
- * @brief Band: 6G, Region: JP UAP-Mode-PSD Table
- */
-static mode_psd_t mode_psd_uap_JP_6G[] = {
-	{"indoor_", "plus10"},
-	{"sp_", ""},
-	{"vlp_", "plus1"},
+	{"vlp_", "minus5"},
 };
 
 /**
@@ -80,10 +71,6 @@ static rmp_table_t rmp_table_uap_6G[] = {
 	{
 		0x30, /* ETSI region */
 		mode_psd_uap_EU_6G,
-	},
-	{
-		0x40, /* JP region */
-		mode_psd_uap_JP_6G,
 	},
 };
 
@@ -111,19 +98,19 @@ typedef struct _domain_code_mapping_t {
 
 /*
  *DOMAIN_CODE_FCC: AE AM AN AR AZ BH BL BN BR CL CN CR CS DZ EC
- * EG GE HN HK ID IL IR JM JO KP KW KZ LB LK MA
- * MO NP OM PE PG PH PK PT QA SA SG SV SY TH TT
- * TN UY YE ZA ZW VN KR
+		   EG GE HN HK ID IL IR JM JO KP KW KZ LB LK MA
+		   MO NP OM PE PG PH PK PT QA SA SG SV SY TH TT
+		   TN UY YE ZA ZW VN KR
  *DOMAIN_CODE_FCC1: US UZ CA CO DO GT PA PR TW NZ BO BZ VE
  *DOMAIN_CODE_MKK: JP
  *DOMAIN_CODE_ETSI: AL AD AT AU BE BA BG HR CY CZ DK EE FI FR MK
- * DE GB GR HU IS IE IT LV LI LT LU MT MD MC ME
- * NL NO PL RO SM RS SI SK ES SE CH TR UA UK NE
- * NZ DZ AO AM AW BH BD BT BO BQ BW VG BF BI KH
- * CL KM CG CD CW EG FO GF PF GE GI GP HK ID IM
- * IL JE KE XK KW LA LR MW MV MQ MR YT MA MZ MM
- * NA NC NG OM PS PT QA RW RE BL MF VC SA SC ZA
- * SZ SY TZ TG TN AE VA EH YE ZM ZW
+		    DE GB GR HU IS IE IT LV LI LT LU MT MD MC ME
+		    NL NO PL RO SM RS SI SK ES SE CH TR UA UK NE
+		    NZ DZ AO AM AW BH BD BT BO BQ BW VG BF BI KH
+		    CL KM CG CD CW EG FO GF PF GE GI GP HK ID IM
+		    IL JE KE XK KW LA LR MW MV MQ MR YT MA MZ MM
+		    NA NC NG OM PS PT QA RW RE BL MF VC SA SC ZA
+		    SZ SY TZ TG TN AE VA EH YE ZM ZW
  *DOMAIN_CODE_IN: IN
  */
 domain_code_mapping_t domain_code_mapping[] = {
@@ -237,9 +224,8 @@ domain_code_mapping_t domain_code_mapping[] = {
  */
 
 /********************************************************
- * Global Functions
- * ******************************************************
- */
+				Global Functions
+********************************************************/
 #ifdef UAP_SUPPORT
 /**
  *  @brief This function converts country code string to domain code
@@ -713,7 +699,6 @@ static t_u8 woal_check_rsn_ie(const IEEEtypes_Rsn_t *rsn_ie,
 	int count = 0;
 	int i = 0;
 	const wpa_suite_auth_key_mgmt_t *key_mgmt = NULL;
-
 	left = rsn_ie->len + 2;
 	if (left < (int)sizeof(IEEEtypes_Rsn_t))
 		return MFALSE;
@@ -798,7 +783,6 @@ static t_u8 woal_check_wpa_ie(const IEEEtypes_Wpa_t *wpa_ie,
 	int count = 0;
 	int i = 0;
 	const wpa_suite_auth_key_mgmt_t *key_mgmt = NULL;
-
 	left = wpa_ie->len + 2;
 	if (left < (int)sizeof(IEEEtypes_Wpa_t))
 		return MFALSE;
@@ -1163,7 +1147,6 @@ static t_u16 woal_get_htcap_info(const t_u8 *ie, int len)
 {
 	t_u16 ht_cap_info = 0;
 	const IEEEtypes_HTCap_t *htcap_ie = NULL;
-
 	htcap_ie = (const IEEEtypes_HTCap_t *)woal_parse_ie_tlv(ie, len,
 								HT_CAPABILITY);
 	if (htcap_ie) {
@@ -1188,7 +1171,6 @@ static t_u16 woal_get_htcap_info(const t_u8 *ie, int len)
 static const IEEEtypes_VHTCap_t *woal_get_vhtcap_info(const t_u8 *ie, int len)
 {
 	const IEEEtypes_VHTCap_t *vhtcap_ie = NULL;
-
 	vhtcap_ie = (const IEEEtypes_VHTCap_t *)woal_parse_ie_tlv(
 		ie, len, VHT_CAPABILITY);
 	if (vhtcap_ie)
@@ -1209,7 +1191,6 @@ static const IEEEtypes_VHTOprat_t *woal_get_vht_oprat_ie(const t_u8 *ie,
 							 int len)
 {
 	const IEEEtypes_VHTOprat_t *vht_oprat_ie = NULL;
-
 	vht_oprat_ie = (const IEEEtypes_VHTOprat_t *)woal_parse_ie_tlv(
 		ie, len, VHT_OPERATION);
 	if (vht_oprat_ie)
@@ -1385,7 +1366,7 @@ static void woal_set_uap_rates(moal_private *priv, mlan_uap_bss_param *bss_cfg,
  *
  * @param                 A pointer to moal_private
  * @param beacon_buf	  A pointer to beacon configuration buffer
- * @param buf_len	  Beacon buffer length
+ * @param buf_len     	  Beacon buffer length
  * @return                void
  */
 void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
@@ -1394,7 +1375,7 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 	const IEEEtypes_HeOp_t *heoper_ie = NULL;
 	mode_psd_t *mode_psd_6G = NULL;
 	t_u8 country_code[COUNTRY_CODE_LEN];
-	char tmp[64] = {0};
+
 	ENTER();
 	/* Set the Country Code */
 	country_code[0] = priv->phandle->country_code[0];
@@ -1410,10 +1391,7 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 		       ((heoper_ie->option[1] & HE_OPER_CTRL_MASK) >> 3));
 		memset(priv->phandle->mode_psd_string, 0,
 		       sizeof(priv->phandle->mode_psd_string));
-		memset(priv->phandle->pwr_offset_string, 0,
-		       sizeof(priv->phandle->pwr_offset_string));
-		memset(priv->phandle->ru_string, 0,
-		       sizeof(priv->phandle->ru_string));
+
 		switch ((heoper_ie->option[1] & HE_OPER_CTRL_MASK) >> 3) {
 		/* Indoor Mode */
 		case UAP_MODE_IND: {
@@ -1421,11 +1399,7 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncpy(priv->phandle->mode_psd_string,
 				"region_pwr_cfg_6G_PSD_",
 				strlen("region_pwr_cfg_6G_PSD_") + 1);
-			strncpy(priv->phandle->pwr_offset_string,
-				"region_pwr_offset_cfg_6G_PSD_",
-				strlen("region_pwr_offset_cfg_6G_PSD_") + 1);
-			strncpy(tmp, "subband_ru_power_cfg_6G_PSD_",
-				strlen("subband_ru_power_cfg_6G_PSD_") + 1);
+
 			/* Prepare the 6E operation mode/psd based string */
 			switch (priv->phandle->dfs_region) {
 			case NXP_DFS_FCC: {
@@ -1438,39 +1412,20 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 						      .mp_ptr;
 				break;
 			}
-			case NXP_DFS_JP: {
-				mode_psd_6G =
-					rmp_table_uap_6G[NXP_DFS_JP - 1].mp_ptr;
-				break;
-			}
 			default:
 				PRINTM(MCMND, "Downloading deafult 6E table\n");
-				if (woal_dnld_default_6e_psd_table(priv) !=
-				    MLAN_STATUS_SUCCESS)
+				if (MLAN_STATUS_SUCCESS !=
+				    woal_dnld_default_6e_psd_table(priv))
 					PRINTM(MERROR,
 					       "Default 6E table dnld failed!\n");
 				goto done;
 			}
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_IND].op_mode,
-				(sizeof(priv->phandle->mode_psd_string) -
-				 strlen(priv->phandle->mode_psd_string) - 1));
+				strlen(mode_psd_6G[UAP_MODE_IND].op_mode));
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_IND].psd_dbm,
-				(sizeof(priv->phandle->mode_psd_string) -
-				 strlen(priv->phandle->mode_psd_string) - 1));
-			strncat(priv->phandle->pwr_offset_string,
-				mode_psd_6G[UAP_MODE_IND].op_mode,
-				(sizeof(priv->phandle->pwr_offset_string) -
-				 strlen(priv->phandle->pwr_offset_string) - 1));
-			strncat(priv->phandle->pwr_offset_string,
-				mode_psd_6G[UAP_MODE_IND].psd_dbm,
-				(sizeof(priv->phandle->pwr_offset_string) -
-				 strlen(priv->phandle->pwr_offset_string) - 1));
-			strncat(tmp, mode_psd_6G[UAP_MODE_IND].op_mode,
-				(sizeof(tmp) - strlen(tmp) - 1));
-			strncat(tmp, mode_psd_6G[UAP_MODE_IND].psd_dbm,
-				(sizeof(tmp) - strlen(tmp) - 1));
+				strlen(mode_psd_6G[UAP_MODE_IND].psd_dbm));
 			break;
 		}
 		/* Standard Power Mode */
@@ -1479,11 +1434,6 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncpy(priv->phandle->mode_psd_string,
 				"region_pwr_cfg_6G_PSD_",
 				strlen("region_pwr_cfg_6G_PSD_") + 1);
-			strncpy(priv->phandle->pwr_offset_string,
-				"region_pwr_offset_cfg_6G_PSD_",
-				strlen("region_pwr_offset_cfg_6G_PSD_") + 1);
-			strncpy(tmp, "subband_ru_power_cfg_6G_PSD_",
-				strlen("subband_ru_power_cfg_6G_PSD_") + 1);
 
 			/* Prepare the 6E operation mode/psd based string */
 			switch (priv->phandle->dfs_region) {
@@ -1497,39 +1447,20 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 						      .mp_ptr;
 				break;
 			}
-			case NXP_DFS_JP: {
-				mode_psd_6G =
-					rmp_table_uap_6G[NXP_DFS_JP - 1].mp_ptr;
-				break;
-			}
 			default:
 				PRINTM(MCMND, "Downloading deafult 6E table\n");
-				if (woal_dnld_default_6e_psd_table(priv) !=
-				    MLAN_STATUS_SUCCESS)
+				if (MLAN_STATUS_SUCCESS !=
+				    woal_dnld_default_6e_psd_table(priv))
 					PRINTM(MERROR,
 					       "Default table dnld failed!\n");
 				goto done;
 			}
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_SP].op_mode,
-				(sizeof(priv->phandle->mode_psd_string) -
-				 strlen(priv->phandle->mode_psd_string) - 1));
+				strlen(mode_psd_6G[UAP_MODE_SP].op_mode));
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_SP].psd_dbm,
-				(sizeof(priv->phandle->mode_psd_string) -
-				 strlen(priv->phandle->mode_psd_string) - 1));
-			strncat(priv->phandle->pwr_offset_string,
-				mode_psd_6G[UAP_MODE_SP].op_mode,
-				(sizeof(priv->phandle->pwr_offset_string) -
-				 strlen(priv->phandle->pwr_offset_string) - 1));
-			strncat(priv->phandle->pwr_offset_string,
-				mode_psd_6G[UAP_MODE_SP].psd_dbm,
-				(sizeof(priv->phandle->pwr_offset_string) -
-				 strlen(priv->phandle->pwr_offset_string) - 1));
-			strncat(tmp, mode_psd_6G[UAP_MODE_SP].op_mode,
-				(sizeof(tmp) - strlen(tmp) - 1));
-			strncat(tmp, mode_psd_6G[UAP_MODE_SP].psd_dbm,
-				(sizeof(tmp) - strlen(tmp) - 1));
+				strlen(mode_psd_6G[UAP_MODE_SP].psd_dbm));
 			break;
 		}
 		/* Very Low Power Mode */
@@ -1538,11 +1469,7 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncpy(priv->phandle->mode_psd_string,
 				"region_pwr_cfg_6G_PSD_",
 				strlen("region_pwr_cfg_6G_PSD_") + 1);
-			strncpy(priv->phandle->pwr_offset_string,
-				"region_pwr_offset_cfg_6G_PSD_",
-				strlen("region_pwr_offset_cfg_6G_PSD_") + 1);
-			strncpy(tmp, "subband_ru_power_cfg_6G_PSD_",
-				strlen("subband_ru_power_cfg_6G_PSD_") + 1);
+
 			/* Prepare the 6E operation mode/psd based string */
 			switch (priv->phandle->dfs_region) {
 			case NXP_DFS_FCC: {
@@ -1555,46 +1482,27 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 						      .mp_ptr;
 				break;
 			}
-			case NXP_DFS_JP: {
-				mode_psd_6G =
-					rmp_table_uap_6G[NXP_DFS_JP - 1].mp_ptr;
-				break;
-			}
 			default:
 				PRINTM(MCMND, "Downloading deafult 6E table\n");
-				if (woal_dnld_default_6e_psd_table(priv) !=
-				    MLAN_STATUS_SUCCESS)
+				if (MLAN_STATUS_SUCCESS !=
+				    woal_dnld_default_6e_psd_table(priv))
 					PRINTM(MERROR,
 					       "Default table dnld failed!\n");
 				goto done;
 			}
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_VLP].op_mode,
-				(sizeof(priv->phandle->mode_psd_string) -
-				 strlen(priv->phandle->mode_psd_string) - 1));
+				strlen(mode_psd_6G[UAP_MODE_VLP].op_mode));
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_VLP].psd_dbm,
-				(sizeof(priv->phandle->mode_psd_string) -
-				 strlen(priv->phandle->mode_psd_string) - 1));
-			strncat(priv->phandle->pwr_offset_string,
-				mode_psd_6G[UAP_MODE_VLP].op_mode,
-				(sizeof(priv->phandle->pwr_offset_string) -
-				 strlen(priv->phandle->pwr_offset_string) - 1));
-			strncat(priv->phandle->pwr_offset_string,
-				mode_psd_6G[UAP_MODE_VLP].psd_dbm,
-				(sizeof(priv->phandle->pwr_offset_string) -
-				 strlen(priv->phandle->pwr_offset_string) - 1));
-			strncat(tmp, mode_psd_6G[UAP_MODE_VLP].op_mode,
-				(sizeof(tmp) - strlen(tmp) - 1));
-			strncat(tmp, mode_psd_6G[UAP_MODE_VLP].psd_dbm,
-				(sizeof(tmp) - strlen(tmp) - 1));
+				strlen(mode_psd_6G[UAP_MODE_VLP].psd_dbm));
 			break;
 		}
 		default:
-			PRINTM(MCMND,
-			       "Incorrect 6E AP Operation Mode...Downloading deafult 6E table\n");
-			if (woal_dnld_default_6e_psd_table(priv) !=
-			    MLAN_STATUS_SUCCESS)
+			PRINTM(MCMND, "Incorrect 6E AP Operation Mode..."
+				      "Downloading deafult 6E table\n");
+			if (MLAN_STATUS_SUCCESS !=
+			    woal_dnld_default_6e_psd_table(priv))
 				PRINTM(MERROR, "Default table dnld failed!\n");
 			goto done;
 		}
@@ -1602,33 +1510,10 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 		PRINTM(MMSG, "DFS region = %d Opmode string = %s\n",
 		       priv->phandle->dfs_region,
 		       priv->phandle->mode_psd_string);
-		if (woal_request_country_power_table(priv, country_code,
-						     MOAL_IOCTL_WAIT, 1) !=
-		    MLAN_STATUS_SUCCESS) {
-			PRINTM(MERROR, "Failed to get country power table\n");
-			goto done;
-		}
-		memset(priv->phandle->mode_psd_string, 0,
-		       sizeof(priv->phandle->mode_psd_string));
-
-		/* Download the uAP mode specific PSD Offset table */
-		PRINTM(MMSG, "Offset table string = %s\n",
-		       priv->phandle->pwr_offset_string);
-		if (woal_request_country_power_table(priv, country_code,
-						     MOAL_IOCTL_WAIT, 0) !=
-		    MLAN_STATUS_SUCCESS) {
-			PRINTM(MERROR, "Failed to get power offset table\n");
-		}
-		memset(priv->phandle->pwr_offset_string, 0,
-		       sizeof(priv->phandle->pwr_offset_string));
-
-		/* Download the uAP mode specific PSD RU table */
-		strncpy(priv->phandle->ru_string, tmp,
-			sizeof(priv->phandle->ru_string) - 1);
 		if (MLAN_STATUS_SUCCESS !=
-		    woal_dnld_ru_power_table(priv, country_code,
-					     MOAL_IOCTL_WAIT)) {
-			PRINTM(MERROR, "Failed to get RU power table\n");
+		    woal_request_country_power_table(priv, country_code,
+						     MOAL_IOCTL_WAIT, 1)) {
+			PRINTM(MERROR, "Failed to get country power table\n");
 		}
 		// Casting is done to read the value
 		// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
@@ -1728,9 +1613,9 @@ static int woal_cfg80211_beacon_config(moal_private *priv,
 #endif
 	if (wapi_ie) {
 		wapi_ie_len = *(wapi_ie + 1) + 2;
-		if (woal_set_get_gen_ie(priv, MLAN_ACT_SET, wapi_ie, NULL,
-					&wapi_ie_len, MOAL_IOCTL_WAIT) ==
-		    MLAN_STATUS_FAILURE) {
+		if (MLAN_STATUS_FAILURE ==
+		    woal_set_get_gen_ie(priv, MLAN_ACT_SET, wapi_ie, NULL,
+					&wapi_ie_len, MOAL_IOCTL_WAIT)) {
 			PRINTM(MERROR, "Failed to set wapi ie\n");
 			ret = -EFAULT;
 			goto done;
@@ -2305,18 +2190,12 @@ static int woal_cfg80211_beacon_config(moal_private *priv,
 					sizeof(IEEEtypes_HECap_t));
 		}
 		/* Parse the HE Operation IE and download the 6E PSD table
-		 * as per the AP Operation mode
-		 */
+		 * as per the AP Operation mode */
 		if (sys_config->bandcfg.chanBand == BAND_6GHZ)
 			woal_dnld_uap_6e_psd_table(priv, ie, ie_len);
-		else {
+		else
 			memset(priv->phandle->mode_psd_string, 0,
 			       sizeof(priv->phandle->mode_psd_string));
-			memset(priv->phandle->pwr_offset_string, 0,
-			       sizeof(priv->phandle->pwr_offset_string));
-			memset(priv->phandle->ru_string, 0,
-			       sizeof(priv->phandle->ru_string));
-		}
 
 #if CFG80211_VERSION_CODE > KERNEL_VERSION(5, 3, 0)
 		if (params->twt_responder == MFALSE) {
@@ -2361,10 +2240,10 @@ static int woal_cfg80211_beacon_config(moal_private *priv,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 	if (params->fils_discovery.tmpl_len ||
 	    params->unsol_bcast_probe_resp.tmpl_len) {
-		if (woal_request_6e_inband_frame(
+		if (MLAN_STATUS_SUCCESS !=
+		    woal_request_6e_inband_frame(
 			    priv, MOAL_IOCTL_WAIT, &params->fils_discovery,
-			    &params->unsol_bcast_probe_resp) !=
-		    MLAN_STATUS_SUCCESS) {
+			    &params->unsol_bcast_probe_resp)) {
 			ret = -EFAULT;
 			goto done;
 		}
@@ -2899,7 +2778,6 @@ moal_private *woal_alloc_virt_interface(moal_handle *handle, t_u8 bss_index,
 	// Coverity raised warning for kernel API
 	// coverity[useless_call:SUPPRESS]
 	spin_lock_init(&priv->dhcp_discover_lock);
-	// Coverity raised warning for kernel API
 	// coverity[useless_call:SUPPRESS]
 	spin_lock_init(&priv->arp_request_lock);
 #endif
@@ -3749,7 +3627,6 @@ int woal_cfg80211_add_beacon(struct wiphy *wiphy, struct net_device *dev,
 {
 	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
 	int ret = 0;
-	t_u32 bandctrl = 0;
 	moal_private *sta_priv =
 		woal_get_priv_bss_type(priv->phandle, MLAN_BSS_TYPE_STA);
 
@@ -3759,8 +3636,9 @@ int woal_cfg80211_add_beacon(struct wiphy *wiphy, struct net_device *dev,
 
 	PRINTM(MMSG, "wlan: %s Starting AP\n", dev->name);
 #ifdef UAP_SUPPORT
-	if (priv->phandle->params.custom_11d_bcn_country_ie_en)
+	if (priv->phandle->params.custom_11d_bcn_country_ie_en) {
 		woal_send_bcn_country_ie_cmd_fw(priv, MOAL_NO_WAIT);
+	}
 #endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(2, 6, 39)
 	/* cancel previous remain on channel to avoid firmware hang */
@@ -4009,18 +3887,16 @@ int woal_cfg80211_set_beacon(struct wiphy *wiphy, struct net_device *dev,
 				goto done;
 			}
 		}
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 		/* Handling for uAP PSD table download for host triggered
-		 * and FW triggered (AP+STA) ECSA cases
-		 */
+		 * and FW triggered (AP+STA) ECSA cases */
 		if (params->tail && params->tail_len &&
 		    priv->chan.chan->band == NL80211_BAND_6GHZ) {
-			DBG_HEXDUMP(MCMD_D, "6E ECSA Beacon", params->tail,
-				    params->tail_len);
+			// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
+			DBG_HEXDUMP(MCMD_D, "6E ECSA Beacon",
+				    (t_u8 *)params->tail, params->tail_len);
 			woal_dnld_uap_6e_psd_table(priv, params->tail,
 						   params->tail_len);
 		}
-#endif
 #endif
 	}
 
@@ -4150,15 +4026,9 @@ int woal_cfg80211_del_beacon(struct wiphy *wiphy, struct net_device *dev)
 	}
 	woal_clear_all_mgmt_ies(priv, MOAL_NO_WAIT);
 	/* Clear the mode_psd_string for AP stop */
-	if (priv->phandle->fw_bands & BAND_6G) {
+	if (priv->phandle->fw_bands & BAND_6G)
 		memset(priv->phandle->mode_psd_string, 0,
 		       sizeof(priv->phandle->mode_psd_string));
-		memset(priv->phandle->pwr_offset_string, 0,
-		       sizeof(priv->phandle->pwr_offset_string));
-		memset(priv->phandle->ru_string, 0,
-		       sizeof(priv->phandle->ru_string));
-	}
-
 #ifdef STA_SUPPORT
 	if (!woal_is_any_interface_active(priv->phandle)) {
 		pmpriv = woal_get_priv((moal_handle *)priv->phandle,

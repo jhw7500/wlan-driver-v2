@@ -4,7 +4,7 @@
  * @brief This file contains functions for proc file.
  *
  *
- * Copyright 2008-2022, 2025-2026 NXP
+ * Copyright 2008-2022, 2025 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -943,7 +943,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
 
 	if (!woal_secure_add(&count, 1, &tmp_count, TYPE_UINT32)) {
-		PRINTM(MERROR, "%s:count param overflow\n", __func__);
+		PRINTM(MERROR, "%s:count param overflow \n", __func__);
 		LEAVE();
 		return -EINVAL;
 	}

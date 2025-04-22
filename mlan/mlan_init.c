@@ -5,7 +5,7 @@
  *  and HW.
  *
  *
- *  Copyright 2008-2021, 2025-2026 NXP
+ *  Copyright 2008-2021, 2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -376,10 +376,10 @@ mlan_status wlan_allocate_adapter(pmlan_adapter pmadapter)
 		}
 #ifdef DEBUG_LEVEL1
 		if (mlan_drvdbg & MMPA_D) {
-			pmadapter->pcard_sd->mpa_buf_size = (SECURE_MULT_UINT32(
-				SDIO_MP_DBG_NUM,
-				pmadapter->pcard_sd->mp_aggr_pkt_limit,
-				pmadapter->pcard_sd->sdio_blk_size));
+			pmadapter->pcard_sd->mpa_buf_size =
+				SDIO_MP_DBG_NUM *
+				pmadapter->pcard_sd->mp_aggr_pkt_limit *
+				pmadapter->pcard_sd->sdio_blk_size;
 			if (pmadapter->callbacks.moal_vmalloc &&
 			    pmadapter->callbacks.moal_vfree)
 				ret = pmadapter->callbacks.moal_vmalloc(
@@ -478,14 +478,19 @@ mlan_status wlan_init_priv(pmlan_private priv)
 
 	memset(pmadapter, &priv->assoc_rsp_buf, 0, sizeof(priv->assoc_rsp_buf));
 	priv->assoc_rsp_size = 0;
-	_memset(pmadapter, &priv->assoc_req_buf, 0,
-		sizeof(priv->assoc_req_buf));
+	// coverity[no_effect:SUPPRESS]
+	// coverity[misra_c_2012_rule_21_18_violation:SUPPRESS]
+	memset(pmadapter, &priv->assoc_req_buf, 0, sizeof(priv->assoc_req_buf));
 	priv->assoc_req_size = 0;
-	_memset(pmadapter, &priv->prior_assoc_rsp, 0,
-		sizeof(priv->prior_assoc_rsp));
+	// coverity[no_effect:SUPPRESS]
+	// coverity[misra_c_2012_rule_21_18_violation:SUPPRESS]
+	memset(pmadapter, &priv->prior_assoc_rsp, 0,
+	       sizeof(priv->prior_assoc_rsp));
 	priv->prior_assoc_rsp_size = 0;
-	_memset(pmadapter, &priv->prior_assoc_req, 0,
-		sizeof(priv->prior_assoc_req));
+	// coverity[no_effect:SUPPRESS]
+	// coverity[misra_c_2012_rule_21_18_violation:SUPPRESS]
+	memset(pmadapter, &priv->prior_assoc_req, 0,
+	       sizeof(priv->prior_assoc_req));
 	priv->prior_assoc_req_size = 0;
 
 	wlan_11d_priv_init(priv);
@@ -1613,6 +1618,14 @@ mlan_status wlan_init_fw(pmlan_adapter pmadapter)
 				ret = MLAN_STATUS_FAILURE;
 				goto done;
 			}
+		}
+	}
+	if (((pmadapter->card_type) & 0xff) == CARD_TYPE_AW693) {
+		ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
+				       HostCmd_ACT_GEN_SET, 0, MNULL, MNULL);
+		if (ret) {
+			ret = MLAN_STATUS_FAILURE;
+			goto done;
 		}
 	}
 #endif /* PCIE */

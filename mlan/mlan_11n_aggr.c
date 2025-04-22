@@ -4,7 +4,7 @@
  *  @brief This file contains functions for 11n Aggregation.
  *
  *
- *  Copyright 2008-2021, 2025-2026 NXP
+ *  Copyright 2008-2021, 2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -190,7 +190,6 @@ static t_u16 wlan_form_amsdu_txpd(mlan_private *priv, mlan_buffer *pmbuf,
 	t_u32 data_len = pmbuf->data_len;
 	t_u16 len = 0;
 	t_s32 offset = 0;
-
 	ENTER();
 
 	head_ptr = pmbuf->pbuf + pmbuf->data_offset - Tx_PD_SIZEOF(pmadapter) -
@@ -287,8 +286,7 @@ static int wlan_form_amsdu_subframe(pmlan_adapter pmadapter, mlan_buffer *pmbuf,
 	total_len = (t_u16)(pkt_len + LLC_SNAP_LEN -
 			    ((2 * MLAN_MAC_ADDR_LENGTH) + sizeof(t_u16)));
 
-	write_u16_unaligned(pmadapter, amsdu_buf + amsdu_buf_offset,
-			    mlan_htons(total_len));
+	*(t_u16 *)(amsdu_buf + amsdu_buf_offset) = mlan_htons(total_len);
 
 	amsdu_buf_offset += sizeof(t_u16);
 	memcpy_ext(pmadapter, amsdu_buf + amsdu_buf_offset, &snap, LLC_SNAP_LEN,
@@ -517,7 +515,7 @@ mlan_status wlan_11n_deaggregate_pkt(mlan_private *priv, pmlan_buffer pmbuf)
 			goto done;
 		}
 	}
-	/* total_pkt_len is limited up to rx_buf_size */
+	/* total_pkt_len is limited up to MLAN_RX_DATA_BUF_SIZE */
 	// coverity[misra_c_2012_directive_4_14_violation:SUPPRESS]
 	while (total_pkt_len >= hdr_len) {
 		prx_pkt = (RxPacketHdr_t *)data;
@@ -670,8 +668,6 @@ mlan_status wlan_11n_deaggregate_pkt(mlan_private *priv, pmlan_buffer pmbuf)
 			pmadapter->pmoal_handle, &out_ts_sec, &out_ts_usec);
 		delay += (t_u32)(out_ts_sec - in_ts_sec) * 1000000;
 		delay += (t_u32)(out_ts_usec - in_ts_usec);
-		// input values are internally generated and controlled, not
-		// externally sourced
 		// coverity[misra_c_2012_directive_4_14_violation:SUPPRESS]
 		pmadapter->callbacks.moal_amsdu_tp_accounting(
 			pmadapter->pmoal_handle, delay, copy_delay);

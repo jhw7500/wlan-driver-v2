@@ -4,7 +4,7 @@
  *  @brief This file contains the functions for station ioctl.
  *
  *
- *  Copyright 2008-2026 NXP
+ *  Copyright 2008-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -3023,10 +3023,6 @@ static mlan_status wlan_sec_ioctl_get_key(pmlan_adapter pmadapter,
 			index = pmpriv->wep_key_curr_index;
 			sec->param.encrypt_key.key_index =
 				pmpriv->wep_key[index].key_index;
-			/* memcpy_ext enforces bounds checking and key_length is
-			 * validated to ensure safe copying within fixed-size
-			 * key_material buffer
-			 */
 			// coverity[cert_arr30_c_violation: SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
 			memcpy_ext(pmadapter,
@@ -3058,10 +3054,6 @@ static mlan_status wlan_sec_ioctl_get_key(pmlan_adapter pmadapter,
 		if (pmpriv->wep_key[index].key_length) {
 			sec->param.encrypt_key.key_index =
 				pmpriv->wep_key[index].key_index;
-			/* memcpy_ext enforces bounds checking and key_length is
-			 * validated to ensure safe copying within fixed-size
-			 * key_material buffer
-			 */
 			// coverity[cert_arr30_c_violation: SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
 			memcpy_ext(pmadapter,
@@ -4007,12 +3999,10 @@ static mlan_status wlan_misc_ioctl_sdio_mpa_ctrl(pmlan_adapter pmadapter,
 					pmadapter->pcard_sd->mpa_tx
 						.buf_size = MIN(
 						mpa_ctrl->tx_buf_size,
-						(SECURE_MULT_UINT32(
-							1,
+						pmadapter->pcard_sd
+								->max_blk_count *
 							pmadapter->pcard_sd
-								->max_blk_count,
-							pmadapter->pcard_sd
-								->sdio_blk_size)));
+								->sdio_blk_size);
 			}
 			if (mpa_ctrl->rx_buf_size > 0)
 				pmadapter->pcard_sd->mpa_rx.buf_size =
@@ -5472,8 +5462,8 @@ static mlan_status wlan_set_get_scan_6g_cfg(pmlan_adapter pmadapter,
 	ENTER();
 
 	if (!IS_FW_SUPPORT_6G(pmadapter)) {
-		PRINTM(MERROR,
-		       "Set/Get scan 6G configuration parameter failed (6 GHz band is not supported).\n");
+		PRINTM(MERROR, "Set/Get scan 6G configuration parameter failed "
+			       "(6 GHz band is not supported).\n");
 		pioctl_req->data_read_written = 0;
 		pioctl_req->buf_len_needed = sizeof(mlan_ds_scan);
 		pioctl_req->status_code = MLAN_ERROR_CMD_INVALID;

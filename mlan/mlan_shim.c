@@ -391,7 +391,6 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 		}
 		pmadapter->pcard_sd->max_blk_count = pmdevice->max_blk_count;
 		pmadapter->pcard_sd->sdio_blk_size = pmdevice->sdio_blk_size;
-		pmadapter->pcard_sd->spi_mode = pmdevice->spi_mode;
 		pmadapter->pcard_sd->max_segs = pmdevice->max_segs;
 		pmadapter->pcard_sd->max_seg_size = pmdevice->max_seg_size;
 
@@ -527,8 +526,6 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 	pmadapter->init_para.dfs_offload = pmdevice->dfs_offload;
 	pmadapter->init_para.disable_11h_tpc = pmdevice->disable_11h_tpc;
 	pmadapter->init_para.tpe_ie_ignore = pmdevice->tpe_ie_ignore;
-	pmadapter->init_para.amsdu_disable = pmdevice->amsdu_disable;
-	pmadapter->rx_buf_size = pmdevice->amsdu_rx_size;
 	pmadapter->priv_num = 0;
 	pmadapter->priv[0] = MNULL;
 
@@ -1374,8 +1371,8 @@ static void mlan_refill_rx_ring(t_void *padapter)
 				 pmadapter->callbacks.moal_spin_lock,
 				 pmadapter->callbacks.moal_spin_unlock);
 	while (refill_index != MLAN_INVALID_TXRX_INDEX_VAL) {
-		if (wlan_pcie_reattach_pmbuf(pmadapter, refill_index, &pmbuf) ==
-		    MLAN_STATUS_SUCCESS) {
+		if (MLAN_STATUS_SUCCESS ==
+		    wlan_pcie_reattach_pmbuf(pmadapter, refill_index, &pmbuf)) {
 			reattach_fail = 0;
 			/* Update WR PTR after Reattach success */
 			wlan_pcie_rx_ring_move_rdwrptr(pmadapter, refill_index,
@@ -1414,23 +1411,6 @@ static void mlan_refill_rx_ring(t_void *padapter)
 	return;
 }
 #endif
-
-/**
- *  @brief clean up txrx
- *
- *  @param adapter	A pointer to mlan_adapter structure
- *
- *  @return		N/A
- */
-static t_void wlan_free_txrx(pmlan_adapter pmadapter)
-{
-	t_u8 i;
-
-	for (i = 0; i < pmadapter->priv_num; i++) {
-		if (pmadapter->priv[i])
-			wlan_clean_txrx(pmadapter->priv[i]);
-	}
-}
 
 /**
  *  @brief The main process

@@ -1786,8 +1786,7 @@ static int woal_netdevice_event(struct notifier_block *nb, unsigned long event,
 				sizeof(priv->ip_addr));
 		priv->ip_addr_type = IPADDR_TYPE_IPV4;
 #ifdef STA_CFG80211
-		if (!moal_extflg_isset(priv->phandle, EXT_HW_TEST) &&
-		    !priv->cqm_rssi_thold) {
+		if (!moal_extflg_isset(priv->phandle, EXT_HW_TEST)) {
 			if (snprintf(rssi_low, sizeof(rssi_low), "%d",
 				     priv->rssi_low) <= 0)
 				PRINTM(MERROR,
@@ -10768,7 +10767,7 @@ t_void woal_send_disconnect_to_system(moal_private *priv,
 	if (netif_carrier_ok(priv->netdev))
 		netif_carrier_off(priv->netdev);
 	woal_flush_tx_stat_queue(priv);
-	mdelay(5);
+	woal_sched_timeout(100);
 	woal_flush_tcp_sess_queue(priv);
 
 #ifdef STA_CFG80211
@@ -13528,6 +13527,24 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 	mfg_mode = handle->params.mfg_mode;
 #endif
 
+	if (handle->params.mac_addr
+#ifdef MFG_CMD_SUPPORT
+	    && handle->params.mfg_mode != MLAN_INIT_PARA_ENABLED
+#endif
+	) {
+		t_u8 temp[20];
+		t_u8 len = strlen(handle->params.mac_addr);
+		if (len < sizeof(temp)) {
+			moal_memcpy_ext(handle, temp, handle->params.mac_addr,
+					len, sizeof(temp));
+			temp[len] = '\0';
+			handle->set_mac_addr = 1;
+			/* note: the following function overwrites the
+			 * temp buffer */
+			woal_mac2u8(handle->mac_addr, temp);
+		}
+	}
+
 	/* Get card info */
 	if (woal_get_card_info(handle)) {
 		PRINTM(MERROR, "Fail to get card info\n");
@@ -13767,19 +13784,10 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 
 #define NAPI_BUDGET 64
 	if (moal_extflg_isset(handle, EXT_NAPI)) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
-		handle->pnapi_dev = alloc_netdev_dummy(0);
-#else
 		init_dummy_netdev(&handle->napi_dev);
-#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-		netif_napi_add(
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
-			handle->pnapi_dev,
-#else
-			&handle->napi_dev,
-#endif
-			&handle->napi_rx, woal_netdev_poll_rx);
+		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
+			       woal_netdev_poll_rx);
 #else
 		netif_napi_add(&handle->napi_dev, &handle->napi_rx,
 			       woal_netdev_poll_rx, NAPI_BUDGET);

@@ -4,7 +4,7 @@
  *  @brief This file contains functions for 802.11D.
  *
  *
- *  Copyright 2008-2022, 2024-2026 NXP
+ *  Copyright 2008-2022, 2024-2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -1095,7 +1095,6 @@ wlan_cmd_802_11d_custom_bcn_country_ie_info(mlan_private *pmpriv,
 	t_u8 *tlv = MNULL;
 	t_u8 i;
 	mlan_ds_11d_cfg *cfg_11d = MNULL;
-
 	ENTER();
 
 	if (!pioctl_buf) {
@@ -1783,8 +1782,9 @@ mlan_status wlan_11d_bcn_country_ie_info(pmlan_adapter pmadapter,
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_802_CUSTOM_BEACON_IE,
 			       HostCmd_ACT_GEN_SET, 0, (t_void *)pioctl_req,
 			       MNULL);
-	if (ret)
+	if (ret) {
 		PRINTM(MERROR, "BCN Country IE: Failed to download\n");
+	}
 
 	if (ret == MLAN_STATUS_SUCCESS)
 		ret = MLAN_STATUS_PENDING;

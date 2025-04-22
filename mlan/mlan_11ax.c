@@ -4,7 +4,7 @@
  *  @brief This file contains the functions for 11ax related features.
  *
  *
- *  Copyright 2018-2022, 2025-2026 NXP
+ *  Copyright 2018-2022, 2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -653,7 +653,6 @@ t_u8 wlan_get_6g_ap_bandconfig(BSSDescriptor_t *pbss_desc,
 	IEEEtypes_HeOp_t *phe_op_info;
 	IEEEtypes_He6GOpInfo_t *phe_6g_op_info;
 	t_u8 ie_len = HE_OP_INFO_IE_FIX_LEN;
-
 	if (!pbss_desc->phe_oprat)
 		return band_width;
 	phe_op_info = (IEEEtypes_HeOp_t *)pbss_desc->phe_oprat;
@@ -678,14 +677,14 @@ t_u8 wlan_get_6g_ap_bandconfig(BSSDescriptor_t *pbss_desc,
 	case BW_40MHZ:
 		band_width = CHAN_BW_40MHZ;
 		if (phe_6g_op_info->primary_channel <
-		    phe_6g_op_info->channel_center_freq0)
+		    phe_6g_op_info->channel_center_freq0) {
 			bandcfg->chan2Offset = SEC_CHAN_ABOVE;
-		else
+		} else {
 			bandcfg->chan2Offset = SEC_CHAN_BELOW;
+		}
 		break;
 	case BW_80MHZ:
-		/* TODO: Use CHAN_BW_80MHZ until the support for 160MHz gets
-		 * added */
+	/* TODO: Use CHAN_BW_80MHZ until the support for 160MHz gets added */
 	case BW_160MHZ:
 		band_width = CHAN_BW_80MHZ;
 		break;
@@ -1010,7 +1009,6 @@ mlan_status wlan_cmd_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
 		hecfg->he_cap.len = MIN(hecfg->he_cap.len,
 					MRVDRV_SIZE_OF_CMD_BUFFER - cmd->size);
 		tlv->len = wlan_cpu_to_le16(hecfg->he_cap.len);
-		/* he_cap.len is already bounded using MIN function above. */
 		// coverity[cert_arr30_c_violation:SUPPRESS]
 		// coverity[cert_str31_c_violation:SUPPRESS]
 		// coverity[overrun-buffer-arg:SUPPRESS]
@@ -1034,7 +1032,6 @@ mlan_status wlan_cmd_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
 		hecap->len =
 			MIN(hecap->len, MRVDRV_SIZE_OF_CMD_BUFFER - cmd->size);
 		tlv->len = wlan_cpu_to_le16(hecap->len);
-		/* he_cap->len is already bounded using MIN function above */
 		// coverity[cert_arr30_c_violation:SUPPRESS]
 		// coverity[overrun-buffer-arg:SUPPRESS]
 		// coverity[cert_str31_c_violation:SUPPRESS]

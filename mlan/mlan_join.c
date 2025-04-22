@@ -1088,7 +1088,6 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 	memcpy_ext(pmpriv->adapter, &pmpriv->curr_bss_params.attemp_bssid,
 		   pbss_desc->mac_address, MLAN_MAC_ADDR_LENGTH,
 		   MLAN_MAC_ADDR_LENGTH);
-	pmpriv->delay_link_lost = MFALSE;
 	/* back up previous AP's assoc_resp and assoc_req buffer*/
 	if (pmpriv->media_connected) {
 		memcpy_ext(pmpriv->adapter, &pmpriv->prev_bssid,
@@ -1829,21 +1828,6 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 					pmpriv,
 					MLAN_EVENT_ID_DRV_ASSOC_FAILURE_REPORT,
 					MNULL);
-				// update Assoc resp/req buf, if Assoc Rsp
-				// failure.
-				pmpriv->assoc_rsp_size =
-					pmpriv->prior_assoc_rsp_size;
-				memcpy_ext(pmadapter, pmpriv->assoc_rsp_buf,
-					   pmpriv->prior_assoc_rsp,
-					   pmpriv->assoc_rsp_size,
-					   ASSOC_RSP_BUF_SIZE);
-				pmpriv->assoc_req_size =
-					pmpriv->prior_assoc_req_size;
-				memcpy_ext(pmadapter, pmpriv->assoc_req_buf,
-					   pmpriv->prior_assoc_req,
-					   pmpriv->assoc_req_size,
-					   ASSOC_RSP_BUF_SIZE);
-
 				// coverity[no_effect:SUPPRESS]
 				memset(pmpriv->adapter,
 				       pmpriv->curr_bss_params.prev_bssid, 0,
