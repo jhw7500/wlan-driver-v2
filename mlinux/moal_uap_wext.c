@@ -245,20 +245,7 @@ static int woal_get_wap(struct net_device *dev, struct iw_request_info *info,
 	if (priv->bss_started)
 		moal_memcpy_ext(priv->phandle, awrq->sa_data,
 				priv->current_addr, MLAN_MAC_ADDR_LENGTH,
-#ifndef ANDROID_KERNEL
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 211) && /* Backported         \
-							    from 6.1.80        \
-							    to 5.10 LTS */     \
-     LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)) ||                         \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 150) && /* Backported     \
-								from 6.1.80    \
-								to 5.15 LTS */ \
-	 LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)) ||                     \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80) && /* Original change  \
-							      introduced here  \
-							      in mainline */   \
-	 LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)) /* Reverted here in    \
-							   mainline */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80)
 				sizeof(awrq->sa_data_min));
 #else
 				sizeof(awrq->sa_data));

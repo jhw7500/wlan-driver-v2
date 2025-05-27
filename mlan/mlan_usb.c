@@ -36,8 +36,8 @@ Change log:
 #include "mlan_main.h"
 
 /********************************************************
-  Local Variables
- ********************************************************/
+			Local Variables
+********************************************************/
 #ifdef USB8897
 static const struct _mlan_card_info mlan_card_info_usb8897 = {
 	.max_tx_buf_size = MLAN_TX_DATA_BUF_SIZE_4K,

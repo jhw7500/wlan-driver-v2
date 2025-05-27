@@ -5051,11 +5051,11 @@ mlan_status wlan_alloc_ssu_pcie_buf(pmlan_adapter pmadapter)
 		LEAVE();
 		return MLAN_STATUS_FAILURE;
 	}
-	if (pcb->moal_map_memory(pmadapter->pmoal_handle,
-				 pmbuf->pbuf + pmbuf->data_offset,
-				 &pmbuf->buf_pa, MLAN_SSU_BUF_SIZE,
-				 PCI_DMA_FROMDEVICE) == MLAN_STATUS_FAILURE) {
-		PRINTM(MERROR, "%s: moal_map_memory failed\n", __func__);
+	if (MLAN_STATUS_FAILURE ==
+	    pcb->moal_map_memory(
+		    pmadapter->pmoal_handle, pmbuf->pbuf + pmbuf->data_offset,
+		    &pmbuf->buf_pa, MLAN_SSU_BUF_SIZE, PCI_DMA_FROMDEVICE)) {
+		PRINTM(MERROR, "%s: moal_map_memory failed\n", __FUNCTION__);
 		/* free pmbuf */
 		wlan_free_mlan_buffer(pmadapter, pmbuf);
 		LEAVE();

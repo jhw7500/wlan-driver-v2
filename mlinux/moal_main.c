@@ -103,13 +103,6 @@ struct semaphore AddRemoveCardSem;
 moal_handle *m_handle[MAX_MLAN_ADAPTER];
 static int reg_work;
 
-#if defined(USB)
-static char *c_vidpid;
-#endif
-/********************************************************
-  Local Variables
- ********************************************************/
-
 #ifdef SD8887
 static struct _card_info card_info_SD8887 = {
 	.embedded_supp = 1,
@@ -1016,7 +1009,6 @@ void woal_print_firmware_dump_buf(t_u8 *pfd_buf, t_u64 fwdump_len)
 	u8 *ptr = NULL;
 	size_t remaining = MAX_BUF_SIZE;
 	int written = 0;
-
 	ENTER();
 
 	if (!pfd_buf || !fwdump_len) {
@@ -1597,7 +1589,8 @@ static int woal_netdevice_event(struct notifier_block *nb, unsigned long event,
 				sizeof(priv->ip_addr));
 		priv->ip_addr_type = IPADDR_TYPE_IPV4;
 #ifdef STA_CFG80211
-		if (!moal_extflg_isset(priv->phandle, EXT_HW_TEST)) {
+		if (!moal_extflg_isset(priv->phandle, EXT_HW_TEST) &&
+		    !priv->cqm_rssi_thold) {
 			if (snprintf(rssi_low, sizeof(rssi_low), "%d",
 				     priv->rssi_low) <= 0)
 				PRINTM(MERROR,
@@ -2354,15 +2347,13 @@ mlan_status woal_init_sw(moal_handle *handle)
 	) {
 		t_u8 temp[20];
 		t_u8 len = strlen(handle->params.mac_addr);
-
 		if (len < sizeof(temp)) {
 			moal_memcpy_ext(handle, temp, handle->params.mac_addr,
 					len, sizeof(temp));
 			temp[len] = '\0';
 			handle->set_mac_addr = 1;
 			/* note: the following function overwrites the
-			 * temp buffer
-			 */
+			 * temp buffer */
 			woal_mac2u8(handle->mac_addr, temp);
 		}
 	}
@@ -10295,6 +10286,11 @@ static int woal_get_card_info(moal_handle *phandle)
 		phandle->event_fw_dump = MTRUE;
 		break;
 #endif
+#ifdef USB8997
+	case CARD_TYPE_USB8997:
+		phandle->card_info = &card_info_USB8997;
+		break;
+#endif
 #ifdef USB8978
 	case CARD_TYPE_USB8978:
 		phandle->card_info = &card_info_USB8978;
@@ -11084,7 +11080,7 @@ t_void woal_send_disconnect_to_system(moal_private *priv,
 	if (netif_carrier_ok(priv->netdev))
 		netif_carrier_off(priv->netdev);
 	woal_flush_tx_stat_queue(priv);
-	woal_sched_timeout(100);
+	mdelay(5);
 	woal_flush_tcp_sess_queue(priv);
 
 #ifdef STA_CFG80211
@@ -14642,24 +14638,6 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 #ifdef MFG_CMD_SUPPORT
 	mfg_mode = handle->params.mfg_mode;
 #endif
-
-	if (handle->params.mac_addr
-#ifdef MFG_CMD_SUPPORT
-	    && handle->params.mfg_mode != MLAN_INIT_PARA_ENABLED
-#endif
-	) {
-		t_u8 temp[20];
-		t_u8 len = strlen(handle->params.mac_addr);
-		if (len < sizeof(temp)) {
-			moal_memcpy_ext(handle, temp, handle->params.mac_addr,
-					len, sizeof(temp));
-			temp[len] = '\0';
-			handle->set_mac_addr = 1;
-			/* note: the following function overwrites the
-			 * temp buffer */
-			woal_mac2u8(handle->mac_addr, temp);
-		}
-	}
 
 	/* Get card info */
 	if (woal_get_card_info(handle)) {

@@ -2303,6 +2303,16 @@ static int woal_setget_priv_txratecfg(moal_private *priv, t_u8 *respbuf,
 			/* auto */
 			rate->param.rate_cfg.is_rate_auto = 1;
 		} else {
+			/* Note: for HT, we still need to configure the 4th
+			 * parameter about bandwidth */
+			if (data[0] == MLAN_RATE_FORMAT_LG) {
+				if (user_data_len > 2) {
+					PRINTM(MERROR,
+					       "Invalid number of arguments\n");
+					ret = -EINVAL;
+					goto done;
+				}
+			}
 			/* fixed rate */
 			PRINTM(MINFO, "SET: txratefg format: 0x%x\n", data[0]);
 			if ((data[0] != AUTO_RATE) &&
@@ -7001,20 +7011,7 @@ static int woal_priv_get_ap(moal_private *priv, t_u8 *respbuf, t_u32 respbuflen)
 	if (bss_info.media_connected == MTRUE) {
 		moal_memcpy_ext(priv->phandle, mwr->u.ap_addr.sa_data,
 				&bss_info.bssid, MLAN_MAC_ADDR_LENGTH,
-#ifndef ANDROID_KERNEL
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 211) && /* Backported         \
-							    from 6.1.80        \
-							    to 5.10 LTS */     \
-     LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)) ||                         \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 150) && /* Backported     \
-								from 6.1.80    \
-								to 5.15 LTS */ \
-	 LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)) ||                     \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80) && /* Original change  \
-							      introduced here  \
-							      in mainline */   \
-	 LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)) /* Reverted here in    \
-							   mainline */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80)
 				sizeof(mwr->u.ap_addr.sa_data_min));
 #else
 				sizeof(mwr->u.ap_addr.sa_data));

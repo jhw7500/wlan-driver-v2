@@ -739,7 +739,6 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 	t_u16 enable = 0;
 	Event_Link_Lost *link_lost_evt = MNULL;
 	remain_on_channel_info *roc_info = MNULL;
-	t_u8 tsp_status = 0;
 
 	ENTER();
 

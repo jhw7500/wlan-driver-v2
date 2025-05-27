@@ -519,8 +519,7 @@ static mlan_status wlan_get_rd_port(mlan_adapter *pmadapter, t_u8 *pport)
 	if (pmadapter->pcard_sd->mp_rd_bitmap &
 	    (1 << pmadapter->pcard_sd->curr_rd_port)) {
 		pmadapter->pcard_sd->mp_rd_bitmap &=
-			~(t_u32)((t_u32)1U
-				 << ((t_u32)pmadapter->pcard_sd->curr_rd_port));
+			(t_u32)(~(1 << pmadapter->pcard_sd->curr_rd_port));
 		*pport = pmadapter->pcard_sd->curr_rd_port;
 
 		/* hw rx wraps round only after port (MAX_PORT-1) */
@@ -2810,9 +2809,9 @@ static mlan_status wlan_process_sdio_int_status(mlan_adapter *pmadapter,
 				goto done;
 			}
 			PRINTM(MINFO, "rx_len = %d\n", rx_len);
-			if (wlan_sdio_card_to_host_mp_aggr(pmadapter, pmbuf,
-							   port, rx_len) !=
-			    MLAN_STATUS_SUCCESS) {
+			if (MLAN_STATUS_SUCCESS !=
+			    wlan_sdio_card_to_host_mp_aggr(pmadapter, pmbuf,
+							   port, rx_len)) {
 				pmadapter->dbg.num_rx_card_to_host_failure++;
 
 				PRINTM(MERROR,

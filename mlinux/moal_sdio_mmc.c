@@ -601,7 +601,7 @@ static t_u16 woal_update_card_type(t_void *card)
 			driver_version + strlen(INTF_CARDTYPE) +
 				strlen(KERN_VERSION),
 			V15, strlen(V15),
-			strnlen(driver_version, MLAN_MAX_VER_STR_LEN - 1) -
+			strlen(driver_version) -
 				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
 	}
 #endif
@@ -3511,7 +3511,7 @@ static void woal_sdiommc_work(struct work_struct *work)
 	woal_free_module_param(handle);
 	woal_init_module_param(handle);
 
-	if (woal_do_sdiommc_flr(handle, false, true) == MLAN_STATUS_SUCCESS)
+	if (MLAN_STATUS_SUCCESS == woal_do_sdiommc_flr(handle, false, true))
 		handle->fw_reseting = MFALSE;
 	else {
 		handle = NULL;
@@ -3525,8 +3525,8 @@ static void woal_sdiommc_work(struct work_struct *work)
 		woal_free_module_param(ref_handle);
 		woal_init_module_param(ref_handle);
 
-		if (woal_do_sdiommc_flr(ref_handle, false, true) ==
-		    MLAN_STATUS_SUCCESS)
+		if (MLAN_STATUS_SUCCESS ==
+		    woal_do_sdiommc_flr(ref_handle, false, true))
 			ref_handle->fw_reseting = MFALSE;
 	}
 	card->work_flags = MFALSE;

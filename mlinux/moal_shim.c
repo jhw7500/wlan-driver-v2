@@ -1190,50 +1190,16 @@ mlan_status moal_get_hw_spec_complete(t_void *pmoal, mlan_status status,
 		}
 #endif
 #ifdef PCIEAW693
-		if (IS_PCIEAW693(handle->card_type)) {
-			if (phw->fw_cap_ext & MBIT(23)) {
-				/**
-				 *  Special/Temporary handling to manage the
-				 * driver version string to identify AW693/IW623
-				 * based on fw_cap value set by Fw
-				 */
-				if (strlen(CARD_PCIEIW623) <
-				    sizeof(driver_version)) {
-					// coverity[overrun-buffer-arg:SUPPRESS]
-					moal_memcpy_ext(handle, driver_version,
-							CARD_PCIEIW623,
-							strlen(CARD_PCIEIW623),
-							strlen(driver_version));
-				} else {
-					PRINTM(MERROR,
-					       "chip ID (%s) len(%zu) is > (%zu)",
-					       CARD_PCIEIW623,
-					       strlen(CARD_PCIEIW623),
-					       sizeof(driver_version));
-				}
-			} else if (!(phw->fw_cap_ext & MBIT(14))) {
-				/**
-				 *  Special/Temporary handling to manage the
-				 * driver version string to identify AW693/692
-				 * based on fw_cap value set by Fw. Note: 692 is
-				 * the same as 693 but w/o 6G support
-				 */
-				if (strlen(CARD_PCIEAW692) <
-				    sizeof(driver_version)) {
-					// coverity[overrun-buffer-arg:SUPPRESS]
-					moal_memcpy_ext(handle, driver_version,
-							CARD_PCIEAW692,
-							strlen(CARD_PCIEAW692),
-							strlen(driver_version));
-				} else {
-					PRINTM(MERROR,
-					       "chip ID (%s) len(%zu) is > (%zu)",
-					       CARD_PCIEAW692,
-					       strlen(CARD_PCIEAW692),
-					       sizeof(driver_version));
-				}
-			}
-
+		/**
+		 *  Special/Temporary handling to manage the driver version
+		 * string to identify AW693/IW623 based on fw_cap value set by
+		 * Fw
+		 */
+		if ((phw->fw_cap_ext & MBIT(23)) &&
+		    IS_PCIEAW693(handle->card_type)) {
+			moal_memcpy_ext(handle, driver_version, CARD_PCIEIW623,
+					strlen(CARD_PCIEIW623),
+					strlen(driver_version));
 			if (drv_ver_len >= MLAN_MAX_VER_STR_LEN - 1) {
 				drv_ver_len = MLAN_MAX_VER_STR_LEN - 1;
 			}
@@ -4267,20 +4233,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			memset(wrqu.ap_addr.sa_data, 0x00, ETH_ALEN);
 			moal_memcpy_ext(priv->phandle, wrqu.ap_addr.sa_data,
 					pmevent->event_buf, ETH_ALEN,
-#ifndef ANDROID_KERNEL
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 211) && /* Backported         \
-							    from 6.1.80        \
-							    to 5.10 LTS */     \
-     LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)) ||                         \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 150) && /* Backported     \
-								from 6.1.80    \
-								to 5.15 LTS */ \
-	 LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)) ||                     \
-	(LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80) && /* Original change  \
-							      introduced here  \
-							      in mainline */   \
-	 LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)) /* Reverted here in    \
-							   mainline */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80)
 					sizeof(wrqu.ap_addr.sa_data_min));
 #else
 					sizeof(wrqu.ap_addr.sa_data));

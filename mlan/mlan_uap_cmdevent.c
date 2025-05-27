@@ -3496,8 +3496,11 @@ static mlan_status wlan_uap_ret_get_log(pmlan_private pmpriv,
 
 	if (pioctl_buf) {
 		pget_info = (mlan_ds_get_info *)pioctl_buf->pbuf;
-		_memset(pmpriv->adapter, &pget_info->param.stats, 0,
-			sizeof(HostCmd_DS_802_11_GET_LOG));
+		// coverity[bad_memset:SUPPRESS]
+		// coverity[too_many_arguments:SUPPRESS]
+		// coverity[misra_c_2012_rule_21_18_violation:SUPPRESS]
+		memset(pmpriv->adapter, &pget_info->param.stats, 0,
+		       sizeof(HostCmd_DS_802_11_GET_LOG));
 		memcpy_ext(pmpriv->adapter, (t_u8 *)&get_log_tmp,
 			   (t_u8 *)pget_log,
 			   ((resp->size) - (sizeof(HostCmd_DS_GEN))),
@@ -3582,10 +3585,6 @@ static mlan_status wlan_uap_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->gdma_abort_cnt);
 		pget_info->param.stats.g_reset_rx_mac_cnt =
 			wlan_le32_to_cpu(pget_log->g_reset_rx_mac_cnt);
-		pget_info->param.stats.currTemp =
-			wlan_le32_to_cpu(pget_log->currTemp);
-		pget_info->param.stats.TXpwrMethod =
-			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.SdmaStuckCnt =
 			wlan_le32_to_cpu(pget_log->SdmaStuckCnt);
 		// Ownership error counters
@@ -3611,12 +3610,6 @@ static mlan_status wlan_uap_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.isDPDdone =
 			wlan_le32_to_cpu(pget_log->isDPDdone);
-		pget_info->param.stats.cca_cnt_us =
-			wlan_le64_to_cpu(pget_log->cca_cnt_us);
-		pget_info->param.stats.rxAirtime_us =
-			wlan_le64_to_cpu(pget_log->rxAirtime_us);
-		pget_info->param.stats.txAirtime_us =
-			wlan_le64_to_cpu(pget_log->txAirtime_us);
 
 		if (pmpriv->adapter->getlog_enable) {
 			pget_info->param.stats.tx_frag_cnt =

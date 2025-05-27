@@ -1837,10 +1837,6 @@ typedef struct _mlan_ds_get_stats {
 	t_u32 gdma_abort_cnt;
 	/** Rx Reset MAC Count */
 	t_u32 g_reset_rx_mac_cnt;
-	/** Current SOC Temperature*/
-	t_u32 currTemp;
-	/** TX Power Control Method*/
-	t_u32 TXpwrMethod;
 	/** SDMA FSM stuck Count*/
 	t_u32 SdmaStuckCnt;
 	// Ownership error counters
@@ -1868,12 +1864,6 @@ typedef struct _mlan_ds_get_stats {
 	t_u32 TXpwrMethod;
 	/** DPD training status*/
 	t_u32 isDPDdone;
-	/*CCA count*/
-	t_u64 cca_cnt_us;
-	/*RX airtime count*/
-	t_u64 rxAirtime_us;
-	/*TX airtime count*/
-	t_u64 txAirtime_us;
 } mlan_ds_get_stats, *pmlan_ds_get_stats;
 
 /** Type definition of mlan_ds_uap_stats for MLAN_OID_GET_STATS */

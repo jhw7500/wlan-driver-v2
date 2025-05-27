@@ -5526,6 +5526,8 @@ mlan_status wlan_radio_ioctl_remain_chan_cfg(pmlan_adapter pmadapter,
 		    !radio_cfg->param.remain_chan.remove) {
 			PRINTM(MCMND, "Set New Remain on channe: chan=%d\n",
 			       radio_cfg->param.remain_chan.channel);
+			LEAVE();
+			return MLAN_STATUS_SUCCESS;
 		}
 	}
 
@@ -7346,33 +7348,6 @@ mlan_status wlan_misc_ioctl_ch_load(pmlan_adapter pmadapter,
 	LEAVE();
 	return ret;
 }
-mlan_status wlan_misc_ioctl_foundry_type(pmlan_adapter pmadapter,
-					 mlan_ioctl_req *pioctl_req)
-{
-	mlan_private *pmpriv = pmadapter->priv[pioctl_req->bss_index];
-	mlan_status ret = MLAN_STATUS_SUCCESS;
-	t_u16 cmd_action = 0;
-
-	ENTER();
-	if (pioctl_req->action == MLAN_ACT_GET)
-		cmd_action = HostCmd_ACT_GEN_GET;
-	else {
-		PRINTM(MERROR, " foundry_type  only support get operation\n");
-		LEAVE();
-		return MLAN_STATUS_FAILURE;
-	}
-
-	/* Send request to firmware */
-	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_DS_GET_FOUNDRY_TYPE,
-			       cmd_action, 0, (t_void *)pioctl_req, MNULL);
-
-	if (ret == MLAN_STATUS_SUCCESS)
-		ret = MLAN_STATUS_PENDING;
-
-	LEAVE();
-	return ret;
-}
-
 /**
  *  @brief  Get CHAN_TPRC setting
  *

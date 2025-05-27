@@ -3053,7 +3053,7 @@ static int woal_uap_set_key_ioctl(struct net_device *dev, struct ifreq *req)
 	}
 
 	PRINTM(MIOCTL,
-	       "ioctl report set key: " MACSTR " key_index=%u, key_len=%u\n",
+	       "ioctl report set key: " MACSTR " key_index=%u, key_len=%u \n",
 	       MAC2STR(key.mac_addr), key.key_index, key.key_len);
 
 	if ((key.key_len > MLAN_MAX_KEY_LENGTH) || (key.key_index > 3)) {
@@ -3183,7 +3183,8 @@ static int woal_uap_power_mode_ioctl(struct net_device *dev, struct ifreq *req)
 		goto done;
 	}
 	PRINTM(MIOCTL,
-	       "ioctl power: flag=0x%x ps_mode=%u ctrl_bitmap=%u min_sleep=%u max_sleep=%u inact_to=%u min_awake=%u max_awake=%u\n",
+	       "ioctl power: flag=0x%x ps_mode=%u ctrl_bitmap=%u min_sleep=%u max_sleep=%u "
+	       "inact_to=%u min_awake=%u max_awake=%u\n",
 	       ps_mgmt.flags, ps_mgmt.ps_mode, ps_mgmt.sleep_param.ctrl_bitmap,
 	       ps_mgmt.sleep_param.min_sleep, ps_mgmt.sleep_param.max_sleep,
 	       ps_mgmt.inact_param.inactivity_to, ps_mgmt.inact_param.min_awake,

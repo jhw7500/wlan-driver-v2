@@ -732,108 +732,6 @@ static bool woal_str2mac(char *str, t_u8 *mac)
 	return MTRUE;
 }
 
-#ifdef SDIO_MMC
-/**
- *  @brief This function parses slot ID information from configuration data
- *
- *  @param data     A pointer to configuration data
- *  @param size     Size of the configuration data
- *  @param cur_pos  Current position in the data buffer
- *  @param handle   A pointer to moal_handle structure
- *
- *  @return         MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
- */
-static mlan_status parse_cfg_slot_id_info(t_u8 *data, t_u32 size, t_s32 cur_pos,
-					  moal_handle *handle)
-{
-	mlan_status ret = MLAN_STATUS_SUCCESS;
-	int out_data = -1, end = 0;
-	t_u8 *src, *dest;
-	t_s32 pos = cur_pos;
-	t_u8 line[MAX_LINE_LEN];
-	sdio_mmc_card *card_info = (sdio_mmc_card *)handle->card;
-
-	if (data == NULL)
-		return MLAN_STATUS_FAILURE;
-
-	memset(line, 0, MAX_LINE_LEN);
-	src = data + pos;
-	dest = line;
-
-	while (!end) {
-		while (pos < (t_s32)size && *src != '\x0A' && *src != '\0') {
-			if ((dest - line) >= (MAX_LINE_LEN - 1)) {
-				PRINTM(MERROR,
-				       "error: input data size exceeds the dest buff limit\n");
-				return ret;
-			}
-			if (*src != ' ' && *src != '\t') /* parse space */
-				*dest++ = *src++;
-			else
-				src++;
-			pos++;
-		}
-		/* parse new line */
-		pos++;
-		*dest = '\0';
-
-		PRINTM(MINFO, "get line %s\n", line);
-
-		if (line[0] == '#' || strstr(line, "={")) {
-			memset(line, 0, MAX_LINE_LEN);
-			src = data + pos;
-			dest = line;
-			continue;
-		}
-
-		if (strncmp(line, "}", strlen("}")) == 0) {
-			end = 1;
-			break;
-		}
-
-		if (end == 0 && strstr(line, "{") != NULL) {
-			break;
-		}
-
-		if (strncmp(line, "slot_id", strlen("slot_id")) == 0) {
-			if (parse_line_read_int(line, &out_data) ==
-			    MLAN_STATUS_SUCCESS) {
-				if (out_data >= 0) {
-					if (out_data !=
-					    card_info->func->card->host->index) {
-						ret = MLAN_STATUS_FAILURE;
-						PRINTM(MINFO,
-						       "incorrect conf slot id %d, device slot id %d\n",
-						       out_data,
-						       card_info->func->card
-							       ->host->index);
-					} else {
-						PRINTM(MINFO,
-						       "correct conf slot id %d\n",
-						       out_data);
-					}
-					break;
-				} else {
-					ret = MLAN_STATUS_FAILURE;
-					PRINTM(MERROR, "negative value\n");
-					break;
-				}
-			} else {
-				PRINTM(MERROR, "empty value\n");
-				break;
-			}
-		} else {
-			memset(line, 0, MAX_LINE_LEN);
-			src = data + pos;
-			dest = line;
-			continue;
-		}
-	}
-
-	return ret;
-}
-#endif
-
 /**
  *  @brief This function read blocks in module parameter file
  *
@@ -1302,10 +1200,7 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				       sizeof(handle->mode_psd_file));
 				strncpy(handle->mode_psd_file,
 					params->txpwrlimit_cfg,
-					sizeof(handle->mode_psd_file) - 1);
-				handle->mode_psd_file
-					[sizeof(handle->mode_psd_file) - 1] =
-					'\0';
+					strlen(params->txpwrlimit_cfg) + 1);
 				PRINTM(MMSG, "Mode PSD file name: %s",
 				       handle->mode_psd_file);
 			}

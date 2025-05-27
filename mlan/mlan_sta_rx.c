@@ -688,7 +688,6 @@ mlan_status wlan_ops_sta_process_rx_packet(t_void *adapter, pmlan_buffer pmbuf)
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
-
 	prx_pd = (RxPD *)(pmbuf->pbuf + pmbuf->data_offset);
 	/* Endian conversion */
 	endian_convert_RxPD(prx_pd);

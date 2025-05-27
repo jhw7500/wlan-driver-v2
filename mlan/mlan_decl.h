@@ -1144,6 +1144,12 @@ typedef MLAN_PACK_START struct _chan_band_info {
 	t_u8 is_dfs_chan;
 } MLAN_PACK_END chan_band_info;
 
+/** remain_on_channel_info  */
+typedef MLAN_PACK_START struct _remain_on_channel_info {
+	/* Is previous AP lost when waiting doing Auth RoC */
+	t_bool delay_link_lost;
+} MLAN_PACK_END remain_on_channel_info;
+
 #if defined(STA_SUPPORT)
 /** MrvlIEtypes_chan_band_reginfo_t */
 typedef MLAN_PACK_START struct _MrvlIEtypes_chan_band_reginfo_t {
