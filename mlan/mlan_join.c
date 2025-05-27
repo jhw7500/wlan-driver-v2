@@ -1088,6 +1088,7 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 	memcpy_ext(pmpriv->adapter, &pmpriv->curr_bss_params.attemp_bssid,
 		   pbss_desc->mac_address, MLAN_MAC_ADDR_LENGTH,
 		   MLAN_MAC_ADDR_LENGTH);
+	pmpriv->delay_link_lost = MFALSE;
 	/* back up previous AP's assoc_resp and assoc_req buffer*/
 	if (pmpriv->media_connected) {
 		memcpy_ext(pmpriv->adapter, &pmpriv->prev_bssid,

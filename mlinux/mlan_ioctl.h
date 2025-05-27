@@ -1832,10 +1832,6 @@ typedef struct _mlan_ds_get_stats {
 	t_u32 gdma_abort_cnt;
 	/** Rx Reset MAC Count */
 	t_u32 g_reset_rx_mac_cnt;
-	/** Current SOC Temperature*/
-	t_u32 currTemp;
-	/** TX Power Control Method*/
-	t_u32 TXpwrMethod;
 	/** SDMA FSM stuck Count*/
 	t_u32 SdmaStuckCnt;
 	// Ownership error counters

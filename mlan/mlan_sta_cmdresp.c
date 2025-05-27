@@ -796,10 +796,6 @@ static mlan_status wlan_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->gdma_abort_cnt);
 		pget_info->param.stats.g_reset_rx_mac_cnt =
 			wlan_le32_to_cpu(pget_log->g_reset_rx_mac_cnt);
-		pget_info->param.stats.currTemp =
-			wlan_le32_to_cpu(pget_log->currTemp);
-		pget_info->param.stats.TXpwrMethod =
-			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.SdmaStuckCnt =
 			wlan_le32_to_cpu(pget_log->SdmaStuckCnt);
 		// Ownership error counters
