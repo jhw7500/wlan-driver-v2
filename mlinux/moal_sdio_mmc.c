@@ -31,7 +31,6 @@ Change log:
 #include "moal_cfg80211.h"
 #endif
 #include "moal_sdio.h"
-#include "moal_bridge.h"
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/addrconf.h>
@@ -66,10 +65,6 @@ static moal_if_ops sdiommc_ops;
 #ifdef SD8887
 /** Device ID for SD8887 */
 #define SD_DEVICE_ID_8887 (0x9135)
-#endif
-#ifdef SD8801
-/** Device ID for SD8801 FN1 */
-#define SD_DEVICE_ID_8801 (0x9139)
 #endif
 #ifdef SD8897
 /** Device ID for SD8897 */
@@ -124,9 +119,6 @@ static moal_if_ops sdiommc_ops;
 static const struct sdio_device_id wlan_ids[] = {
 #ifdef SD8887
 	{SDIO_DEVICE(MRVL_VENDOR_ID, SD_DEVICE_ID_8887)},
-#endif
-#ifdef SD8801
-	{SDIO_DEVICE(MRVL_VENDOR_ID, SD_DEVICE_ID_8801)},
 #endif
 #ifdef SD8897
 	{SDIO_DEVICE(MRVL_VENDOR_ID, SD_DEVICE_ID_8897)},
@@ -278,51 +270,24 @@ static void woal_dump_sdio_reg(moal_handle *handle)
  *  @param func     A pointer to the sdio_func structure
  *  @return         N/A
  */
-/* bridge_debug (moal_init.c) gates the SDIO pull/tx latency instrumentation;
- * woal_rx_acct_max (moal_main.c) is the shared lock-free max helper. */
-extern int bridge_debug;
-extern void woal_rx_acct_max(atomic_long_t *max, long us);
-
 static void woal_sdio_interrupt(struct sdio_func *func)
 {
 	moal_handle *handle;
 	sdio_mmc_card *card;
-	t_void *pmlan_adapter;
 	mlan_status status;
 	t_u32 host_int_status_reg_val;
-	t_u64 pull_t0 = 0;
 	ENTER();
 
 	card = sdio_get_drvdata(func);
-	if (!card) {
+	if (!card || !card->handle) {
 		PRINTM(MINFO,
 		       "sdio_mmc_interrupt(func = %p) card or handle is NULL, card=%p\n",
 		       func, card);
 		LEAVE();
 		return;
 	}
-	spin_lock_bh(&card->reset_lock);
 	handle = card->handle;
-	if (!handle || card->drv_mode_quiesced || card->reset_stopping ||
-	    READ_ONCE(driver_exit_in_progress)) {
-		spin_unlock_bh(&card->reset_lock);
-		LEAVE();
-		return;
-	}
-	spin_unlock_bh(&card->reset_lock);
 	if (handle->surprise_removed == MTRUE) {
-		LEAVE();
-		return;
-	}
-	pmlan_adapter = READ_ONCE(handle->pmlan_adapter);
-	if (!pmlan_adapter) {
-		if (handle->fw_reseting == MTRUE) {
-			handle->ops.read_reg(handle, 0x0c,
-					     &host_int_status_reg_val);
-			PRINTM(MERROR,
-			       "*** Recv intr during fw reset, host int status reg value is %d, ignore it ***\n",
-			       host_int_status_reg_val);
-		}
 		LEAVE();
 		return;
 	}
@@ -330,13 +295,16 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 	PRINTM(MINFO, "*** IN SDIO IRQ ***\n");
 	PRINTM(MINTR, "*\n");
 
-	/* Pull leg start: the SDIO IRQ-context RX read + process below runs
-	 * mlan_interrupt + mlan_main_process (card_to_host, incl sdio_claim_host
-	 * wait). This is the leg the deliver gap (rx_gap) proved innocent of. */
-	if (READ_ONCE(bridge_debug))
-		pull_t0 = ktime_get_ns();
+	if (handle->fw_reseting == MTRUE && (!handle->pmlan_adapter)) {
+		handle->ops.read_reg(handle, 0x0c, &host_int_status_reg_val);
+		PRINTM(MERROR,
+		       "*** Recv intr during fw reset, host int status reg value is %d, ignore it ***\n",
+		       host_int_status_reg_val);
+		LEAVE();
+		return;
+	}
 	/* call mlan_interrupt to read int status */
-	status = mlan_interrupt(0, pmlan_adapter);
+	status = mlan_interrupt(0, handle->pmlan_adapter);
 	if (status == MLAN_STATUS_FAILURE) {
 		PRINTM(MINTR, "mlan interrupt failed\n");
 	}
@@ -349,16 +317,9 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 #endif
 	handle->main_state = MOAL_START_MAIN_PROCESS;
 	/* Call MLAN main process */
-	status = mlan_main_process(pmlan_adapter);
+	status = mlan_main_process(handle->pmlan_adapter);
 	if (status == MLAN_STATUS_FAILURE) {
 		PRINTM(MINTR, "mlan main process exited with failure\n");
-	}
-	if (pull_t0) {
-		long us = (long)((ktime_get_ns() - pull_t0) / 1000);
-
-		atomic_long_inc(&handle->rx_pull_cnt);
-		atomic_long_add(us, &handle->rx_pull_sum_us);
-		woal_rx_acct_max(&handle->rx_pull_max_us, us);
 	}
 	handle->main_state = MOAL_END_MAIN_PROCESS;
 	LEAVE();
@@ -372,30 +333,13 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 {
 	sdio_mmc_card *card =
 		container_of(work, sdio_mmc_card, sdio_oob_irq_work);
-	struct mmc_card *mmc_card;
+	struct mmc_card *mmc_card = card->func->card;
 	struct sdio_func *func;
 	unsigned char pending;
-	bool producer_enabled;
-	bool reenable_irq = false;
 	int i;
 	int ret;
 
-	spin_lock_bh(&card->reset_lock);
-	producer_enabled = !card->drv_mode_quiesced &&
-			   !card->reset_stopping &&
-			   !READ_ONCE(driver_exit_in_progress) && card->func &&
-			   card->func->card;
-	mmc_card = producer_enabled ? card->func->card : NULL;
-	spin_unlock_bh(&card->reset_lock);
-
-	for (i = 0; mmc_card && i < mmc_card->sdio_funcs; i++) {
-		spin_lock_bh(&card->reset_lock);
-		producer_enabled = !card->drv_mode_quiesced &&
-				   !card->reset_stopping &&
-				   !READ_ONCE(driver_exit_in_progress);
-		spin_unlock_bh(&card->reset_lock);
-		if (!producer_enabled)
-			break;
+	for (i = 0; i < mmc_card->sdio_funcs; i++) {
 		func = NULL;
 		if (mmc_card->sdio_func[i]) {
 			func = mmc_card->sdio_func[i];
@@ -409,20 +353,10 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 		}
 	}
 
-	/* drv-mode/remove closes the producer gate before flushing this work.
-	 * Do not undo that terminal quiesce by re-enabling the shared GPIO IRQ
-	 * after the gate changed while this work item was running. */
-	spin_lock_bh(&card->reset_lock);
-	producer_enabled = !card->drv_mode_quiesced &&
-			   !card->reset_stopping &&
-			   !READ_ONCE(driver_exit_in_progress);
-	if (producer_enabled && card->irq_registered && !card->irq_enabled) {
+	if (card->irq_registered && !card->irq_enabled) {
 		card->irq_enabled = MTRUE;
-		reenable_irq = true;
-	}
-	spin_unlock_bh(&card->reset_lock);
-	if (reenable_irq)
 		enable_irq(card->oob_irq);
+	}
 }
 
 /**
@@ -435,20 +369,12 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 static irqreturn_t oob_sdio_irq(int irq, void *dev_id)
 {
 	sdio_mmc_card *card = (sdio_mmc_card *)dev_id;
-	struct workqueue_struct *workqueue;
 
-	if (!card)
-		return IRQ_HANDLED;
-
-	workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
-	if (!READ_ONCE(card->drv_mode_quiesced) &&
-	    !READ_ONCE(card->reset_stopping) &&
-	    !READ_ONCE(driver_exit_in_progress) &&
-	    READ_ONCE(card->sdio_func_intr_enabled) &&
-	    READ_ONCE(card->irq_registered) && workqueue) {
+	if (card->sdio_func_intr_enabled) {
 		disable_irq_nosync(card->oob_irq);
-		WRITE_ONCE(card->irq_enabled, MFALSE);
-		queue_work(workqueue, &card->sdio_oob_irq_work);
+		card->irq_enabled = MFALSE;
+		queue_work(card->sdio_oob_irq_workqueue,
+			   &card->sdio_oob_irq_work);
 	}
 
 	return IRQ_HANDLED;
@@ -463,15 +389,8 @@ static irqreturn_t oob_sdio_irq(int irq, void *dev_id)
 static int oob_sdio_irq_register(sdio_mmc_card *card)
 {
 	int ret = 0;
-	struct device *dev;
 
-	if (!card || !card->func)
-		return -ENODEV;
-	if (card->irq_registered)
-		return 0;
-	dev = &card->func->dev;
-
-	ret = devm_request_irq(dev, card->oob_irq,
+	ret = devm_request_irq(card->handle->hotplug_device, card->oob_irq,
 			       oob_sdio_irq, IRQF_TRIGGER_LOW | IRQF_SHARED,
 			       "nxp_oob_sdio_irq", card);
 
@@ -492,14 +411,15 @@ static int oob_sdio_irq_register(sdio_mmc_card *card)
  */
 static void oob_sdio_irq_unregister(sdio_mmc_card *card)
 {
-	if (card && card->func && card->irq_registered) {
+	if (card->irq_registered) {
 		card->irq_registered = MFALSE;
 		disable_irq_wake(card->oob_irq);
 		if (card->irq_enabled) {
 			disable_irq(card->oob_irq);
 			card->irq_enabled = MFALSE;
 		}
-		devm_free_irq(&card->func->dev, card->oob_irq, card);
+		devm_free_irq(card->handle->hotplug_device, card->oob_irq,
+			      card);
 	}
 }
 
@@ -579,26 +499,20 @@ static int woal_sdio_claim_irq(sdio_mmc_card *card, sdio_irq_handler_t *handler)
 	card->sdio_oob_irq_workqueue = alloc_ordered_workqueue(
 		"SDIO_OOB_IRQ_WORKQ",
 		__WQ_LEGACY | WQ_MEM_RECLAIM | WQ_HIGHPRI);
-	if (!card->sdio_oob_irq_workqueue)
-		return -ENOMEM;
 	MLAN_INIT_WORK(&card->sdio_oob_irq_work, woal_sdio_oob_irq_work);
-	/* Install the function callback before exposing the GPIO IRQ.  This also
-	 * keeps every error cleanup local while the caller owns the MMC host: no
-	 * OOB work can be queued and block destroy_workqueue() on that host. */
-	ret = sdio_func_intr_enable(func, handler);
+	ret = oob_sdio_irq_register(card);
 	if (ret) {
 		destroy_workqueue(card->sdio_oob_irq_workqueue);
 		card->sdio_oob_irq_workqueue = NULL;
 		return ret;
 	}
-	card->sdio_func_intr_enabled = MTRUE;
-	ret = oob_sdio_irq_register(card);
+	ret = sdio_func_intr_enable(func, handler);
 	if (ret) {
-		sdio_func_intr_disable(func);
-		card->sdio_func_intr_enabled = MFALSE;
+		oob_sdio_irq_unregister(card);
 		destroy_workqueue(card->sdio_oob_irq_workqueue);
 		card->sdio_oob_irq_workqueue = NULL;
 	}
+	card->sdio_func_intr_enabled = MTRUE;
 	return ret;
 }
 
@@ -610,30 +524,21 @@ static int woal_sdio_claim_irq(sdio_mmc_card *card, sdio_irq_handler_t *handler)
  */
 static int woal_sdio_release_irq(sdio_mmc_card *card)
 {
-	struct sdio_func *func;
-	int ret = 0;
+	struct sdio_func *func = card->func;
+	BUG_ON(!func);
+	BUG_ON(!func->card);
 
-	if (!card || !card->func || !card->func->card)
-		return -ENODEV;
-	func = card->func;
-
-	/* This helper owns host acquisition.  Stop and drain the OOB producer
-	 * before taking the host because its work item claims the same host. */
 	oob_sdio_irq_unregister(card);
-	if (card->sdio_oob_irq_workqueue) {
-		flush_workqueue(card->sdio_oob_irq_workqueue);
-		destroy_workqueue(card->sdio_oob_irq_workqueue);
-		card->sdio_oob_irq_workqueue = NULL;
-	}
+	flush_workqueue(card->sdio_oob_irq_workqueue);
+	destroy_workqueue(card->sdio_oob_irq_workqueue);
+	card->sdio_oob_irq_workqueue = NULL;
 
 	if (card->sdio_func_intr_enabled) {
-		sdio_claim_host(func);
-		ret = sdio_func_intr_disable(func);
-		sdio_release_host(func);
+		sdio_func_intr_disable(func);
 		card->sdio_func_intr_enabled = MFALSE;
 	}
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -659,174 +564,6 @@ static int woal_request_gpio(sdio_mmc_card *card, t_u8 oob_gpio)
 }
 #endif
 
-static bool woal_sdio_handle_is_current(moal_handle *handle)
-{
-	int index;
-
-	for (index = 0; index < MAX_MLAN_ADAPTER; index++) {
-		if (READ_ONCE(m_handle[index]) == handle)
-			return true;
-	}
-
-	return false;
-}
-
-/* Caller holds card->reset_lock. */
-static bool woal_sdio_drv_mode_can_resume(sdio_mmc_card *card,
-					  moal_handle *handle,
-					  struct sdio_func *func)
-{
-	return !card->reset_stopping &&
-	       !READ_ONCE(driver_exit_in_progress) &&
-	       card->handle == handle && READ_ONCE(handle->card) == card &&
-	       card->func == func && sdio_get_drvdata(func) == card &&
-	       READ_ONCE(handle->surprise_removed) != MTRUE &&
-	       woal_sdio_handle_is_current(handle);
-}
-
-mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle)
-{
-	sdio_mmc_card *card;
-	struct sdio_func *func;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	struct workqueue_struct *workqueue;
-	bool ext_intmode;
-#endif
-	int ret = 0;
-
-	if (!handle || !handle->card)
-		return MLAN_STATUS_FAILURE;
-	card = handle->card;
-	func = card->func;
-	if (!func || !func->card)
-		return MLAN_STATUS_FAILURE;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	ext_intmode = moal_extflg_isset(handle, EXT_INTMODE);
-#endif
-
-	/* Close the producer gate before waiting for an IRQ which may have
-	 * observed the old state.  Repeating quiesce is intentionally harmless. */
-	spin_lock_bh(&card->reset_lock);
-	WRITE_ONCE(card->drv_mode_quiesced, true);
-	if (card->handle != handle || READ_ONCE(handle->card) != card ||
-	    card->func != func || sdio_get_drvdata(func) != card ||
-	    card->reset_stopping || READ_ONCE(driver_exit_in_progress) ||
-	    READ_ONCE(handle->surprise_removed) == MTRUE) {
-		spin_unlock_bh(&card->reset_lock);
-		return MLAN_STATUS_FAILURE;
-	}
-	spin_unlock_bh(&card->reset_lock);
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (ext_intmode) {
-		/* The GPIO IRQ action and ordered workqueue belong to the physical
-		 * card, not to the adapter being rebuilt.  Drain them without the MMC
-		 * host, then disable only the function interrupt below. */
-		if (READ_ONCE(card->irq_registered))
-			synchronize_irq(card->oob_irq);
-		workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
-		if (workqueue)
-			flush_workqueue(workqueue);
-
-		sdio_claim_host(func);
-		if (card->sdio_func_intr_enabled) {
-			ret = sdio_func_intr_disable(func);
-			card->sdio_func_intr_enabled = MFALSE;
-		}
-		sdio_release_host(func);
-	} else
-#endif
-	{
-		sdio_claim_host(func);
-		if (func->irq_handler)
-			ret = sdio_release_irq(func);
-		sdio_release_host(func);
-	}
-
-	return ret ? MLAN_STATUS_FAILURE : MLAN_STATUS_SUCCESS;
-}
-
-mlan_status woal_sdio_drv_mode_resume(moal_handle *handle)
-{
-	sdio_mmc_card *card;
-	struct sdio_func *func;
-	bool resume_ok;
-	bool same_device;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	bool ext_intmode;
-#endif
-	int ret = 0;
-
-	if (!handle || !handle->card)
-		return MLAN_STATUS_FAILURE;
-	card = handle->card;
-	func = card->func;
-	if (!func || !func->card)
-		return MLAN_STATUS_FAILURE;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	ext_intmode = moal_extflg_isset(handle, EXT_INTMODE);
-#endif
-
-	/* The gate remains closed while the function interrupt is restored.  This
-	 * makes both initial validation and any partial failure race-safe. */
-	spin_lock_bh(&card->reset_lock);
-	resume_ok = woal_sdio_drv_mode_can_resume(card, handle, func);
-	if (!resume_ok || !card->drv_mode_quiesced) {
-		spin_unlock_bh(&card->reset_lock);
-		return resume_ok ? MLAN_STATUS_SUCCESS : MLAN_STATUS_FAILURE;
-	}
-	spin_unlock_bh(&card->reset_lock);
-
-	sdio_claim_host(func);
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (ext_intmode) {
-		if (!card->irq_registered || !card->sdio_oob_irq_workqueue)
-			ret = -ENODEV;
-		else if (!card->sdio_func_intr_enabled) {
-			ret = sdio_func_intr_enable(func, woal_sdio_interrupt);
-			if (!ret)
-				card->sdio_func_intr_enabled = MTRUE;
-		}
-	} else
-#endif
-	if (!func->irq_handler)
-		ret = sdio_claim_irq(func, woal_sdio_interrupt);
-	sdio_release_host(func);
-
-	spin_lock_bh(&card->reset_lock);
-	resume_ok = !ret && card->drv_mode_quiesced &&
-		    woal_sdio_drv_mode_can_resume(card, handle, func);
-	if (resume_ok)
-		WRITE_ONCE(card->drv_mode_quiesced, false);
-	spin_unlock_bh(&card->reset_lock);
-	if (resume_ok)
-		return MLAN_STATUS_SUCCESS;
-
-	/* An enable error or a concurrent removal leaves the card quiesced.  Undo
-	 * a successful partial enable without touching the shared GPIO IRQ/WQ. */
-	spin_lock_bh(&card->reset_lock);
-	same_device = card->handle == handle && READ_ONCE(handle->card) == card &&
-		      card->func == func && sdio_get_drvdata(func) == card;
-	spin_unlock_bh(&card->reset_lock);
-	if (!same_device)
-		return MLAN_STATUS_FAILURE;
-
-	sdio_claim_host(func);
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (ext_intmode) {
-		if (card->sdio_func_intr_enabled) {
-			(void)sdio_func_intr_disable(func);
-			card->sdio_func_intr_enabled = MFALSE;
-		}
-	} else
-#endif
-	if (func->irq_handler)
-		(void)sdio_release_irq(func);
-	sdio_release_host(func);
-
-	return MLAN_STATUS_FAILURE;
-}
-
 /**  @brief This function updates the card types
  *
  *  @param handle   A Pointer to the moal_handle structure
@@ -850,20 +587,6 @@ static t_u16 woal_update_card_type(t_void *card)
 			driver_version + strlen(INTF_CARDTYPE) +
 				strlen(KERN_VERSION),
 			V15, strlen(V15),
-			strlen(driver_version) -
-				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
-	}
-#endif
-#ifdef SD8801
-	if (cardp_sd->func->device == SD_DEVICE_ID_8801) {
-		card_type = CARD_TYPE_SD8801;
-		moal_memcpy_ext(NULL, driver_version, CARD_SD8801,
-				strlen(CARD_SD8801), strlen(driver_version));
-		moal_memcpy_ext(
-			NULL,
-			driver_version + strlen(INTF_CARDTYPE) +
-				strlen(KERN_VERSION),
-			V14, strlen(V14),
 			strlen(driver_version) -
 				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
 	}
@@ -1088,7 +811,6 @@ int woal_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id)
 		goto err;
 	}
 	INIT_WORK(&card->reset_work, woal_sdiommc_work);
-	spin_lock_init(&card->reset_lock);
 	if (NULL ==
 	    woal_add_card(card, &card->func->dev, &sdiommc_ops, card_type)) {
 		PRINTM(MMSG, "woal_add_card failed\n");
@@ -1127,21 +849,6 @@ void woal_sdio_remove(struct sdio_func *func)
 		PRINTM(MINFO, "SDIO func=%d\n", func->num);
 		card = sdio_get_drvdata(func);
 		if (card) {
-			/* reset_work runs on the system workqueue, outside the MOAL
-			 * queues drained by woal_remove_card().  Stop it while card and
-			 * handle are still valid so it cannot race teardown or kfree. */
-			spin_lock_bh(&card->reset_lock);
-			card->reset_stopping = true;
-			spin_unlock_bh(&card->reset_lock);
-			cancel_work_sync(&card->reset_work);
-			if (card->handle) {
-				card->handle->surprise_removed = MTRUE;
-				/* SDIO IRQ callbacks execute with the MMC host claimed.  This
-				 * barrier waits out a callback which entered before the gate. */
-				sdio_claim_host(func);
-				sdio_release_host(func);
-				woal_cancel_hang_work(card->handle);
-			}
 			/* We need to advance the time to set surprise_removed
 			 * to MTRUE as fast as possible to avoid race condition
 			 * with woal_sdio_interrupt()
@@ -1154,6 +861,8 @@ void woal_sdio_remove(struct sdio_func *func)
 			 * woal_sdio_remove() is running.
 			 */
 			if (card->handle != NULL) {
+				card->handle->surprise_removed = MTRUE;
+
 				/* check if woal_sdio_interrupt() is running */
 				while (card->handle->main_state !=
 					       MOAL_END_MAIN_PROCESS &&
@@ -1686,7 +1395,6 @@ static mlan_status woal_sdiommc_write_data_sync(moal_handle *handle,
 			       pmbuf->data_len;
 	t_u32 ioport = (port & MLAN_SDIO_IO_PORT_MASK);
 	int status = 0;
-	t_u64 tx_t0 = READ_ONCE(bridge_debug) ? ktime_get_ns() : 0;
 	if (pmbuf->use_count > 1)
 		return woal_sdio_rw_mb(handle, pmbuf, port, MTRUE);
 #ifdef SDIO_MMC_DEBUG
@@ -1709,17 +1417,6 @@ static mlan_status woal_sdiommc_write_data_sync(moal_handle *handle,
 #ifdef SDIO_MMC_DEBUG
 	handle->cmd53w = 2;
 #endif
-	/* TX leg: this whole sdio_claim_host + sdio_writesb + release. A large
-	 * value here means the reply-TX over SDIO stalls (host-mutex contention
-	 * with the RX read, or bus), a candidate for the RTT jitter that the
-	 * deliver leg is not responsible for. */
-	if (tx_t0) {
-		long us = (long)((ktime_get_ns() - tx_t0) / 1000);
-
-		atomic_long_inc(&handle->tx_write_cnt);
-		atomic_long_add(us, &handle->tx_write_sum_us);
-		woal_rx_acct_max(&handle->tx_write_max_us, us);
-	}
 	return ret;
 }
 
@@ -1828,19 +1525,14 @@ static void woal_sdiommc_unregister_dev(moal_handle *handle)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 		struct sdio_func *func = card->func;
 #endif
-		/* Release OOB without holding the MMC host: its queued work claims
-		 * that host and must be drained first. */
+		/* Release the SDIO IRQ */
+		sdio_claim_host(card->func);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-		if (moal_extflg_isset(handle, EXT_INTMODE)) {
+		if (moal_extflg_isset(handle, EXT_INTMODE))
 			woal_sdio_release_irq(card);
-			sdio_claim_host(card->func);
-		} else
+		else
 #endif
-		{
-			sdio_claim_host(card->func);
-			if (card->func->irq_handler)
-				sdio_release_irq(card->func);
-		}
+			sdio_release_irq(card->func);
 		sdio_disable_func(card->func);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 		if (handle->driver_status)
@@ -1918,13 +1610,9 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 
 release_irq:
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (moal_extflg_isset(handle, EXT_INTMODE)) {
-		sdio_release_host(func);
+	if (moal_extflg_isset(handle, EXT_INTMODE))
 		woal_sdio_release_irq(card);
-		handle->card = NULL;
-		LEAVE();
-		return MLAN_STATUS_FAILURE;
-	} else
+	else
 #endif
 		sdio_release_irq(func);
 release_host:
@@ -2104,10 +1792,6 @@ static mlan_status woal_sdiommc_get_fw_name(moal_handle *handle)
 		MIN(MLAN_SDIO_BLOCK_SIZE, card->func->card->host->max_blk_size);
 	if (handle->params.fw_name)
 		goto done;
-#ifdef SD8801
-	if (IS_SD8801(handle->card_type))
-		goto done;
-#endif
 	/** Revision ID register */
 	woal_sdiommc_read_reg(handle, rev_id_reg, &revision_id);
 	PRINTM(MCMND, "revision_id=0x%x sdio_blk_size=%d\n", revision_id,
@@ -2248,6 +1932,10 @@ static mlan_status woal_sdiommc_get_fw_name(moal_handle *handle)
 					strncpy(handle->card_info->fw_name,
 						SDSD9098_COMBO_V1_FW_NAME,
 						FW_NAMW_MAX_LEN);
+			} else {
+				strncpy(handle->card_info->fw_name,
+					SDUART9098_COMBO_V1_FW_NAME,
+					FW_NAMW_MAX_LEN);
 			}
 			strncpy(handle->card_info->fw_name_wlan,
 				SD9098_WLAN_V1_FW_NAME, FW_NAMW_MAX_LEN);
@@ -2402,6 +2090,15 @@ static mlan_status woal_sdiommc_get_fw_name(moal_handle *handle)
 							SDSD9177_DEFAULT_COMBO_V1_FW_NAME,
 							FW_NAMW_MAX_LEN);
 				}
+			} else {
+				if (handle->params.rf_test_mode)
+					strncpy(handle->card_info->fw_name,
+						SDUART9177_DEFAULT_RFTM_COMBO_V1_FW_NAME,
+						FW_NAMW_MAX_LEN);
+				else
+					strncpy(handle->card_info->fw_name,
+						SD9177_DEFAULT_COMBO_V1_FW_NAME,
+						FW_NAMW_MAX_LEN);
 			}
 			if (handle->params.rf_test_mode)
 				strncpy(handle->card_info->fw_name,
@@ -2585,272 +2282,6 @@ static rdwr_status woal_cmd52_rdwr_firmware(moal_handle *phandle, t_u8 doneflag,
 	}
 	return RDWR_STATUS_SUCCESS;
 }
-
-#ifdef SD8801
-#define DEBUG_HOST_READY 0xEE
-#define DEBUG_FW_DONE 0xFF
-#define DEBUG_MEMDUMP_FINISH 0xFE
-#define MAX_POLL_TRIES 100
-#define DEBUG_ITCM_DONE 0xaa
-#define DEBUG_DTCM_DONE 0xbb
-#define DEBUG_SQRAM_DONE 0xcc
-
-#define DEBUG_DUMP_CTRL_REG 0x63
-#define DEBUG_DUMP_FIRST_REG 0x62
-#define DEBUG_DUMP_START_REG 0x64
-#define DEBUG_DUMP_END_REG 0x6a
-#define ITCM_SIZE 0x60000
-#define SQRAM_SIZE 0x33500
-#define DTCM_SIZE 0x14000
-
-/**
- *  @brief This function dump firmware memory to file
- *
- *  @param phandle   A pointer to moal_handle
- *
- *  @return         N/A
- */
-void woal_dump_firmware_info(moal_handle *phandle)
-{
-	int ret = 0;
-	unsigned int reg, reg_start, reg_end;
-#ifndef DUMP_TO_PROC
-	t_u8 path_name[64], file_name[32];
-#endif
-	t_u8 *ITCM_Ptr = NULL;
-	t_u8 *DTCM_Ptr = NULL;
-	t_u8 *SQRAM_Ptr = NULL;
-	t_u8 *dbg_ptr = NULL;
-	t_u32 sec, usec;
-	t_u8 ctrl_data = 0;
-	t_u32 dtcm_size = DTCM_SIZE;
-	t_u32 sqram_size = SQRAM_SIZE;
-	t_u8 *end_ptr = NULL;
-	int tries;
-
-	if (!phandle) {
-		PRINTM(MERROR, "Could not dump firmwware info\n");
-		return;
-	}
-#ifdef DUMP_TO_PROC
-	if (!phandle->fw_dump_buf) {
-		ret = moal_vmalloc(phandle, FW_DUMP_INFO_LEN,
-				   &(phandle->fw_dump_buf));
-		if (ret != MLAN_STATUS_SUCCESS || !phandle->fw_dump_buf) {
-			PRINTM(MERROR, "Failed to vmalloc fw dump bufffer\n");
-			return;
-		}
-	} else {
-		memset(phandle->fw_dump_buf, 0x00, FW_DUMP_INFO_LEN);
-	}
-	phandle->fw_dump_len = 0;
-#else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
-	/** Create dump directort*/
-	woal_create_dump_dir(phandle, path_name, sizeof(path_name));
-#else
-	memset(path_name, 0, sizeof(path_name));
-	strncpy(path_name, "/data", sizeof(path_name));
-#endif
-	PRINTM(MMSG, "Directory name is %s\n", path_name);
-	woal_dump_drv_info(phandle, path_name);
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 32)
-	sdio_claim_host(((sdio_mmc_card *)phandle->card)->func);
-#endif
-	/* start dump fw memory	*/
-	moal_get_system_time(phandle, &sec, &usec);
-	PRINTM(MMSG, "==== DEBUG MODE OUTPUT START: %u.%06u ====\n", sec, usec);
-	ret = moal_vmalloc(phandle, ITCM_SIZE + 1, (t_u8 **)&ITCM_Ptr);
-	if ((ret != MLAN_STATUS_SUCCESS) || !ITCM_Ptr) {
-		PRINTM(MERROR, "Error: vmalloc ITCM buffer failed!!!\n");
-		goto done;
-	}
-
-	PRINTM(MMSG, "DTCM_SIZE=0x%x\n", dtcm_size);
-	ret = moal_vmalloc(phandle, dtcm_size + 1, (t_u8 **)&DTCM_Ptr);
-	if ((ret != MLAN_STATUS_SUCCESS) || !DTCM_Ptr) {
-		PRINTM(MERROR, "Error: vmalloc DTCM buffer failed!!!\n");
-		goto done;
-	}
-	ret = moal_vmalloc(phandle, sqram_size + 1, (t_u8 **)&SQRAM_Ptr);
-	if ((ret != MLAN_STATUS_SUCCESS) || !SQRAM_Ptr) {
-		PRINTM(MERROR, "Error: vmalloc SQRAM buffer failed!!!\n");
-		goto done;
-	}
-	dbg_ptr = ITCM_Ptr;
-	end_ptr = ITCM_Ptr + ITCM_SIZE;
-	moal_get_system_time(phandle, &sec, &usec);
-	PRINTM(MMSG, "Start ITCM output %u.%06u, please wait...\n", sec, usec);
-	reg_start = DEBUG_DUMP_START_REG;
-	reg_end = DEBUG_DUMP_END_REG;
-	do {
-		ret = woal_sdio_writeb(phandle, DEBUG_DUMP_CTRL_REG,
-				       DEBUG_HOST_READY);
-		if (ret) {
-			PRINTM(MERROR, "SDIO Write ERR\n");
-			goto done;
-		}
-		for (tries = 0; tries < MAX_POLL_TRIES; tries++) {
-			ret = woal_sdio_readb(phandle, DEBUG_DUMP_CTRL_REG,
-					      &ctrl_data);
-			if (ret) {
-				PRINTM(MERROR, "SDIO READ ERR\n");
-				goto done;
-			}
-			if ((ctrl_data == DEBUG_FW_DONE) ||
-			    (ctrl_data == DEBUG_ITCM_DONE) ||
-			    (ctrl_data == DEBUG_DTCM_DONE) ||
-			    (ctrl_data == DEBUG_SQRAM_DONE))
-				break;
-			if (ctrl_data != DEBUG_HOST_READY) {
-				ret = woal_sdio_writeb(phandle,
-						       DEBUG_DUMP_CTRL_REG,
-						       DEBUG_HOST_READY);
-				if (ret) {
-					PRINTM(MERROR, "SDIO Write ERR\n");
-					goto done;
-				}
-			}
-			udelay(100);
-		}
-		if (ctrl_data == DEBUG_HOST_READY) {
-			PRINTM(MERROR, "Fail to pull ctrl_data\n");
-			goto done;
-		}
-		reg = DEBUG_DUMP_FIRST_REG;
-		ret = woal_sdio_readb(phandle, reg, dbg_ptr);
-		if (ret) {
-			PRINTM(MMSG, "SDIO READ ERR\n");
-			goto done;
-		}
-		if (dbg_ptr < end_ptr)
-			dbg_ptr++;
-		else {
-			PRINTM(MINFO, "pre-allocced buf is not enough\n");
-			goto done;
-		}
-		for (reg = reg_start; reg <= reg_end; reg++) {
-			ret = woal_sdio_readb(phandle, reg, dbg_ptr);
-			if (ret) {
-				PRINTM(MMSG, "SDIO READ ERR\n");
-				goto done;
-			}
-			if (dbg_ptr < end_ptr)
-				dbg_ptr++;
-			else
-				PRINTM(MINFO,
-				       "pre-allocced buf is not enough\n");
-		}
-		switch (ctrl_data) {
-		case DEBUG_ITCM_DONE:
-#ifdef MLAN_64BIT
-			PRINTM(MMSG, "ITCM done: size=0x%lx\n",
-			       dbg_ptr - ITCM_Ptr);
-#else
-			PRINTM(MMSG, "ITCM done: size=0x%x\n",
-			       dbg_ptr - ITCM_Ptr);
-#endif
-#ifdef DUMP_TO_PROC
-			woal_save_dump_info_to_buf(phandle, ITCM_Ptr, ITCM_SIZE,
-						   FW_DUMP_TYPE_MEM_ITCM);
-#else
-			memset(file_name, 0, sizeof(file_name));
-			snprintf(file_name, sizeof(file_name), "%s",
-				 "file_sdio_ITCM");
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_save_dump_info_to_file(path_name, file_name,
-							ITCM_Ptr, ITCM_SIZE))
-				PRINTM(MMSG, "Can't save dump file %s in %s\n",
-				       file_name, path_name);
-#endif
-			dbg_ptr = DTCM_Ptr;
-			end_ptr = DTCM_Ptr + dtcm_size;
-			moal_get_system_time(phandle, &sec, &usec);
-			PRINTM(MMSG,
-			       "Start DTCM output %u.%06u, please wait...\n",
-			       sec, usec);
-			break;
-		case DEBUG_DTCM_DONE:
-#ifdef MLAN_64BIT
-			PRINTM(MMSG, "DTCM done: size=0x%lx\n",
-			       dbg_ptr - DTCM_Ptr);
-#else
-			PRINTM(MMSG, "DTCM done: size=0x%x\n",
-			       dbg_ptr - DTCM_Ptr);
-#endif
-#ifdef DUMP_TO_PROC
-			woal_save_dump_info_to_buf(phandle, ITCM_Ptr, dtcm_size,
-						   FW_DUMP_TYPE_MEM_DTCM);
-#else
-			memset(file_name, 0, sizeof(file_name));
-			snprintf(file_name, sizeof(file_name), "%s",
-				 "file_sdio_DTCM");
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_save_dump_info_to_file(path_name, file_name,
-							DTCM_Ptr, dtcm_size))
-				PRINTM(MMSG, "Can't save dump file %s in %s\n",
-				       file_name, path_name);
-#endif
-			dbg_ptr = SQRAM_Ptr;
-			end_ptr = SQRAM_Ptr + sqram_size;
-			moal_get_system_time(phandle, &sec, &usec);
-			PRINTM(MMSG,
-			       "Start SQRAM output %u.%06u, please wait...\n",
-			       sec, usec);
-			break;
-		case DEBUG_SQRAM_DONE:
-#ifdef MLAN_64BIT
-			PRINTM(MMSG, "SQRAM done: size=0x%lx\n",
-			       dbg_ptr - SQRAM_Ptr);
-#else
-			PRINTM(MMSG, "SQRAM done: size=0x%x\n",
-			       dbg_ptr - SQRAM_Ptr);
-#endif
-#ifdef DUMP_TO_PROC
-			woal_save_dump_info_to_buf(phandle, SQRAM_Ptr,
-						   sqram_size,
-						   FW_DUMP_TYPE_MEM_SQRAM);
-#else
-			memset(file_name, 0, sizeof(file_name));
-			snprintf(file_name, sizeof(file_name), "%s",
-				 "file_sdio_SQRAM");
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_save_dump_info_to_file(path_name, file_name,
-							SQRAM_Ptr, sqram_size))
-				PRINTM(MMSG, "Can't save dump file %s in %s\n",
-				       file_name, path_name);
-#endif
-			PRINTM(MMSG, "End output!\n");
-			break;
-		default:
-			break;
-		}
-	} while (ctrl_data != DEBUG_SQRAM_DONE);
-
-#ifdef DUMP_TO_PROC
-	woal_append_end_block(phandle);
-#endif
-	PRINTM(MMSG,
-	       "The output ITCM/DTCM/SQRAM have been saved to files successfully!\n");
-	moal_get_system_time(phandle, &sec, &usec);
-	PRINTM(MMSG, "==== DEBUG MODE OUTPUT END: %u.%06u ====\n", sec, usec);
-	/* end dump fw memory */
-done:
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 32)
-	sdio_release_host(((sdio_mmc_card *)phandle->card)->func);
-#endif
-	if (ITCM_Ptr)
-		moal_vfree(phandle, ITCM_Ptr);
-	if (DTCM_Ptr)
-		moal_vfree(phandle, DTCM_Ptr);
-	if (SQRAM_Ptr)
-		moal_vfree(phandle, SQRAM_Ptr);
-	PRINTM(MMSG, "==== DEBUG MODE END ====\n");
-	return;
-}
-#endif
 
 /**
  *  @brief This function dump firmware memory to file
@@ -3383,7 +2814,8 @@ static void woal_sdiommc_reg_dbg(moal_handle *phandle)
 				ptr += snprintf(ptr, sizeof(buf), "%02x ",
 						data);
 			else {
-				ptr += snprintf(ptr, sizeof(buf), "ERR");
+				ptr += snprintf(ptr, sizeof(buf) - (ptr - buf),
+						"ERR");
 				break;
 			}
 			if (loop == 2 && reg < reg_end)
@@ -3436,11 +2868,6 @@ static void woal_sdiommc_dump_fw_info(moal_handle *phandle)
 			return;
 		}
 	}
-#ifdef SD8801
-	else {
-		woal_dump_firmware_info(phandle);
-	}
-#endif
 	phandle->fw_dump = MFALSE;
 	woal_sdiommc_reg_dbg(phandle);
 	if (!phandle->priv_num)
@@ -3535,11 +2962,11 @@ static int woal_sdiommc_dump_reg_info(moal_handle *phandle, t_u8 *drv_buf)
 			reg_end = scratch_reg + 10;
 		}
 		if (loop != 2)
-			ptr += snprintf(ptr, MAX_BUF_LEN,
+			ptr += snprintf(ptr, sizeof(buf),
 					"SDIO Func%d (%#x-%#x): ", func,
 					reg_start, reg_end);
 		else
-			ptr += snprintf(ptr, MAX_BUF_LEN,
+			ptr += snprintf(ptr, sizeof(buf),
 					"SDIO Func%d: ", func);
 		for (reg = reg_start; reg <= reg_end;) {
 			if (func == 0)
@@ -3548,13 +2975,13 @@ static int woal_sdiommc_dump_reg_info(moal_handle *phandle, t_u8 *drv_buf)
 				ret = woal_sdio_readb(phandle, reg, &data);
 
 			if (loop == 2)
-				ptr += snprintf(ptr, MAX_BUF_LEN, "(%#x) ",
+				ptr += snprintf(ptr, sizeof(buf), "(%#x) ",
 						reg);
 			if (!ret)
-				ptr += snprintf(ptr, MAX_BUF_LEN, "%02x ",
+				ptr += snprintf(ptr, sizeof(buf), "%02x ",
 						data);
 			else {
-				ptr += snprintf(ptr, MAX_BUF_LEN, "ERR");
+				ptr += snprintf(ptr, sizeof(buf), "ERR");
 				break;
 			}
 			if (loop == 2 && reg < reg_end)
@@ -3585,16 +3012,13 @@ void woal_sdio_reset_hw(moal_handle *handle)
 	sdio_mmc_card *card = handle->card;
 	struct sdio_func *func = card->func;
 	ENTER();
+	sdio_claim_host(func);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (moal_extflg_isset(handle, EXT_INTMODE)) {
+	if (moal_extflg_isset(handle, EXT_INTMODE))
 		woal_sdio_release_irq(card);
-		sdio_claim_host(func);
-	} else
+	else
 #endif
-	{
-		sdio_claim_host(func);
 		sdio_release_irq(card->func);
-	}
 	sdio_disable_func(card->func);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
@@ -3645,12 +3069,6 @@ static BOOLEAN woal_sdiommc_check_winner_status(moal_handle *handle)
 	t_u32 winner_status_reg = handle->card_info->fw_winner_status_reg;
 
 	ENTER();
-#ifdef SD8801
-	if (IS_SD8801(handle->card_type)) {
-		LEAVE();
-		return MTRUE;
-	}
-#endif
 	handle->ops.read_reg(handle, winner_status_reg, &value);
 	LEAVE();
 	return (value == 0);
@@ -3750,17 +3168,15 @@ done:
  *
  * @return        MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
  */
-static mlan_status __woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
-					 bool flr_flag, bool card_sem_owned)
+static mlan_status woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
+				       bool flr_flag)
 {
 	unsigned int i;
 	int index = 0;
 	mlan_status status = MLAN_STATUS_SUCCESS;
 	moal_private *priv = NULL;
 	int fw_serial_bkp = 0;
-	int bridge_ret;
 	sdio_mmc_card *card = NULL;
-	bool restore_nowait = false;
 
 	ENTER();
 
@@ -3770,44 +3186,22 @@ static mlan_status __woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
 		return status;
 	}
 	card = (sdio_mmc_card *)handle->card;
-	if (!card) {
-		PRINTM(MERROR, "The parameter 'card' is NULL\n");
-		LEAVE();
-		return MLAN_STATUS_FAILURE;
-	}
-	if (!card_sem_owned)
-		down(&AddRemoveCardSem);
+	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
+		goto exit_sem_err;
 
 	if (!prepare)
 		goto perform_init;
-	handle->fw_reseting = MTRUE;
-	handle->surprise_removed = MTRUE;
 
 	if (!(handle->pmlan_adapter)) {
 		PRINTM(MINFO, "\n Handle null 2 during prepare=%d\n", prepare);
-		status = MLAN_STATUS_FAILURE;
-		goto exit;
+		LEAVE();
+		return status;
 	}
-
-	bridge_ret = moal_bridge_suspend_owner_for_reset(handle);
-	if (bridge_ret) {
-		status = MLAN_STATUS_FAILURE;
-		goto exit;
-	}
-	/* The MMC core invokes the SDIO IRQ handler with the host claimed.  Once
-	 * surprise_removed is published by the outer reset transaction, this
-	 * claim/release waits out the last handler that could have entered earlier. */
-	sdio_claim_host(card->func);
-	sdio_release_host(card->func);
 
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
 	mlan_disable_host_int(handle->pmlan_adapter);
-	if (woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE) !=
-	    MLAN_STATUS_SUCCESS) {
-		status = MLAN_STATUS_FAILURE;
-		goto exit;
-	}
+	woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE);
 	woal_clean_up(handle);
 	mlan_ioctl(handle->pmlan_adapter, NULL);
 
@@ -3815,19 +3209,9 @@ static mlan_status __woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
 	handle->init_wait_q_woken = MFALSE;
 	status = mlan_shutdown_fw(handle->pmlan_adapter);
 
-	if (status == MLAN_STATUS_PENDING) {
-		if (wait_event_interruptible(handle->init_wait_q,
-					     handle->init_wait_q_woken)) {
-			status = MLAN_STATUS_FAILURE;
-			goto exit;
-		}
-		status = MLAN_STATUS_SUCCESS;
-	}
-	if (status != MLAN_STATUS_SUCCESS)
-		goto exit;
-	/* Keep main_process available until shutdown completion, then drain every
-	 * handle-owned work item before interface and adapter destruction. */
-	woal_flush_workqueue(handle);
+	if (status == MLAN_STATUS_PENDING)
+		wait_event_interruptible(handle->init_wait_q,
+					 handle->init_wait_q_woken);
 
 	if (atomic_read(&handle->rx_pending) ||
 	    atomic_read(&handle->tx_pending) ||
@@ -3846,10 +3230,6 @@ static mlan_status __woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
 #endif
 #endif
 
-	/* FLR recreates every netdev identity while the bridge notifier is
-	 * suspended.  Invalidate the old-name request before virtual or physical
-	 * unregister can permit reuse. */
-	moal_bridge_pending_invalidate_handle(handle);
 #ifdef WIFI_DIRECT_SUPPORT
 #if defined(STA_CFG80211) && defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= WIFI_DIRECT_KERNEL_VERSION
@@ -3895,7 +3275,6 @@ perform_init:
 
 	/* Init SW */
 	if (woal_init_sw(handle)) {
-		status = MLAN_STATUS_FAILURE;
 		PRINTM(MFATAL, "Software Init Failed\n");
 		goto err_init_fw;
 	}
@@ -3906,65 +3285,37 @@ perform_init:
 		moal_extflg_clear(handle, EXT_FW_SERIAL);
 		woal_update_firmware_name(handle);
 	}
-	if (moal_extflg_isset(handle, EXT_REQ_FW_NOWAIT)) {
-		moal_extflg_clear(handle, EXT_REQ_FW_NOWAIT);
-		restore_nowait = true;
-	}
-	WRITE_ONCE(handle->fw_init_card_sem_owned, MTRUE);
 	if (woal_init_fw(handle)) {
-		WRITE_ONCE(handle->fw_init_card_sem_owned, MFALSE);
-		status = MLAN_STATUS_FAILURE;
 		PRINTM(MFATAL, "Firmware Init Failed\n");
 		woal_sdiommc_reg_dbg(handle);
 		if (fw_serial_bkp)
 			moal_extflg_set(handle, EXT_FW_SERIAL);
 		goto err_init_fw;
 	}
-	WRITE_ONCE(handle->fw_init_card_sem_owned, MFALSE);
-	if (restore_nowait) {
-		moal_extflg_set(handle, EXT_REQ_FW_NOWAIT);
-		restore_nowait = false;
-	}
 	if (flr_flag && fw_serial_bkp)
 		moal_extflg_set(handle, EXT_FW_SERIAL);
-	handle->fw_reseting = MFALSE;
 exit:
-	if (!card_sem_owned)
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 
+exit_sem_err:
 	LEAVE();
 	return status;
 
 err_init_fw:
-	WRITE_ONCE(handle->fw_init_card_sem_owned, MFALSE);
-	moal_bridge_discard_suspended_owner_for_reset(handle);
-	if (restore_nowait)
-		moal_extflg_set(handle, EXT_REQ_FW_NOWAIT);
-	/* prepare normally cleared the owner already; keep the failure/free
-	 * boundary explicit for any standalone or partial reset invocation. */
-	moal_bridge_deinit(handle);
-	/* Firmware init can re-enable SDIO IRQ/main processing before reporting a
-	 * terminal failure.  Gate new callbacks, then use MMC host ownership as a
-	 * barrier for a handler which entered before the gate. */
-	handle->surprise_removed = MTRUE;
-	sdio_claim_host(card->func);
-	sdio_release_host(card->func);
 	if (handle->is_fw_dump_timer_set) {
 		woal_cancel_timer(&handle->fw_dump_timer);
 		handle->is_fw_dump_timer_set = MFALSE;
 	}
 
-	if (handle->pmlan_adapter &&
-	    ((handle->hardware_status == HardwareStatusFwReady) ||
-	     (handle->hardware_status == HardwareStatusReady))) {
+	if ((handle->hardware_status == HardwareStatusFwReady) ||
+	    (handle->hardware_status == HardwareStatusReady)) {
 		PRINTM(MINFO, "shutdown mlan\n");
 		handle->init_wait_q_woken = MFALSE;
 		status = mlan_shutdown_fw(handle->pmlan_adapter);
 		if (status == MLAN_STATUS_PENDING)
 			wait_event_interruptible(handle->init_wait_q,
-					 handle->init_wait_q_woken);
+						 handle->init_wait_q_woken);
 	}
-	woal_flush_workqueue(handle);
 #ifdef ANDROID_KERNEL
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
 	wakeup_source_trash(&handle->ws);
@@ -3975,15 +3326,10 @@ err_init_fw:
 #ifdef CONFIG_PROC_FS
 	woal_proc_exit(handle);
 #endif
-#ifdef IMX_SUPPORT
-	/* The reset failure path clears card->handle and frees handle below.  Drop
-	 * its devm OOB wake IRQ while the dev_id is still valid; physical remove
-	 * may later observe a NULL card handle. */
-	woal_unregist_oob_wakeup_irq(handle);
-#endif
 	/* Unregister device */
 	PRINTM(MINFO, "unregister device\n");
 	woal_sdiommc_unregister_dev(handle);
+	handle->surprise_removed = MTRUE;
 #ifdef REASSOCIATION
 	if (handle->reassoc_thread.pid)
 		wake_up_interruptible(&handle->reassoc_thread.wait_q);
@@ -4003,22 +3349,9 @@ err_init_fw:
 	if (index < MAX_MLAN_ADAPTER)
 		m_handle[index] = NULL;
 	card->handle = NULL;
-	if (!card_sem_owned)
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 	return (mlan_status)MLAN_STATUS_FAILURE;
-}
-
-static mlan_status woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
-				       bool flr_flag)
-{
-	return __woal_do_sdiommc_flr(handle, prepare, flr_flag, false);
-}
-
-static mlan_status woal_do_sdiommc_flr_locked(moal_handle *handle,
-					       bool prepare, bool flr_flag)
-{
-	return __woal_do_sdiommc_flr(handle, prepare, flr_flag, true);
 }
 
 /**
@@ -4033,15 +3366,8 @@ static void woal_sdiommc_work(struct work_struct *work)
 	sdio_mmc_card *card = container_of(work, sdio_mmc_card, reset_work);
 	moal_handle *handle = NULL;
 	moal_handle *ref_handle = NULL;
-	bool failed = false;
-
 	PRINTM(MMSG, "========START IN-BAND RESET===========\n");
-	down(&AddRemoveCardSem);
 	handle = card->handle;
-	if (!handle) {
-		failed = true;
-		goto done;
-	}
 	// handle-> mac0 , ref_handle->second mac
 	if (handle->pref_mac) {
 		if (handle->second_mac) {
@@ -4050,77 +3376,56 @@ static void woal_sdiommc_work(struct work_struct *work)
 		} else {
 			ref_handle = (moal_handle *)handle->pref_mac;
 		}
+		if (ref_handle) {
+			ref_handle->surprise_removed = MTRUE;
+			woal_clean_up(ref_handle);
+			mlan_ioctl(ref_handle->pmlan_adapter, NULL);
+		}
 	}
 	handle->surprise_removed = MTRUE;
 	handle->fw_reseting = MTRUE;
+	woal_do_sdiommc_flr(handle, true, true);
 	if (ref_handle) {
 		ref_handle->surprise_removed = MTRUE;
 		ref_handle->fw_reseting = MTRUE;
-		woal_clean_up(ref_handle);
-		mlan_ioctl(ref_handle->pmlan_adapter, NULL);
+		woal_do_sdiommc_flr(ref_handle, true, true);
 	}
-	if (woal_do_sdiommc_flr_locked(handle, true, true) !=
-	    MLAN_STATUS_SUCCESS)
-		failed = true;
-	if (ref_handle) {
-		if (woal_do_sdiommc_flr_locked(ref_handle, true, true) !=
-		    MLAN_STATUS_SUCCESS)
-			failed = true;
-	}
-	if (failed)
-		goto done;
 	if (woal_sdiommc_reset_fw(handle)) {
 		PRINTM(MERROR, "SDIO In-band Reset Fail\n");
-		failed = true;
-		goto done;
+		woal_send_auto_recovery_failure_event(handle);
+		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+		return;
 	}
 
 	handle->surprise_removed = MFALSE;
-	if (MLAN_STATUS_SUCCESS ==
-	    woal_do_sdiommc_flr_locked(handle, false, true))
+
+	woal_free_module_param(handle);
+	woal_init_module_param(handle);
+
+	if (MLAN_STATUS_SUCCESS == woal_do_sdiommc_flr(handle, false, true))
 		handle->fw_reseting = MFALSE;
 	else {
 		handle = NULL;
-		failed = true;
+		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+		return;
 	}
 
 	if (ref_handle) {
 		ref_handle->surprise_removed = MFALSE;
-		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_sdiommc_flr_locked(ref_handle, false, true)) {
-			ref_handle->fw_reseting = MFALSE;
-		} else {
-			ref_handle = NULL;
-			failed = true;
-		}
-	}
-	if (!failed && moal_bridge_resume_owner())
-		failed = true;
 
-done:
-	if (failed) {
-		moal_bridge_discard_suspended_owner();
-		if (handle) {
-			moal_bridge_deinit(handle);
-			handle->driver_status = MTRUE;
-			handle->hardware_status = HardwareStatusNotReady;
-			woal_send_auto_recovery_failure_event(handle);
-		}
-		if (ref_handle) {
-			moal_bridge_deinit(ref_handle);
-			ref_handle->driver_status = MTRUE;
-			ref_handle->hardware_status = HardwareStatusNotReady;
-		}
-		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
-	} else {
-		wifi_status = WIFI_STATUS_OK;
-		woal_send_auto_recovery_complete_event(handle);
+		woal_free_module_param(ref_handle);
+		woal_init_module_param(ref_handle);
+
+		if (MLAN_STATUS_SUCCESS ==
+		    woal_do_sdiommc_flr(ref_handle, false, true))
+			ref_handle->fw_reseting = MFALSE;
 	}
-	PRINTM(MMSG, "========END IN-BAND RESET===========\n");
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
-	spin_lock_bh(&card->reset_lock);
 	card->work_flags = MFALSE;
-	spin_unlock_bh(&card->reset_lock);
+	wifi_status = WIFI_STATUS_OK;
+	if (handle)
+		woal_send_auto_recovery_complete_event(handle);
+	PRINTM(MMSG, "========END IN-BAND RESET===========\n");
+	return;
 }
 
 /**
@@ -4130,26 +3435,13 @@ done:
  *  @return         MTRUE/MFALSE
  *
  */
-static mlan_status woal_sdiommc_card_reset(moal_handle *handle)
+static void woal_sdiommc_card_reset(moal_handle *handle)
 {
-	sdio_mmc_card *card;
-	mlan_status status = MLAN_STATUS_FAILURE;
-
-	if (!handle || !handle->card)
-		return status;
-	card = handle->card;
-
-	spin_lock_bh(&card->reset_lock);
-	if (!card->reset_stopping &&
-	    !READ_ONCE(driver_exit_in_progress) && !card->work_flags) {
+	sdio_mmc_card *card = handle->card;
+	if (!card->work_flags) {
 		card->work_flags = MTRUE;
-		if (schedule_work(&card->reset_work))
-			status = MLAN_STATUS_SUCCESS;
-		else
-			card->work_flags = MFALSE;
+		schedule_work(&card->reset_work);
 	}
-	spin_unlock_bh(&card->reset_lock);
-	return status;
 }
 
 static moal_if_ops sdiommc_ops = {

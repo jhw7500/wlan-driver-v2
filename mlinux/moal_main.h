@@ -2118,8 +2118,6 @@ typedef struct _card_info {
 	t_bool drcs;
 	/** support Go NOA*/
 	t_bool go_noa;
-	/** support V14_FW_API*/
-	t_bool v14_fw_api;
 	/** support V16_FW_API*/
 	t_bool v16_fw_api;
 	/** support V17_FW_API*/
