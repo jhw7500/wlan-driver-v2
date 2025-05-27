@@ -1,11 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /** @file moal_sdio.h
  *
  * @brief This file contains definitions for SDIO interface.
  * driver.
  *
  *
- * Copyright 2008-2022, 2024-2026 NXP
+ * Copyright 2008-2022, 2024 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -22,9 +21,8 @@
  *
  */
 /****************************************************
- * Change log:
- * **************************************************
- */
+Change log:
+****************************************************/
 
 #ifndef _MOAL_SDIO_H
 #define _MOAL_SDIO_H
@@ -56,9 +54,6 @@
 /** Fixed address mode */
 #define FIXED_ADDRESS 0
 #endif
-
-/** SDIO register card control 3 */
-#define SD_CARD_CTRL3 0xF3
 
 #if defined(SD8977)
 #define SD8977_V0 0x0
@@ -93,6 +88,13 @@
 #define SD8977_DEFAULT_COMBO_FW_NAME "nxp/sduart8977_combo_v2.bin"
 #define SD8977_DEFAULT_WLAN_FW_NAME "nxp/sd8977_wlan_v2.bin"
 #endif /* SD8977 */
+
+#ifdef SD8997
+#define SD8997_DEFAULT_COMBO_FW_NAME "nxp/sduart8997_combo_v4.bin"
+#define SDUART8997_DEFAULT_COMBO_FW_NAME "nxp/sduart8997_combo_v4.bin"
+#define SDSD8997_DEFAULT_COMBO_FW_NAME "nxp/sdsd8997_combo_v4.bin"
+#define SD8997_DEFAULT_WLAN_FW_NAME "nxp/sd8997_wlan_v4.bin"
+#endif /* SD8997 */
 
 #ifdef SD8987
 #define SD8987_DEFAULT_COMBO_FW_NAME "nxp/sduart8987_combo.bin"
@@ -150,13 +152,13 @@
 #ifdef SDAW693
 #define SDAW693_A0 0x00
 #define SDAW693_A1 0x01
-#define SDIW693_DEFAULT_COMBO_FW_NAME "nxp/sduartiw693_combo.bin"
-#define SDUARTIW693_COMBO_FW_NAME "nxp/sduartiw693_combo.bin"
-#define SDSDIW693_COMBO_FW_NAME "sdsdiw693_combo.bin"
-#define SDUARTIW693_COMBO_V1_FW_NAME "nxp/sduartiw693_combo_v1.bin.se"
-#define SDSDIW693_COMBO_V1_FW_NAME "sdsdiw693_combo_v1.bin.se"
-#define SDIW693_DEFAULT_WLAN_FW_NAME "nxp/sdiw693_wlan.bin"
-#define SDIW693_WLAN_V1_FW_NAME "nxp/sdiw693_wlan_v1.bin.se"
+#define SDAW693_DEFAULT_COMBO_FW_NAME "nxp/sduartaw693_combo.bin"
+#define SDUARTAW693_COMBO_FW_NAME "nxp/sduartaw693_combo.bin"
+#define SDSDAW693_COMBO_FW_NAME "sdsdaw693_combo.bin"
+#define SDUARTAW693_COMBO_V1_FW_NAME "nxp/sduartaw693_combo_v1.bin.se"
+#define SDSDAW693_COMBO_V1_FW_NAME "sdsdaw693_combo_v1.bin.se"
+#define SDAW693_DEFAULT_WLAN_FW_NAME "nxp/sdaw693_wlan.bin"
+#define SDAW693_WLAN_V1_FW_NAME "nxp/sdaw693_wlan_v1.bin.se"
 #endif /* SDAW693 */
 
 #ifdef SD9177
@@ -184,14 +186,14 @@
 #endif /* SDIW610 */
 
 /********************************************************
- * Global Functions
- * ******************************************************
- */
+		Global Functions
+********************************************************/
 
 /** Register to bus driver function */
 mlan_status woal_sdiommc_bus_register(void);
 /** Unregister from bus driver function */
 void woal_sdiommc_bus_unregister(void);
+
 int woal_sdio_set_bus_clock(moal_handle *handle, t_u8 option);
 int woal_sdio_set_buswidth(moal_handle *handle, t_u8 bus_width);
 
@@ -217,12 +219,6 @@ typedef struct _sdio_mmc_card {
 	struct work_struct reset_work;
 	/** work flag */
 	t_u8 work_flags;
-	/** reset producer gate; protected by reset_lock */
-	bool reset_stopping;
-	/** driver-mode IRQ/OOB producer gate; protected by reset_lock */
-	bool drv_mode_quiesced;
-	/** serializes reset and driver-mode producer gates */
-	spinlock_t reset_lock;
 	/** saved host clock value */
 	unsigned int host_clock;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
@@ -240,9 +236,6 @@ typedef struct _sdio_mmc_card {
 	struct work_struct sdio_oob_irq_work;
 #endif
 } sdio_mmc_card;
-/** Stop/resume SDIO IRQ/OOB production across an in-place mode rebuild. */
-mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle);
-mlan_status woal_sdio_drv_mode_resume(moal_handle *handle);
 void woal_sdio_reset_hw(moal_handle *handle);
 #endif /* SDIO_MMC */
 

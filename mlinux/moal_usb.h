@@ -1,11 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0
 /** @file moal_usb.h
  *
  * @brief This file contains definitions for USB interface.
  * driver.
  *
  *
- * Copyright 2008-2021, 2024-2026 NXP
+ * Copyright 2008-2021, 2024 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -22,13 +21,26 @@
  *
  */
 /*************************************************************
- * Change Log:
- * 10/21/2008: initial version
- * **********************************************************
- */
+Change Log:
+    10/21/2008: initial version
+************************************************************/
 
 #ifndef _MOAL_USB_H
 #define _MOAL_USB_H
+
+#ifdef USB8997
+/** USB VID 1 */
+#define USB8997_VID_1 0x1286
+/** USB PID 1 */
+#define USB8997_PID_1 0x204D
+/** USB PID 2 */
+#define USB8997_PID_2 0x204E
+#define USB8997_PID_3 0x2047
+#define USB8997_PID_4 0x2048
+#define USB8997_PID_5 0x2050
+#define USB8997_PID_6 0x2051
+#define USB8997V2_PID_1 0x2052
+#endif /* USB8997 */
 
 #ifdef USB8978
 /** USB VID 1 */
@@ -98,8 +110,8 @@
 /** Number of Rx data URB */
 #define MVUSB_RX_DATA_URB 6
 
-#if defined(USB9098) || defined(USB9097) || defined(USB8978) ||                \
-	defined(USBIW624) || defined(USBIW610)
+#if defined(USB8997) || defined(USB9098) || defined(USB9097) ||                \
+	defined(USB8978) || defined(USBIW624) || defined(USBIW610)
 /* Transmit buffer size for chip revision check */
 #define CHIP_REV_TX_BUF_SIZE 16
 /* Receive buffer size for chip revision check */
@@ -114,6 +126,14 @@
 #endif
 
 /** Default firmaware name */
+#ifdef USB8997
+#define USB8997_DEFAULT_COMBO_FW_NAME "nxp/usbusb8997_combo_v4.bin"
+#define USB8997_DEFAULT_WLAN_FW_NAME "nxp/usb8997_wlan_v4.bin"
+#define USBUART8997_DEFAULT_COMBO_FW_NAME "nxp/usbuart8997_combo_v4.bin"
+#define USBUSB8997_DEFAULT_COMBO_FW_NAME "nxp/usbusb8997_combo_v4.bin"
+
+#endif /* USB8997 */
+
 #ifdef USB8978
 #define USB8978_DEFAULT_COMBO_FW_NAME "nxp/usbusbiw416_combo.bin"
 #define USB8978_DEFAULT_WLAN_FW_NAME "nxp/usbiw416_wlan.bin"
@@ -244,39 +264,8 @@ struct usb_card_rec {
 	t_u8 second_mac;
 };
 
-#define MAX_CONFIG_ENTRIES 3
-#define MAX_VID_PID_PAIRS 10
-#define MAX_DEVICE_NAME 64
-
-/**
- * USB configuration entry structure
- *
- * Contains device information and associated VID/PID pairs for USB device
- * identification and configuration.
- */
-typedef struct {
-	char device_name[MAX_DEVICE_NAME];
-	t_u16 vid_pid_count; /* Actual number of VID/PID pairs found */
-	struct {
-		t_u16 vid;
-		t_u16 pid;
-	} vid_pid_pairs[MAX_VID_PID_PAIRS];
-} usb_config_entry_t;
-
-/**
- * USB configuration table structure
- *
- * Contains the complete USB device configuration table with all entries
- * and metadata about the total number of entries and VID/PID pairs.
- */
-typedef struct {
-	usb_config_entry_t entries[MAX_CONFIG_ENTRIES];
-	t_u16 total_entries;
-	t_u16 total_vid_pid_pairs;
-} usb_config_t;
-
 void woal_kill_urbs(moal_handle *handle);
-mlan_status woal_resubmit_urbs(moal_handle *handle);
+void woal_resubmit_urbs(moal_handle *handle);
 
 mlan_status woal_write_data_async(moal_handle *handle, mlan_buffer *pmbuf,
 				  t_u8 ep);
@@ -288,8 +277,4 @@ void woal_submit_rx_urb(moal_handle *handle, t_u8 ep);
 void woal_usb_bus_unregister(void);
 mlan_status woal_usb_bus_register(void);
 void woal_usb_free(struct usb_card_rec *cardp);
-
-extern int woal_usb_init_extended_table(const char *config_path);
-mlan_status check_usb_ext_table_info(char *device_name, t_u16 *card_type,
-				     t_u16 pid);
 #endif /*_MOAL_USB_H */
