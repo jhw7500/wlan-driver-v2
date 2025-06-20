@@ -483,8 +483,6 @@ ENUM_ELEMENT(HostCmd_CMD_GET_HW_SPEC, 0x0003),
 
 	/** Host Command ID : HS Event masking configuration */
 	ENUM_ELEMENT(HostCmd_CMD_HS_EVENT_MASK, 0x028a),
-	/** Host Command ID : Get foundry type */
-	ENUM_ELEMENT(HostCmd_CMD_DS_GET_FOUNDRY_TYPE, 0X028c),
 
 #ifdef UAP_SUPPORT
 	/** Host Command ID : Agiled channel switch configuration */
@@ -492,16 +490,6 @@ ENUM_ELEMENT(HostCmd_CMD_GET_HW_SPEC, 0x0003),
 #endif
 
 	ENUM_ELEMENT(HostCmd_CMD_NAV_MITIGATION_HW_CFG, 0x0294),
-
-#ifdef SECURE_HOST
-	ENUM_ELEMENT(HostCmd_CMD_SECURE_HOST, 0x0295),
-#endif
-
-	/** Host Command ID : To enable/disable/force-enable PPB feature */
-	ENUM_ELEMENT(HostCmd_CMD_PREAMBLE_PWR_BOOST, 0x0296),
-
-	/** Host Command ID : Channel switch count configuration */
-	ENUM_ELEMENT(HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG, 0x0298),
 
 	/* Always keep this last */
 	ENUM_ELEMENT_LAST(__HostCmd_CMD_Last)

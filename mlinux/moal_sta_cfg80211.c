@@ -3308,30 +3308,23 @@ void woal_host_mlme_work_queue(struct work_struct *work)
 
 /**
  *  @brief This function handles fallback to previous AP in the event of
- *	    association failure.
+ * 	    association failure.
  *
  *  @param priv         pointer to moal_private
- *  @param assoc_info   pointer to cfg80211_bss
  *
- *  @return        N/A
+ *  @return            0 -- success, otherwise fail
  */
-
-void woal_host_mlme_process_assoc_timeout(moal_private *priv,
-					  struct cfg80211_bss *bss)
-{
-#if (CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 0, 0) ||                       \
-     (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 33 &&             \
-      CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 15, 74)))
-	struct cfg80211_assoc_failure data;
-#endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+static mlan_status woal_host_mlme_fallback_to_prev_ap(moal_private *priv)
+{
 	mlan_ds_assoc_info *assoc_info;
 	struct cfg80211_roam_info roam_info;
 	chan_band_info channel;
+	mlan_status status = MLAN_STATUS_FAILURE;
 
 	assoc_info = kzalloc(sizeof(mlan_ds_assoc_info), GFP_ATOMIC);
 	if (!assoc_info)
-		return;
+		return status;
 	memset(&roam_info, 0, sizeof(roam_info));
 	memset(&channel, 0, sizeof(channel));
 
@@ -3354,6 +3347,29 @@ void woal_host_mlme_process_assoc_timeout(moal_private *priv,
 		roam_info.resp_ie = assoc_info->assoc_resp_buf;
 		roam_info.resp_ie_len = assoc_info->assoc_resp_len;
 
+		if (priv->conn_ssid_len) {
+#if (CFG80211_VERSION_CODE > KERNEL_VERSION(5, 19, 1))
+			if (priv->wdev->u.client.ssid_len == 0) {
+				priv->wdev->u.client.ssid_len =
+					priv->conn_ssid_len;
+				moal_memcpy_ext(
+					priv->phandle,
+					(void *)priv->wdev->u.client.ssid,
+					priv->conn_ssid, priv->conn_ssid_len,
+					priv->wdev->u.client.ssid_len);
+			}
+#else
+			if (priv->wdev->ssid_len == 0) {
+				priv->wdev->ssid_len = priv->conn_ssid_len;
+				moal_memcpy_ext(priv->phandle,
+						(void *)priv->wdev->ssid,
+						priv->conn_ssid,
+						priv->conn_ssid_len,
+						priv->wdev->ssid_len);
+			}
+#endif
+		}
+
 		cfg80211_roamed(priv->netdev, &roam_info, GFP_KERNEL);
 		priv->cfg_disconnect = MFALSE;
 		priv->host_mlme = MTRUE;
@@ -3370,17 +3386,44 @@ void woal_host_mlme_process_assoc_timeout(moal_private *priv,
 			if (MLAN_STATUS_FAILURE ==
 			    woal_chandef_create(priv, &priv->chan, &channel)) {
 				PRINTM(MERROR,
-				       "Asssoc timeout:create chandef failed\n");
+				       "Assoc timeout:create chandef failed\n");
 			}
 			priv->channel = channel.channel;
 			priv->bandwidth = channel.bandcfg.chanWidth;
 		}
+
 		PRINTM(MMSG, "wlan: HostMlme fallback to AP " MACSTR "\n",
 		       MAC2STR(assoc_info->bssid));
-		kfree(assoc_info);
-		return;
+		status = MLAN_STATUS_SUCCESS;
 	}
+
 	kfree(assoc_info);
+	return status;
+}
+#endif
+
+/**
+ *  @brief This workqueue function handles association timeout event in event
+ * queue case
+ *
+ *  @param priv         pointer to moal_private
+ *  @param assoc_info   pointer to cfg80211_bss
+ *
+ *  @return        N/A
+ */
+
+void woal_host_mlme_process_assoc_timeout(moal_private *priv,
+					  struct cfg80211_bss *bss)
+{
+#if (CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 0, 0) ||                       \
+     (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 33 &&             \
+      CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 15, 74)))
+	struct cfg80211_assoc_failure data;
+#endif
+
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+	if (woal_host_mlme_fallback_to_prev_ap(priv) == MLAN_STATUS_SUCCESS)
+		return;
 #endif
 	/* Send Assoc Failure with Timeout to CFG80211 */
 	priv->host_mlme = MFALSE;
@@ -3397,11 +3440,23 @@ void woal_host_mlme_process_assoc_timeout(moal_private *priv,
 	 * API in CFG to hold/unhold BSS.
 	 */
 	woal_sched_timeout(100);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+	wiphy_lock(priv->wdev->wiphy);
+#else
+	mutex_lock(&priv->wdev->mtx);
+#endif
 	cfg80211_assoc_failure(priv->netdev, &data);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+	wiphy_unlock(priv->wdev->wiphy);
+#else
+	mutex_unlock(&priv->wdev->mtx);
+#endif
 #else
 	PRINTM(MEVENT, "wlan: HostMlme assoc timeout\n");
 	woal_sched_timeout(100);
+	mutex_lock(&priv->wdev->mtx);
 	cfg80211_assoc_timeout(priv->netdev, bss);
+	mutex_unlock(&priv->wdev->mtx);
 #endif
 
 // Issue explicit Disconnect to CFG80211, on Assoc failure.
@@ -3710,7 +3765,7 @@ static void woal_assoc_resp_event(moal_private *priv,
  *
  * @param priv            A pointer to moal_private structure
  *
- * @param req		  A pointer to cfg80211_assoc_request
+ * @param req         	  A pointer to cfg80211_assoc_request
  *
  * @param passoc_resp     A pointer to mlan_ds_misc_assoc_rsp structure
  *
@@ -4036,7 +4091,9 @@ done:
 		if (ssid_bssid->assoc_rsp.assoc_resp_len &&
 		    ssid_bssid->assoc_rsp.assoc_resp_len >
 			    (sizeof(IEEEtypes_MgmtHdr_t) +
-			     sizeof(IEEEtypes_AssocRsp_t))) {
+			     sizeof(IEEEtypes_AssocRsp_t)) &&
+		    (is_fallback_allowed_for_assoc_resp(
+			     priv, req, &ssid_bssid->assoc_rsp) == false)) {
 			// save the connection param when send assoc_resp to
 			// kernel
 			woal_save_assoc_params(priv, req, ssid_bssid);

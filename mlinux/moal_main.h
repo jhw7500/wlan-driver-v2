@@ -624,17 +624,9 @@ static inline void woal_mod_timer(pmoal_drv_timer timer,
 static inline void woal_cancel_timer(moal_drv_timer *timer)
 {
 	if (timer->timer_is_periodic || in_atomic() || irqs_disabled())
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
-		timer_delete(&timer->tl);
-#else
 		del_timer(&timer->tl);
-#endif
 	else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
-		timer_delete_sync(&timer->tl);
-#else
 		del_timer_sync(&timer->tl);
-#endif
 	timer->timer_is_canceled = MTRUE;
 	timer->time_period = 0;
 }
@@ -1345,14 +1337,9 @@ enum woal_event_type {
 #endif
 	WOAL_EVENT_RGPWR_KEY_MISMATCH,
 	WOAL_EVENT_RESET_WIFI,
-	WOAL_EVENT_PRINT_LINKSTATS,
-	WOAL_EVENT_SURVEY_DUMP_RESET,
 #ifdef UAP_SUPPORT
 	WOAL_EVENT_AGCS,
 #endif /* UAP_SUPPORT */
-#ifdef STA_CFG80211
-	WOAL_EVENT_CFG80211_INFORM_BSS,
-#endif
 };
 
 /** chan_rpt_info */
@@ -2817,6 +2804,7 @@ typedef struct _moal_mod_para {
 #if defined(UAP_SUPPORT)
 	int custom_11d_bcn_country_ie_en;
 #endif
+	int amsdu_disable;
 #if defined(SDIO)
 	int slew_rate;
 #endif
@@ -2962,18 +2950,6 @@ typedef struct _moal_tp_acnt_t {
 	moal_drv_timer timer;
 } moal_tp_acnt_t;
 
-/** firmware complete version number */
-typedef struct _fw_release_version {
-	/** FW release number */
-	t_u8 releaseNum;
-	/** minor version */
-	t_u8 minorRevNum;
-	/** major version */
-	t_u8 majorRevNum;
-	/** patch level version */
-	t_u16 patchLevel;
-} fw_release_version;
-
 #ifdef UAP_SUPPORT
 typedef MLAN_PACK_START struct {
 	t_u16 action;
@@ -3002,13 +2978,6 @@ typedef MLAN_PACK_START struct {
 	t_u8 csa_cnt;
 	/** Variable number (fixed maximum) of channels to scan up */
 	wlan_user_scan_chan chan_list[WLAN_USER_SCAN_CHAN_MAX];
-	/* Long duration packets threshold */
-	t_u16 nav_mitigation_th;
-	/* ch threshold to trigger channel switch for nighthawk */
-	t_u16 ch_th;
-	/* Channel switching is triggered only when the current pkts > the min
-	 * average packet percentage. */
-	t_u16 min_pkt_percentage;
 } MLAN_PACK_END wlan_agcs_info;
 #endif /* UAP_SUPPORT */
 
@@ -3490,19 +3459,7 @@ struct _moal_handle {
 	t_u32 ips_ctrl;
 	BOOLEAN is_edmac_enabled;
 	bool driver_init;
-	/** firmware version milestone */
-	char fw_ver_milestone[10];
-	/** firmware version buildtype */
-	char fw_ver_buildtype[10];
-	/** firmware version data */
-	char fw_ver_data[30];
 
-#ifdef XDP_SUPPORT
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
-	struct page *page;
-	t_u32 xdp_rd;
-#endif
-#endif
 #ifdef UAP_SUPPORT
 	/** agiled channel switch state */
 	t_u32 agcs_state;
@@ -3512,21 +3469,7 @@ struct _moal_handle {
 	wlan_agcs_info agcs_info;
 	/* fw cap and cap_ext */
 	mlan_hw_info hw_info;
-	/* agcs scan event */
-	agcs_stats agcs_scan_event;
 #endif /* UAP_SUPPORT */
-#ifdef SECURE_HOST
-	void *secure;
-#endif
-
-#ifdef DUMP_TO_PROC
-#if defined(PCIE)
-	/** ssu dump buffer total len */
-	t_u64 ssu_dump_len;
-	/** Pointer of ssu dump buffer */
-	t_u8 *ssu_dump_buf;
-#endif
-#endif
 };
 
 /**
@@ -4925,5 +4868,14 @@ mlan_status woal_ioctl_hostcmd_htc_cap(moal_private *priv, t_u16 action,
 				       t_u8 *enable);
 int woal_getset_regrdwr(moal_private *priv, t_u32 action, t_u32 type,
 			t_u32 offset, t_u32 *value);
+#ifdef UAP_SUPPORT
+extern void woal_process_agcs_event(moal_private *priv,
+				    pagcs_stats pstart_event);
+extern void woal_process_ch_sel_and_switch(moal_private *priv,
+					   pagcs_event pevent);
+extern mlan_status moal_agcs_trans_state(moal_private *priv,
+					 agcs_state next_state);
+extern void woal_agcs_event(moal_private *priv, pagcs_event pacs_start_event);
+#endif /* UAP_SUPPORT */
 
 #endif /* _MOAL_MAIN_H */

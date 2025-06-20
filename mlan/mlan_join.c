@@ -1525,7 +1525,7 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 				    pbss_desc->phy_param_set.ds_param_set
 					    .current_chan,
 				    pbss_desc->curr_bandwidth, &oper_class,
-				    &global_oper_class) == MLAN_STATUS_SUCCESS)
+				    &global_oper_class))
 				wlan_add_supported_oper_class_ie(pmpriv, &pos,
 								 oper_class);
 		}

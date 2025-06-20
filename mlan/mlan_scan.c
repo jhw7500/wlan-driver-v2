@@ -8796,7 +8796,6 @@ mlan_status wlan_cmd_bgscan_config(mlan_private *pmpriv,
 		t_u8 oper_class = 1;
 		t_u32 usr_dot_11n_dev_cap;
 		t_u8 global_oper_class = 0;
-
 		if (pmpriv->media_connected) {
 			if (pmpriv->config_bands & BAND_A)
 				usr_dot_11n_dev_cap =

@@ -396,7 +396,14 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_MISC_OTP_MAC_RD_WR = 0x00200097,
 	MLAN_OID_MISC_OTP_CAL_DATA_RD_WR = 0x00200098,
 	MLAN_OID_MISC_AUTH_ASSOC_TIMEOUT_CONFIG = 0x00200099,
+
 	MLAN_OID_MISC_PREV_ASSOC_INFO = 0x0020009A,
+
+#ifdef UAP_SUPPORT
+	MLAN_OID_MISC_AGCS_CONFIG = 0x0020009C,
+#endif /* UAP_SUPPORT */
+
+	MLAN_OID_MISC_NAV_MITIGATION_HW = 0x0020009D,
 };
 
 /** Sub command size */
@@ -4934,6 +4941,17 @@ typedef struct _mlan_ds_misc_nav_mitigation {
 
 } mlan_ds_misc_nav_mitigation;
 
+typedef struct _mlan_ds_misc_nav_mitigation_hw {
+	/** start/stop nav mitigation */
+	t_u16 start_nav_mitigation;
+	/** Duration value in us to set as threshold in ACT_SET action */
+	t_u16 duration_threshold;
+	/** HOnoring duration threshold for NAV mitigation */
+	t_u16 honoring_duration;
+	/** TxOP duration threshold for NAV mitigation */
+	t_u16 txop_duration_threshold;
+} mlan_ds_misc_nav_mitigation_hw;
+
 #define MAX_FW_STATES 6
 typedef struct _mlan_ds_led_behavior {
 	t_u8 firmwarestate;
@@ -6538,19 +6556,8 @@ typedef struct _mlan_ds_agcs_cfg {
 	t_u8 continuous_hit_count;
 	/* Make sure a reasonable rate can be sustained. */
 	t_s8 nf_margin;
-	/* Long duration packets threshold */
-	t_u16 nav_mitigation_th;
-	/* ch threshold to trigger channel switch for nighthawk */
-	t_u16 ch_th;
-	/* Channel switching is triggered only when the current pkts > the min
-	 * average packet percentage. */
-	t_u16 min_pkt_percentage;
 } mlan_ds_agcs_cfg;
 #endif /* UAP_SUPPORT */
-
-typedef struct _mlan_ds_ecsa_cfg {
-	t_u8 chan_switch_cnt;
-} mlan_ds_ecsa_cfg;
 
 /** Type definition of mlan_ds_misc_cfg for MLAN_IOCTL_MISC_CFG */
 typedef struct _mlan_ds_misc_cfg {
@@ -6694,6 +6701,7 @@ typedef struct _mlan_ds_misc_cfg {
 		mlan_ds_misc_ofdm_desense_cfg ofdm_desense_cfg;
 		mlan_ds_misc_rx_abort_cfg_ext rx_abort_cfg_ext;
 		mlan_ds_misc_nav_mitigation nav_mitigation;
+		mlan_ds_misc_nav_mitigation_hw nav_mitigation_hw;
 		mlan_ds_misc_led_cfg led_config;
 		mlan_ds_misc_tx_ampdu_prot_mode tx_ampdu_prot_mode;
 		mlan_ds_misc_preamble_pwr_boost preamble_pwr_boost;
@@ -6734,16 +6742,10 @@ typedef struct _mlan_ds_misc_cfg {
 		mlan_ds_ed_mac_cfg edmac_cfg;
 		mlan_ds_gpio_cfg_ops gpio_cfg_ops;
 		mlan_ds_auth_assoc_timeout_cfg auth_assoc_cfg;
-		mlan_ds_foundry_type soc_foundry_type;
-
-		mlan_ds_misc_per_band_txpwr_cap per_band_txpwr_cap;
-
 #ifdef UAP_SUPPORT
 		/** config AGCS for MLAN_OID_MISC_AGCS_CONFIG */
 		mlan_ds_agcs_cfg agcs_cfg;
 #endif /* UAP_SUPPORT */
-		/** Channel switch cnt cfg */
-		mlan_ds_ecsa_cfg ecsa_cfg;
 	} param;
 } mlan_ds_misc_cfg, *pmlan_ds_misc_cfg;
 
@@ -6782,7 +6784,6 @@ typedef struct _mlan_cfpinfo {
 #define MLAN_REASON_CLASS3_FRAME_FROM_NOASSOC_STA 7
 #define MLAN_REASON_DISASSOC_STA_HAS_LEFT 8
 #define MLAN_REASON_STA_REQ_ASSOC_WITHOUT_AUTH 9
-#define MLAN_REASON_CURRENT_BSS_NULL_POSTPONED_DEAUTH 10
 
 #ifdef UAP_SUPPORT
 /* Processing AGCS report */
@@ -6802,11 +6803,6 @@ typedef struct _agcs_stats {
 	t_s16 noise;
 	/** The noise floor threshold currently used by fw */
 	t_s16 nf_threshold;
-	/** Record the scan channel list index according to 6G/5G/2G */
-	t_u8 scan_idx;
-	/** When the current band is 5g, has the same/diff class of 5g been
-	 * scanned? */
-	t_u8 is_5g_scaned;
 } agcs_stats, *pagcs_stats;
 
 /** Type definition of agcs_event for WOAL_EVENT_AGCS */

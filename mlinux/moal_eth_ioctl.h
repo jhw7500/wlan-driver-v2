@@ -325,6 +325,8 @@ typedef struct _chan_stats {
 #define PRIV_CMD_RX_ABORT_CFG_EXT "rx_abort_cfg_ext"
 /** configure NAV mitigation parameters. */
 #define PRIV_CMD_NAV_MITIGATION "nav_mitigation"
+/** configure HW based NAV mitigation parameters. */
+#define PRIV_CMD_NAV_MITIGATION_HW "nav_mitigation_hw"
 #define PRIV_CMD_LED "led"
 #define TX_AMPDU_RTS_CTS 0
 #define TX_AMPDU_CTS_2_SELF 1
@@ -914,7 +916,5 @@ typedef struct {
 #ifdef UAP_SUPPORT
 #define PRIV_CMD_AGCS "agcs"
 #endif
-
-#define PRIV_CMD_ECSA_CNT_CFG "ecsacntcfg"
 
 #endif /* _WOAL_ETH_PRIV_H_ */

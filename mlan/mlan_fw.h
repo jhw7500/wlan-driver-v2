@@ -7425,6 +7425,20 @@ typedef MLAN_PACK_START struct _HostCmd_DS_CMD_NAV_MITIGATION_CFG {
 	t_u16 stop_cnt;
 } MLAN_PACK_END HostCmd_DS_CMD_NAV_MITIGATION_CFG;
 
+/** HostCmd_CMD_NAV_MITIGATION_HW_CFG */
+typedef MLAN_PACK_START struct _HostCmd_DS_CMD_NavMitigationHw {
+	/** Action */
+	t_u16 action;
+	/** start/stop nav mitigation */
+	t_u16 start_nav_mitigation;
+	/** Duration value in us to set as threshold in ACT_SET action */
+	t_u16 duration_threshold;
+	/** HOnoring duration threshold for NAV mitigation */
+	t_u16 honoring_duration;
+	/** TxOP duration threshold for NAV mitigation */
+	t_u16 txop_duration_threshold;
+} MLAN_PACK_END HostCmd_DS_CMD_NavMitigationHwCfg;
+
 typedef MLAN_PACK_START struct _HostCmd_DS_CMD_LED_CFG {
 	t_u16 action;
 	t_u8 enable;
@@ -7618,26 +7632,8 @@ typedef MLAN_PACK_START struct _HostCmd_DS_AGCS_CFG {
 
 	/* Make sure a reasonable rate can be sustained. */
 	t_s8 nf_margin;
-
-	/* Long duration packets threshold */
-	t_u16 nav_mitigation_th;
-
-	/* ch threshold to trigger channel switch for nighthawk */
-	t_u16 ch_th;
-
-	/* Channel switching is triggered only when the current pkts > the min
-	 * average packet percentage. */
-	t_u16 min_pkt_percentage;
 } MLAN_PACK_END HostCmd_DS_AGCS_CFG;
 #endif /* UAP_SUPPORT */
-
-typedef MLAN_PACK_START struct _HostCmd_DS_CHAN_SWITCH_CNT_CFG {
-	/** action - get/set */
-	t_u16 action;
-
-	/** Chan switch count */
-	t_u8 chan_switch_cnt;
-} MLAN_PACK_END HostCmd_DS_CHAN_SWITCH_CNT_CFG;
 
 /** HostCmd_DS_COMMAND */
 typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
@@ -7898,6 +7894,7 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		HostCmd_DS_CMD_OFDM_DESENSE_CFG ofdm_desense_cfg;
 		HostCmd_DS_CMD_RX_ABORT_CFG_EXT rx_abort_cfg_ext;
 		HostCmd_DS_CMD_NAV_MITIGATION_CFG nav_mitigation;
+		HostCmd_DS_CMD_NavMitigationHwCfg nav_mitigation_hw;
 		HostCmd_DS_CMD_LED_CFG ledcntrcfg;
 		HostCmd_DS_CMD_TX_AMPDU_PROT_MODE tx_ampdu_prot_mode;
 		HostCmd_DS_CMD_PREAMBLE_PWR_BOOST preamble_pwr_boost;
@@ -7945,6 +7942,10 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		/** Auth, (Re)Assoc timeout configuration */
 		HostCmd_DS_AUTH_ASSOC_TIMEOUT_CFG auth_assoc_cfg;
 		t_u8 assoc_rsp_buf[ASSOC_RSP_BUF_SIZE];
+#ifdef UAP_SUPPORT
+		/** Agiled channel switch configuration */
+		HostCmd_DS_AGCS_CFG agcs_cfg;
+#endif /* UAP_SUPPORT */
 	} params;
 } MLAN_PACK_END HostCmd_DS_COMMAND, *pHostCmd_DS_COMMAND;
 

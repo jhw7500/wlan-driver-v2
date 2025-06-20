@@ -4166,9 +4166,8 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	addba_timeout_event *evtbuf = NULL;
 
 	t_u8 auto_fw_dump = MFALSE;
-	static int fw_reset_cnt;
+	static int fw_reset_cnt = 0;
 	t_u8 fw_reset_time = 0;
-
 	ENTER();
 	if (pmevent->event_id == MLAN_EVENT_ID_FW_DUMP_INFO) {
 		if (!handle->is_fw_dump_timer_set) {
@@ -4720,6 +4719,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				     pmevent->event_len +
 					     strlen(FW_DEBUG_INFO) + 1);
 		break;
+
 	case MLAN_EVENT_ID_FW_WMM_CONFIG_CHANGE:
 #ifdef STA_WEXT
 		if (IS_STA_WEXT(cfg80211_wext))
@@ -6264,6 +6264,25 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			       "Ignoring the Channel Switch Reg Info Event\n");
 #endif
 		break;
+	case MLAN_EVENT_ID_EMERGENCY_TEMP_REACHED:
+		fw_reset_time = (t_u8)pmevent->event_buf[4];
+		if (fw_reset_time <= 0)
+			fw_reset_time = 60;
+		fw_reset_cnt++;
+		PRINTM(MEVENT,
+		       "EMERGENCY TEMPRETURE REACHED: %d times...Wait for %d sec to cool down radio!!\n",
+		       fw_reset_cnt, fw_reset_time);
+
+		queue_delayed_work(priv->phandle->evt_workqueue,
+				   &priv->phandle->emergency_reset_work,
+				   msecs_to_jiffies(fw_reset_time * 1000));
+
+		break;
+#ifdef UAP_SUPPORT
+	case MLAN_EVENT_ID_FW_AGCS_TRIGGER: {
+		woal_agcs_event(priv, (pagcs_event)pmevent->event_buf);
+	} break;
+#endif /* UAP_SUPPORT */
 	default:
 		break;
 	}

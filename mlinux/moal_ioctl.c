@@ -354,7 +354,6 @@ static inline void woal_copy_mc_addr(mlan_multicast_list *mlist,
 static inline int woal_copy_nan_mcast_addr(mlan_multicast_list *mlist)
 {
 	t_u8 nan_network_addr[6] = {0x51, 0x6f, 0x9a, 0x01, 0, 0};
-
 	ENTER();
 
 	woal_copy_mc_addr(mlist, nan_network_addr);

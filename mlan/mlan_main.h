@@ -1679,10 +1679,6 @@ struct _sta_node {
 	IEEEtypes_HTInfo_t HTInfo;
 	/** peer BSSCO_20_40*/
 	IEEEtypes_2040BSSCo_t BSSCO_20_40;
-	/* Support operating class IE */
-	IEEEtypes_Generic_t OperClass;
-	/*Extended capability*/
-	IEEEtypes_ExtCap_t ExtCap;
 	/*RSN IE*/
 	IEEEtypes_Generic_t rsn_ie;
 	/**Link ID*/
@@ -1714,6 +1710,10 @@ struct _sta_node {
 	t_u8 vendor_oui[VENDOR_OUI_LEN * MAX_VENDOR_OUI_NUM];
 	/** vendor OUI count */
 	t_u8 vendor_oui_count;
+	/* Support operating class IE */
+	IEEEtypes_Generic_t OperClass;
+	/*Extended capability*/
+	IEEEtypes_ExtCap_t ExtCap;
 };
 
 /** 802.11h State information kept in the 'mlan_adapter' driver structure */
@@ -2105,6 +2105,7 @@ typedef struct _mlan_init_para {
 	t_u32 reject_addba_req;
 	t_u8 disable_11h_tpc;
 	t_u8 tpe_ie_ignore;
+	t_u32 amsdu_disable;
 } mlan_init_para, *pmlan_init_para;
 
 #ifdef SDIO
@@ -3170,7 +3171,7 @@ struct _mlan_adapter {
 	/** LLDE enable/disable */
 	t_u8 llde_enabled;
 	/** LLDE modes 0 - default; 1 - carplay; 2 - gameplay; 3 - sound bar, 4
-	 * � validation, 5- event driven */
+	 * - validation, 5- event driven */
 	t_u8 llde_mode;
 	/** high priority data packet type. 0: All traffic, 1: ping, 2: TCP ACK,
 	 * 4: TCP Data, 8: UDP */
@@ -3190,13 +3191,6 @@ struct _mlan_adapter {
 	/** agiled channel switch info */
 	agcs_stats agcs_info;
 #endif /* UAP_SUPPORT */
-
-#ifdef SECURE_HOST
-	t_u32 shc_secure_host;
-#endif
-	t_u8 key[PUBLIC_KEY_SIZE];
-	t_u8 uuid[UUID_LEN];
-	t_u32 fw_meta_data_len;
 };
 
 /** IPv4 ARP request header */
@@ -4083,6 +4077,9 @@ mlan_status wlan_cmd_rxabortcfg_ext(pmlan_private pmpriv,
 mlan_status wlan_cmd_nav_mitigation(pmlan_private pmpriv,
 				    HostCmd_DS_COMMAND *cmd, t_u16 cmd_action,
 				    t_void *pdata_buf);
+mlan_status wlan_cmd_nav_mitigation_hw(pmlan_private pmpriv,
+				       HostCmd_DS_COMMAND *cmd,
+				       t_u16 cmd_action, t_void *pdata_buf);
 mlan_status wlan_cmd_led_config(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
 				t_u16 cmd_action, t_void *pdata_buf);
 mlan_status wlan_ret_rxabortcfg_ext(pmlan_private pmpriv,
@@ -4091,6 +4088,9 @@ mlan_status wlan_ret_rxabortcfg_ext(pmlan_private pmpriv,
 mlan_status wlan_ret_nav_mitigation(pmlan_private pmpriv,
 				    HostCmd_DS_COMMAND *resp,
 				    mlan_ioctl_req *pioctl_buf);
+mlan_status wlan_ret_nav_mitigation_hw(pmlan_private pmpriv,
+				       HostCmd_DS_COMMAND *resp,
+				       mlan_ioctl_req *pioctl_buf);
 mlan_status wlan_ret_led_config(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 				mlan_ioctl_req *pioctl_buf);
 mlan_status wlan_cmd_tx_ampdu_prot_mode(pmlan_private pmpriv,
@@ -4147,6 +4147,8 @@ mlan_status wlan_misc_ioctl_rxabortcfg_ext(pmlan_adapter pmadapter,
 					   pmlan_ioctl_req pioctl_req);
 mlan_status wlan_misc_ioctl_nav_mitigation(pmlan_adapter pmadapter,
 					   pmlan_ioctl_req pioctl_req);
+mlan_status wlan_misc_ioctl_nav_mitigation_hw(pmlan_adapter pmadapter,
+					      pmlan_ioctl_req pioctl_req);
 mlan_status wlan_misc_ioctl_led(pmlan_adapter pmadapter,
 				pmlan_ioctl_req pioctl_req);
 mlan_status wlan_misc_ioctl_tx_ampdu_prot_mode(pmlan_adapter pmadapter,

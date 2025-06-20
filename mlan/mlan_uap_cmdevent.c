@@ -5131,10 +5131,6 @@ static mlan_status wlan_uap_ret_agcs_cfg(pmlan_private pmpriv,
 		pagcs_cfg->continuous_hit_count =
 			pcmd_agcs_cfg->continuous_hit_count;
 		pagcs_cfg->nf_margin = pcmd_agcs_cfg->nf_margin;
-		pagcs_cfg->nav_mitigation_th = pcmd_agcs_cfg->nav_mitigation_th;
-		pagcs_cfg->ch_th = pcmd_agcs_cfg->ch_th;
-		pagcs_cfg->min_pkt_percentage =
-			pcmd_agcs_cfg->min_pkt_percentage;
 	}
 
 	LEAVE();
@@ -5157,7 +5153,6 @@ static mlan_status wlan_cmd_apcmd_agcs_cfg(pmlan_private pmpriv,
 	HostCmd_DS_AGCS_CFG *pcmd_agcs_cfg =
 		(HostCmd_DS_AGCS_CFG *)&cmd->params.agcs_cfg;
 	mlan_ds_agcs_cfg *pagcs_cfg = (mlan_ds_agcs_cfg *)pdata_buf;
-
 	ENTER();
 
 	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_APCMD_AGCS_CFG);
@@ -5176,9 +5171,6 @@ static mlan_status wlan_cmd_apcmd_agcs_cfg(pmlan_private pmpriv,
 	pcmd_agcs_cfg->sample_count_window = pagcs_cfg->sample_count_window;
 	pcmd_agcs_cfg->continuous_hit_count = pagcs_cfg->continuous_hit_count;
 	pcmd_agcs_cfg->nf_margin = pagcs_cfg->nf_margin;
-	pcmd_agcs_cfg->nav_mitigation_th = pagcs_cfg->nav_mitigation_th;
-	pcmd_agcs_cfg->ch_th = pagcs_cfg->ch_th;
-	pcmd_agcs_cfg->min_pkt_percentage = pagcs_cfg->min_pkt_percentage;
 
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
@@ -5249,8 +5241,6 @@ static mlan_status wlan_process_agcs_event(pmlan_private priv,
 				(t_s16)wlan_le16_to_cpu(stats->nf_threshold);
 			pacs_start_event->stats.all_sta_ecs = MTRUE;
 			pacs_start_event->stats.all_sta_6g = MTRUE;
-			pacs_start_event->stats.scan_idx = 0;
-			pacs_start_event->stats.is_5g_scaned = MFALSE;
 			switch (priv->uap_bandwidth) {
 			case CHAN_BW_20MHZ:
 				bandwidth = BW_20MHZ;
@@ -5285,39 +5275,27 @@ static mlan_status wlan_process_agcs_event(pmlan_private priv,
 					pacs_start_event->stats.all_sta_ecs =
 						MFALSE;
 				}
-				if (pacs_start_event->stats.all_sta_6g ==
-				    MTRUE) {
-					if (sta_ptr->is_11ax_enabled == 0) {
-						pacs_start_event->stats
-							.all_sta_6g = MFALSE;
-					} else {
-						int i;
-						t_bool t_support_6g = MFALSE;
+				if (sta_ptr->is_11ax_enabled == 0) {
+					pacs_start_event->stats.all_sta_6g =
+						MFALSE;
+				} else {
+					int i;
+					t_bool t_support_6g = MFALSE;
 
-						for (i = 0;
-						     i < sta_ptr->OperClass
-								 .ieee_hdr.len;
-						     i++) {
-							if (wlan_is_6ghz_op_class(
-								    sta_ptr->OperClass
-									    .data[i]) ==
-							    MTRUE) {
-								t_support_6g =
-									MTRUE;
-								break;
-							}
+					for (i = 0;
+					     i <
+					     sta_ptr->OperClass.ieee_hdr.len;
+					     i++) {
+						if (is_6ghz_op_class(
+							    sta_ptr->OperClass
+								    .data[i]) ==
+						    MTRUE) {
+							t_support_6g = MTRUE;
+							break;
 						}
-						if (t_support_6g == MFALSE)
-							pacs_start_event->stats
-								.all_sta_6g =
-								MFALSE;
 					}
-				}
-				if (pacs_start_event->stats.all_sta_ecs ==
-					    MFALSE &&
-				    pacs_start_event->stats.all_sta_6g ==
-					    MFALSE) {
-					break;
+					pacs_start_event->stats.all_sta_6g &=
+						t_support_6g;
 				}
 				sta_ptr = sta_ptr->pnext;
 			}
@@ -5346,69 +5324,6 @@ done:
 
 	LEAVE();
 	return status;
-}
-
-static mlan_status wlan_ret_chan_switch_cnt_config(pmlan_private pmpriv,
-						   HostCmd_DS_COMMAND *resp,
-						   mlan_ioctl_req *pioctl_buf)
-{
-	HostCmd_DS_CHAN_SWITCH_CNT_CFG *pchan_switch_cnt_cfg =
-		(HostCmd_DS_CHAN_SWITCH_CNT_CFG *)&resp->params
-			.chan_switch_cnt_cfg;
-	mlan_ds_misc_cfg *misc = MNULL;
-
-	ENTER();
-
-	if (pioctl_buf) {
-		misc = (mlan_ds_misc_cfg *)pioctl_buf->pbuf;
-		misc->param.ecsa_cfg.chan_switch_cnt =
-			(t_u8)pchan_switch_cnt_cfg->chan_switch_cnt;
-		PRINTM(MIOCTL, "Received SWITCH CNT = %d",
-		       misc->param.ecsa_cfg.chan_switch_cnt);
-	}
-
-	LEAVE();
-	return MLAN_STATUS_SUCCESS;
-}
-
-static mlan_status wlan_cmd_chan_switch_cnt_config(pmlan_private pmpriv,
-						   HostCmd_DS_COMMAND *cmd,
-						   t_u16 cmd_action,
-						   t_void *pdata_buf)
-{
-	HostCmd_DS_CHAN_SWITCH_CNT_CFG *pchan_switch_cnt_cfg =
-		(HostCmd_DS_CHAN_SWITCH_CNT_CFG *)&cmd->params
-			.chan_switch_cnt_cfg;
-	mlan_ds_ecsa_cfg *ecsa_cfg = MNULL;
-
-	ENTER();
-
-	if (!pdata_buf) {
-		LEAVE();
-		return MLAN_STATUS_FAILURE;
-	}
-
-	ecsa_cfg = (mlan_ds_ecsa_cfg *)pdata_buf;
-
-	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG);
-	cmd->size = wlan_cpu_to_le16(
-		sizeof(HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG) + S_DS_GEN +
-		sizeof(HostCmd_DS_CHAN_SWITCH_CNT_CFG));
-
-	pchan_switch_cnt_cfg->action = wlan_cpu_to_le16(cmd_action);
-	if (cmd_action == HostCmd_ACT_GEN_SET) {
-		if (!ecsa_cfg) {
-			LEAVE();
-			return MLAN_STATUS_FAILURE;
-		}
-		pchan_switch_cnt_cfg->chan_switch_cnt =
-			(ecsa_cfg->chan_switch_cnt);
-	}
-	PRINTM(MIOCTL, "CHAN SWITCH CNT = %d",
-	       pchan_switch_cnt_cfg->chan_switch_cnt);
-
-	LEAVE();
-	return MLAN_STATUS_SUCCESS;
 }
 
 /********************************************************
@@ -5798,6 +5713,10 @@ mlan_status wlan_ops_uap_prepare_cmd(t_void *priv, t_u16 cmd_no,
 		ret = wlan_cmd_nav_mitigation(pmpriv, cmd_ptr, cmd_action,
 					      pdata_buf);
 		break;
+	case HostCmd_CMD_NAV_MITIGATION_HW_CFG:
+		ret = wlan_cmd_nav_mitigation_hw(pmpriv, cmd_ptr, cmd_action,
+						 pdata_buf);
+		break;
 	case HostCmd_CMD_802_11_LED_CONTROL:
 		ret = wlan_cmd_led_config(pmpriv, cmd_ptr, cmd_action,
 					  pdata_buf);
@@ -5896,11 +5815,6 @@ mlan_status wlan_ops_uap_prepare_cmd(t_void *priv, t_u16 cmd_no,
 	case HostCmd_CMD_APCMD_AGCS_CFG:
 		ret = wlan_cmd_apcmd_agcs_cfg(pmpriv, cmd_ptr, cmd_action,
 					      pdata_buf);
-		break;
-
-	case HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG:
-		ret = wlan_cmd_chan_switch_cnt_config(pmpriv, cmd_ptr,
-						      cmd_action, pdata_buf);
 		break;
 
 	default:
@@ -6287,6 +6201,9 @@ mlan_status wlan_ops_uap_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 	case HostCmd_CMD_NAV_MITIGATION_CFG:
 		ret = wlan_ret_nav_mitigation(pmpriv, resp, pioctl_buf);
 		break;
+	case HostCmd_CMD_NAV_MITIGATION_HW_CFG:
+		ret = wlan_ret_nav_mitigation_hw(pmpriv, resp, pioctl_buf);
+		break;
 	case HostCmd_CMD_802_11_LED_CONTROL:
 		ret = wlan_ret_led_config(pmpriv, resp, pioctl_buf);
 		break;
@@ -6382,10 +6299,6 @@ mlan_status wlan_ops_uap_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 
 	case HostCmd_CMD_APCMD_AGCS_CFG:
 		ret = wlan_uap_ret_agcs_cfg(pmpriv, resp, pioctl_buf);
-		break;
-
-	case HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG:
-		ret = wlan_ret_chan_switch_cnt_config(pmpriv, resp, pioctl_buf);
 		break;
 
 	default:
@@ -6873,6 +6786,14 @@ mlan_status wlan_ops_uap_process_event(t_void *priv)
 				       */
 		break;
 
+#if defined(PCIE) || defined(SDIO)
+	case EVENT_FW_IN_BAND_RESET:
+		DBG_HEXDUMP(MCMD_D, "EVENT_FW_IN_BAND_RESET",
+			    pmbuf->pbuf + pmbuf->data_offset, pmbuf->data_len);
+		wlan_recv_event(pmpriv, MLAN_EVENT_ID_DRV_DBG_DUMP, MNULL);
+		break;
+#endif
+
 	case EVENT_CHAN_SWITCH_TO_6G_BLOCK:
 		reason_code = wlan_le16_to_cpu(read_u16_unaligned(
 			pmadapter,
@@ -6994,18 +6915,6 @@ mlan_status wlan_ops_uap_process_event(t_void *priv)
 		wlan_process_agcs_event(priv, pmbuf);
 		break;
 
-	case EVENT_WIFI_CHANNEL_AVOID_LIST:
-		PRINTM(MEVENT, "EVENT: EVENT_WIFI_CHANNEL_AVOID_LIST\n");
-		pevent->event_id = MLAN_EVENT_ID_FW_WIFI_CHANNEL_AVOID_LIST;
-		pevent->bss_index = pmpriv->bss_index;
-		pevent->event_len = pmbuf->data_len;
-		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
-			   pmbuf->pbuf + pmbuf->data_offset, pevent->event_len,
-			   pevent->event_len);
-		DBG_HEXDUMP(MCMD_D, "WiFi channel avoid list",
-			    (t_u8 *)pevent->event_buf, pevent->event_len);
-		wlan_recv_event(pmpriv, pevent->event_id, pevent);
-		break;
 	default:
 		pevent->event_id = MLAN_EVENT_ID_DRV_PASSTHRU;
 		break;
