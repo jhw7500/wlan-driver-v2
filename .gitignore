@@ -1,44 +1,32 @@
-# Build artifacts
+#  File: .gitignore
+#
+#  Copyright 2025 NXP
+#
+#  This software file (the File) is distributed by NXP
+#  under the terms of the GNU General Public License Version 2, June 1991
+#  (the License).  You may use, redistribute and/or modify the File in
+#  accordance with the terms and conditions of the License, a copy of which
+#  is available by writing to the Free Software Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+#  worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+#
+#  THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+#  IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+#  ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+#  this warranty disclaimer.
+#
+
+# Compiled files
 *.o
 *.ko
 *.mod
 *.mod.c
 *.mod.o
+*.cmd
+*.symtypes
 Module.symvers
 modules.order
+
+# Hidden files
 .*.cmd
-.*.o.d
-.tmp_versions/
-
-# Editor/IDE
-.omc/
-*.swp
-*~
-tmp/
-.bkit/
-.codex/
-bin_wlan/
-
-# Compiled mapp userspace binaries
-mapp/mlanutl/mlanutl
-mapp/mlanconfig/mlanconfig
-mapp/mlanevent/mlanevent
-mapp/uaputl/uaputl
-mapp/wifidirectutl/wifidirectutl
-mapp/mlan2040coex/mlan2040coex
-
-# Local-only 개발 과정 문서 (PDCA plan/analysis/report, 개발 plans, superpowers specs)
-# 최종 사양(design.md), 운영 설명서(qa-runbook.md), README_MLAN 은 계속 추적.
-docs/*.plan.md
-docs/*.analysis.md
-docs/*.analysis.v*.md
-docs/*.report.md
-docs/*.report.v*.md
-docs/plans/
-docs/superpowers/
-
-# Per-target object cache (obj_cache_swap.sh)
-.build-cache/
-
-# Local isolated development worktrees
-.worktrees/
+.*.o
