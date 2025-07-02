@@ -30,4 +30,3 @@ modules.order
 # Hidden files
 .*.cmd
 .*.o
-.*.o.d
