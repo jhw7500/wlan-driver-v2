@@ -391,6 +391,7 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 		}
 		pmadapter->pcard_sd->max_blk_count = pmdevice->max_blk_count;
 		pmadapter->pcard_sd->sdio_blk_size = pmdevice->sdio_blk_size;
+		pmadapter->pcard_sd->spi_mode = pmdevice->spi_mode;
 		pmadapter->pcard_sd->max_segs = pmdevice->max_segs;
 		pmadapter->pcard_sd->max_seg_size = pmdevice->max_seg_size;
 
@@ -1579,7 +1580,7 @@ process_start:
 			    (pmadapter->tx_lock_flag == MTRUE))
 				break;
 
-			if (pmadapter->data_sent ||
+			if (pmadapter->data_sent || pmadapter->driver_status ||
 			    wlan_is_tdls_link_chan_switching(
 				    pmadapter->tdls_status) ||
 			    (wlan_bypass_tx_list_empty(pmadapter) &&
@@ -2271,10 +2272,8 @@ void mlan_process_deaggr_pkt(t_void *padapter, pmlan_buffer pmbuf, t_u8 *drop)
 t_void mlan_set_driver_status(t_void *adapter, t_u8 driver_status)
 {
 	mlan_adapter *pmadapter = (mlan_adapter *)adapter;
-
 	ENTER();
-	if (pmadapter)
-		pmadapter->driver_status = driver_status;
+	pmadapter->driver_status = driver_status;
 	LEAVE();
 }
 

@@ -80,6 +80,7 @@ Change log:
 #ifdef UAP_SUPPORT
 #define PRIV_CMD_AP_DEAUTH "apdeauth"
 #define PRIV_CMD_GET_STA_LIST "getstalist"
+#define PRIV_CMD_PRINT_LINK_STATS "plinkstats"
 #define PRIV_CMD_BSS_CONFIG "bssconfig"
 #endif
 #if defined(UAP_SUPPORT)

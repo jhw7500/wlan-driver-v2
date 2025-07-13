@@ -3004,6 +3004,200 @@ done:
 }
 
 /**
+ *  @brief Print link stats func
+ *
+ *  @param priv         A pointer to moal_private structure
+ *  @param respbuf      A pointer to response buffer
+ *  @param respbuflen   Available length of response buffer
+ *
+ *  @return             Number of bytes written, negative for failure.
+ */
+static int woal_priv_print_link_stats(moal_private *priv, t_u8 *respbuf,
+				      t_u32 respbuflen)
+{
+	moal_handle *handle = priv->phandle;
+	int ret = 0;
+	int user_data_len = 0, header_len = 0;
+	int data[4] = {0};
+
+	ENTER();
+
+	header_len = strlen(CMD_NXP) + strlen(PRIV_CMD_PRINT_LINK_STATS);
+
+	if ((int)strlen(respbuf) == header_len) {
+		data[0] = (int)priv->plinkstats_cfg.enable;
+		data[1] = (int)priv->plinkstats_cfg.filter;
+		data[2] = (int)priv->plinkstats_cfg.interval;
+		data[3] = (int)priv->plinkstats_cfg.netlink_evt;
+		/* GET operation */
+		moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
+				sizeof(data), respbuflen);
+		ret = sizeof(data);
+		goto done;
+	} else {
+		/* SET operation */
+		memset(data, 0, sizeof(data));
+		parse_arguments(respbuf + header_len, data, ARRAY_SIZE(data),
+				&user_data_len);
+		if (user_data_len > 4) {
+			PRINTM(MERROR, "Too many arguments\n");
+			ret = -EINVAL;
+			goto done;
+		}
+
+		if (data[0] < 0 || data[0] > 3 || data[3] < 0 || data[3] > 1) {
+			PRINTM(MERROR, "Invalid arguments!\n");
+			ret = -EINVAL;
+			goto done;
+		}
+
+		switch (data[0]) {
+		case 0: /* disable */
+			/* Stop timer, interval filter and netlink_evt restore
+			 * to default */
+			priv->plinkstats_cfg.enable =
+				((data[0] == 1) ? MTRUE : MFALSE);
+			drvdbg &= ~MLSTATS;
+			woal_set_drvdbg(priv, drvdbg);
+			PRINTM(MMSG, "MLSTATS is disabled! \n");
+
+			if (handle->is_plinkstats_timer_set) {
+				woal_cancel_timer(&handle->plinkstats_timer);
+				handle->is_plinkstats_timer_set = MFALSE;
+			}
+			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
+					sizeof(data), respbuflen);
+			ret = sizeof(data);
+			break;
+		case 1: /* enable */
+			/* Init print_linkstats parameter to default */
+			priv->plinkstats_cfg.filter = PRINT_LINTSTATS_FILTER;
+			priv->plinkstats_cfg.interval =
+				PRINT_LINTSTATS_INTERVAL;
+			priv->plinkstats_cfg.netlink_evt = MFALSE;
+
+			priv->plinkstats_cfg.enable =
+				((data[0] == 1) ? MTRUE : MFALSE);
+			if (user_data_len >= 2 && data[1])
+				priv->plinkstats_cfg.filter = (t_u32)data[1];
+			if (user_data_len >= 3 && data[2])
+				priv->plinkstats_cfg.interval = (t_u16)data[2];
+			if (user_data_len >= 4)
+				priv->plinkstats_cfg.netlink_evt =
+					((data[3] == 1) ? MTRUE : MFALSE);
+			drvdbg |= MLSTATS;
+			woal_set_drvdbg(priv, drvdbg);
+			PRINTM(MMSG, "MLSTATS is active! \n");
+
+			if (priv->plinkstats_cfg.enable == MTRUE) {
+				if (priv->media_connected == MTRUE) {
+					handle->is_plinkstats_timer_set = MTRUE;
+					handle->plinkstats_chload_timer =
+						MFALSE;
+					/* Reserve CHLOAD_DELAY time to call
+					 * woal_get_ch_load() For example, the
+					 * interval is 5 seconds, and use 100ms
+					 * of the last 120ms to get chload from
+					 * fw.
+					 * |--------interval:4880ms--------|---getchload:100ms--|--delay
+					 * 20ms--|
+					 */
+					woal_mod_timer(
+						&handle->plinkstats_timer,
+						(priv->plinkstats_cfg.interval *
+						 MOAL_TIMER_1S) -
+							PRINT_LINTSTATS_CHLOAD_DELAY);
+				}
+			} else {
+				if (handle->is_plinkstats_timer_set) {
+					woal_cancel_timer(
+						&handle->plinkstats_timer);
+					handle->is_plinkstats_timer_set =
+						MFALSE;
+				}
+			}
+			data[1] = (int)priv->plinkstats_cfg.filter;
+			data[2] = (int)priv->plinkstats_cfg.interval;
+			data[3] = (int)priv->plinkstats_cfg.netlink_evt;
+			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
+					sizeof(data), respbuflen);
+			ret = sizeof(data);
+			break;
+		case 2: /* reset */
+			woal_print_linkstats_info(priv, MTRUE);
+			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
+					sizeof(data), respbuflen);
+			ret = sizeof(data);
+			break;
+		case 3: /* get */
+			woal_print_linkstats_info(priv, MFALSE);
+			moal_memcpy_ext(priv->phandle, respbuf + sizeof(data),
+					&priv->plinkstats,
+					sizeof(moal_priv_linkstats),
+					(respbuflen - sizeof(data)));
+			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
+					sizeof(data), respbuflen);
+			ret = sizeof(data) + sizeof(moal_priv_linkstats);
+			break;
+		default:
+			PRINTM(MERROR, "Unknown action \n");
+			ret = -EINVAL;
+			break;
+		}
+	}
+
+done:
+	LEAVE();
+	return ret;
+}
+
+/*
+ * @brief  prepare and send WOAL_EVENT_PRINT_LINKSTATS
+ *
+ * @param priv           A pointer moal_private structure
+ * @param type 			 WOAL_EVENT_PRINT_LINKSTATS
+ *
+ * @return          N/A
+ */
+void woal_print_linkstats_event(void *context)
+{
+	moal_handle *handle = (moal_handle *)context;
+	struct woal_event *evt;
+	unsigned long flags;
+	moal_private *priv = woal_get_priv(handle, MLAN_BSS_ROLE_UAP);
+
+	ENTER();
+
+	if (!priv || !(priv->media_connected) ||
+	    !(handle->is_plinkstats_timer_set) ||
+	    !(priv->plinkstats_cfg.enable)) {
+		LEAVE();
+		return;
+	}
+	/* evt is freed in woal_evt_work_queue, hence suppressed*/
+	// coverity[RESOURCE_LEAK]: SUPPRESS
+	evt = kzalloc(sizeof(struct woal_event), GFP_ATOMIC);
+	if (!evt) {
+		PRINTM(MERROR,
+		       "Fail to alloc memory for print linkstats event\n");
+		LEAVE();
+		return;
+	}
+	evt->priv = priv;
+	evt->type = WOAL_EVENT_PRINT_LINKSTATS;
+	handle->is_plinkstats_timer_set = MFALSE;
+	INIT_LIST_HEAD(&evt->link);
+	spin_lock_irqsave(&handle->evt_lock, flags);
+	list_add_tail(&evt->link, &handle->evt_queue);
+	spin_unlock_irqrestore(&handle->evt_lock, flags);
+	queue_work(handle->evt_workqueue, &handle->evt_work);
+
+	LEAVE();
+	// coverity[misra_c_2012_rule_22_1_violation:SUPPRESS]
+	return;
+}
+
+/**
  *  @brief uap get station list handler
  *
  *  @param dev      A pointer to net_device structure
@@ -4973,6 +5167,8 @@ static int woal_priv_set_get_drvdbg(moal_private *priv, t_u8 *respbuf,
 	       (drvdbg & MREG) ? "X" : "");
 	printk(KERN_ALERT "MREG_D (%08x) %s\n", MREG_D,
 	       (drvdbg & MREG_D) ? "X" : "");
+	printk(KERN_ALERT "MLSTATS (%08x) %s\n", MLSTATS,
+	       (drvdbg & MLSTATS) ? "X" : "");
 	printk(KERN_ALERT "MIOCTL (%08x) %s\n", MIOCTL,
 	       (drvdbg & MIOCTL) ? "X" : "");
 	printk(KERN_ALERT "MINTR  (%08x) %s\n", MINTR,
@@ -12712,6 +12908,7 @@ static int woal_channel_switch(moal_private *priv, t_u8 block_tx,
 	t_u8 bw;
 	t_u8 new_oper_class = oper_class;
 	int ret = 0;
+	long wait_rv;
 
 	ENTER();
 
@@ -12860,11 +13057,16 @@ static int woal_channel_switch(moal_private *priv, t_u8 block_tx,
 
 	priv->phandle->chsw_wait_q_woken = MFALSE;
 	/* wait for channel switch to complete  */
-	if (!wait_event_interruptible_timeout(priv->phandle->chsw_wait_q,
-					      priv->phandle->chsw_wait_q_woken,
-					      (u32)HZ * (switch_count + 2) *
-						      110 / 1000))
+	wait_rv = wait_event_interruptible_timeout(
+		priv->phandle->chsw_wait_q, priv->phandle->chsw_wait_q_woken,
+		(u32)HZ * (switch_count + 2) * 110 / 1000);
+	if (wait_rv == 0) {
 		PRINTM(MMSG, "chsw_wait_q failed to wakeup\n");
+	} else if (wait_rv < 0) {
+		PRINTM(MERROR, "chsw_wait_q interrupted by signal\n");
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
 
 	pcust_chansw_ie->ie_index = 0xffff; /*Auto index */
 	pcust_chansw_ie->mgmt_subtype_mask = 0;
@@ -15770,6 +15972,8 @@ static int woal_priv_csi_cmd(moal_private *priv, t_u8 *respbuf,
 		cfg->param.csi_params.csi_monitor_enable =
 			data_ptr->csi_monitor_enable;
 		cfg->param.csi_params.ra4us = data_ptr->ra4us;
+		cfg->param.csi_params.commonAGCflag = data_ptr->commonAGCflag;
+		cfg->param.csi_params.csiformat = data_ptr->csiformat;
 		if (cfg->param.csi_params.csi_filter_cnt > CSI_FILTER_MAX)
 			cfg->param.csi_params.csi_filter_cnt = CSI_FILTER_MAX;
 		moal_memcpy_ext(priv->phandle, cfg->param.csi_params.csi_filter,
@@ -21349,6 +21553,13 @@ int woal_android_priv_cmd(struct net_device *dev, struct ifreq *req)
 			/* Get STA list */
 			len = woal_priv_get_sta_list(priv, buf,
 						     priv_cmd.total_len);
+			goto handled;
+		} else if (strnicmp(buf + strlen(CMD_NXP),
+				    PRIV_CMD_PRINT_LINK_STATS,
+				    strlen(PRIV_CMD_PRINT_LINK_STATS)) == 0) {
+			/* Print link stats */
+			len = woal_priv_print_link_stats(priv, buf,
+							 priv_cmd.total_len);
 			goto handled;
 		} else if (strnicmp(buf + strlen(CMD_NXP), PRIV_CMD_BSS_CONFIG,
 				    strlen(PRIV_CMD_BSS_CONFIG)) == 0) {

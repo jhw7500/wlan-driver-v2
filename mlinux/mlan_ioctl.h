@@ -394,6 +394,9 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_MISC_OTP_CAL_DATA_RD_WR = 0x00200098,
 	MLAN_OID_MISC_AUTH_ASSOC_TIMEOUT_CONFIG = 0x00200099,
 	MLAN_OID_MISC_PREV_ASSOC_INFO = 0x0020009A,
+
+	MLAN_OID_MISC_NAV_MITIGATION_HW = 0x0020009C,
+
 };
 
 /** Sub command size */
@@ -5992,6 +5995,10 @@ typedef MLAN_PACK_START struct _mlan_ds_csi_params {
 	/** CSI data received in cfg channel with mac addr filter, not only RA
 	 * is us or other*/
 	t_u8 ra4us;
+	/** flag to enable common AGC */
+	t_u8 commonAGCflag;
+	/** CSI format */
+	t_u8 csiformat;
 	/** CSI filters */
 	mlan_csi_filter_t csi_filter[CSI_FILTER_MAX];
 } MLAN_PACK_END mlan_ds_csi_params;

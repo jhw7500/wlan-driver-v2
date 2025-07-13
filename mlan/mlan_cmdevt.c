@@ -1553,19 +1553,9 @@ static mlan_status wlan_dnld_cmd_to_fw(mlan_private *pmpriv,
 	PRINTM(MCMND,
 	       "DNLD_CMD (%lu.%06lu): %s [0x%x], act 0x%x, len %d, seqno 0x%x timeout %d\n",
 	       sec, usec, wlan_hostcmd_get_name(cmd_code), cmd_code,
-	       wlan_le16_to_cpu(read_u16_unaligned(pmpriv->adapter,
-						   (t_u8 *)pcmd + S_DS_GEN)),
-	       cmd_size, wlan_le16_to_cpu(pcmd->seq_num), timeout);
-
-#ifdef SECURE_HOST
-	if (!pmadapter->shc_secure_host)
-#endif
-		DBG_HEXDUMP(MCMD_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
-
-#ifdef SECURE_HOST
-	if (pmadapter->shc_secure_host)
-		DBG_HEXDUMP(MSHC_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
-#endif
+	       wlan_le16_to_cpu(*(t_u16 *)((t_u8 *)pcmd + S_DS_GEN)), cmd_size,
+	       wlan_le16_to_cpu(pcmd->seq_num), timeout);
+	DBG_HEXDUMP(MCMD_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
 
 #if defined(SDIO) || defined(PCIE)
 	if (!IS_USB(pmadapter->card_type)) {
@@ -2475,20 +2465,14 @@ done:
  *  @return             N/A
  */
 static void wlan_handle_cmd_error_in_pre_aleep(mlan_adapter *pmadapter,
-					       t_u16 cmd_no,
-					       HostCmd_DS_COMMAND *rsp)
+					       t_u16 cmd_no)
 {
 	cmd_ctrl_node *pcmd_node = MNULL;
-
 	ENTER();
-
 	PRINTM(MERROR, "CMD_RESP: 0x%x block in pre_asleep!\n", cmd_no);
-
 	wlan_request_cmd_lock(pmadapter);
-
 	pcmd_node = pmadapter->curr_cmd;
 	pmadapter->curr_cmd = MNULL;
-
 	if (pcmd_node) {
 		if (!IS_USB(pmadapter->card_type)) {
 			pcmd_node->cmdbuf->data_offset +=
@@ -2513,7 +2497,6 @@ static void wlan_handle_cmd_error_in_pre_aleep(mlan_adapter *pmadapter,
 #endif
 		wlan_insert_cmd_to_pending_q(pmadapter, pcmd_node, MFALSE);
 	}
-
 	wlan_release_cmd_lock(pmadapter);
 	LEAVE();
 }
@@ -2574,16 +2557,6 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 
 	resp = (HostCmd_DS_COMMAND *)(pmadapter->curr_cmd->respbuf->pbuf +
 				      pmadapter->curr_cmd->respbuf->data_offset);
-
-#ifdef SECURE_HOST
-	if (pmadapter->shc_secure_host) {
-		if (wlan_shc_secure_hostresp_process(pmadapter, resp) !=
-		    MLAN_STATUS_SUCCESS) {
-			goto done;
-		}
-	}
-#endif
-
 	orig_cmdresp_no = wlan_le16_to_cpu(resp->command);
 	cmdresp_no = (orig_cmdresp_no & HostCmd_CMD_ID_MASK);
 	if (pmadapter->curr_cmd->cmd_no != cmdresp_no) {
@@ -2690,7 +2663,7 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 		if (!IS_USB(pmadapter->card_type) && pmadapter->curr_cmd &&
 		    cmdresp_result == HostCmd_RESULT_PRE_ASLEEP) {
 			wlan_handle_cmd_error_in_pre_aleep(pmadapter,
-							   cmdresp_no, resp);
+							   cmdresp_no);
 			ret = MLAN_STATUS_FAILURE;
 			goto done;
 		}
@@ -2708,7 +2681,7 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 		if (!IS_USB(pmadapter->card_type) && pmadapter->curr_cmd &&
 		    cmdresp_result == HostCmd_RESULT_PRE_ASLEEP) {
 			wlan_handle_cmd_error_in_pre_aleep(pmadapter,
-							   cmdresp_no, resp);
+							   cmdresp_no);
 			ret = MLAN_STATUS_FAILURE;
 			goto done;
 		}
@@ -2826,27 +2799,6 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 		   (HostCmd_CMD_GET_HW_SPEC == cmdresp_no)) {
 		pmadapter->hw_status = WlanHardwareStatusGetHwSpecdone;
 	}
-#ifdef SECURE_HOST
-	else if (IS_CARDAW693(pmadapter->card_type) &&
-		 pmadapter->shc_secure_host &&
-		 (pmadapter->hw_status == WlanHardwareStatusGetHwSpec) &&
-		 (HostCmd_CMD_FUNC_INIT == cmdresp_no)) {
-		if (!pmadapter->second_mac) {
-			pmadapter->hw_status = WlanHardwareStatusSecHandshake;
-			PRINTM(MMSG, "secure host handshake start\n");
-			ret = mlan_shc_handshake(pmadapter, TLS_HOST_HELLO,
-						 MNULL);
-			if (ret != MLAN_STATUS_SUCCESS) {
-				pmadapter->hw_status =
-					WlanHardwareStatusNotReady;
-				wlan_init_fw_complete(pmadapter);
-			}
-		} else {
-			wlan_adapter_get_hw_spec(pmadapter);
-		}
-	}
-#endif
-
 done:
 	LEAVE();
 	return ret;
@@ -5646,8 +5598,6 @@ mlan_status wlan_adapter_get_hw_spec(pmlan_adapter pmadapter)
 		}
 #ifdef SECURE_HOST
 	}
-#endif
-
 	/** DPD data dnld cmd prepare */
 	if ((pmadapter->pdpd_data) && (pmadapter->dpd_data_len > 0)) {
 		ret = wlan_process_hostcmd_cfg(priv, CFG_TYPE_DPDFILE,
@@ -7113,10 +7063,6 @@ mlan_status wlan_ret_get_hw_spec(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 		pmadapter->fw_bands |= BAND_AN;
 	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GN))
 		pmadapter->fw_bands &= ~BAND_GN;
-	if (!(pmadapter->fw_bands & BAND_A) && (pmadapter->fw_bands & BAND_AAC))
-		pmadapter->fw_bands &= ~BAND_AAC;
-	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GAC))
-		pmadapter->fw_bands &= ~BAND_GAC;
 
 	pmadapter->config_bands = pmadapter->fw_bands;
 	for (i = 0; i < pmadapter->priv_num; i++) {

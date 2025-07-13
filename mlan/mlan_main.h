@@ -610,9 +610,9 @@ extern t_void (*assert_callback)(t_void *pmoal_handle, t_u32 cond);
 #define MIN_BA_THRESHOLD 16
 
 /** High threshold at which to start drop packets */
-#define RX_HIGH_THRESHOLD 8192
+#define RX_HIGH_THRESHOLD 1024
 /** Low threshold to allow Rx BA */
-#define RX_LOW_THRESHOLD 1024
+#define RX_LOW_THRESHOLD 128
 
 #define MFG_CMD_SET_TEST_MODE 1
 #define MFG_CMD_UNSET_TEST_MODE 0
@@ -2241,6 +2241,8 @@ typedef struct _mlan_sdio_card {
 	t_bool sdio_rx_aggr_enable;
 	/** fw rx block size */
 	t_u16 sdio_rx_block_size;
+	/** SDIO bus mode (0: Non-SPI mode, 1: SPI mode) */
+	t_u8 spi_mode;
 } mlan_sdio_card, *pmlan_sdio_card;
 #endif
 
@@ -2506,6 +2508,7 @@ struct _mlan_adapter {
 	t_void *pmlan_lock;
 	/** main_proc_lock for main_process */
 	t_void *pmain_proc_lock;
+	/** selected mlan bss */
 	mlan_private *selected_mlan_bss;
 #ifdef PCIE
 	/** rx data lock to synchronize wlan_pcie_process_recv_data */
@@ -2531,6 +2534,8 @@ struct _mlan_adapter {
 	/** pcie lock to synchronize rxbd_wr_ptr and txbd_wr_ptr */
 	t_void *pmlan_pcie_lock;
 #endif
+	/** driver status */
+	t_u8 driver_status;
 	/** mlan_processing */
 	t_u32 mlan_processing;
 	/** main_process_cnt */

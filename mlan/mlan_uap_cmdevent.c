@@ -4661,6 +4661,7 @@ static mlan_status wlan_uap_cmd_add_station(pmlan_private pmpriv,
 	MrvlIETypes_HTCap_t *phtcap;
 	MrvlIETypes_VHTCap_t *pvhtcap;
 	MrvlIEtypes_Extension_t *pext_tlv = MNULL;
+	MrvlIEtypes_He_6g_cap_t *phe_6g_cap = MNULL;
 	MrvlIEtypes_StaFlag_t *pstaflag;
 	int i;
 
@@ -4772,7 +4773,6 @@ static mlan_status wlan_uap_cmd_add_station(pmlan_private pmpriv,
 				sta_ptr->is_11ax_enabled = MTRUE;
 				PRINTM(MCMND, "ADD_STA supports 11ax\n");
 			} else if (pext_tlv->ext_id == HE_6G_CAPABILITY) {
-				MrvlIEtypes_He_6g_cap_t *phe_6g_cap = MNULL;
 				phe_6g_cap = (MrvlIEtypes_He_6g_cap_t *)tlv;
 				if (GET_6G_BAND_CAP_MAXMPDULEN(
 					    phe_6g_cap->capa) == 2)
@@ -4873,6 +4873,8 @@ static mlan_status wlan_uap_cmd_add_station(pmlan_private pmpriv,
 			sta_ptr->bandmode = BAND_GAX;
 		else
 			sta_ptr->bandmode = BAND_AAX;
+		if (phe_6g_cap)
+			sta_ptr->bandmode = BAND_6G;
 	}
 
 	for (i = 0; i < MAX_NUM_TID; i++) {

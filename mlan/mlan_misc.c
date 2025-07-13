@@ -71,7 +71,7 @@ t_u8 fw_data_dpd_current_opt[FW_DATA_DPD_CURRENT_OPT_LEN] = {
 	0x93, 0xCC, 0x0E, 0xB8, 0xF8, 0xAF, 0x00, 0xB0, 0xCC, 0x1B, 0x6A, 0x41,
 	0xFC, 0xAF, 0x00, 0xB0, 0x01, 0x00, 0x00, 0x00, 0xF5, 0x1D, 0xBA, 0x80};
 #endif
-
+#define FCS_SIZE (4)
 /********************************************************
 			Local Functions
 ********************************************************/
@@ -3413,6 +3413,8 @@ mlan_status wlan_process_802dot11_mgmt_pkt(mlan_private *priv, t_u8 *payload,
 		LEAVE();
 		return ret;
 	}
+	if (pmadapter->enable_net_mon)
+		payload_len -= FCS_SIZE;
 	switch (sub_type) {
 	case SUBTYPE_ASSOC_REQUEST:
 	case SUBTYPE_REASSOC_REQUEST:

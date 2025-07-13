@@ -933,8 +933,6 @@ enum host_cmd_id {
 #define FW_CAPINFO_EASY_MESH MBIT(21)
 /** FW cap info bit 22: ADDBA support with scan */
 #define FW_CAPINFO_ALLOW_ADDBA_RESP_ON_SCAN MBIT(22)
-/** FW cap info bit 23: MAC2 is not available */
-#define FW_CAPINFO_EXT_NO_MAC2 MBIT(23)
 
 /** Check if 5G 1x1 only is supported by firmware */
 #define IS_FW_SUPPORT_5G_1X1_ONLY(_adapter)                                    \
@@ -3706,6 +3704,16 @@ typedef MLAN_PACK_START struct _MrvlIEtypes_csi_channel_bandcfg_t {
 	t_u8 channel;
 } MLAN_PACK_END MrvlIEtypes_csi_channel_bandcfg_t;
 
+/** MrvlIEtypes_csi_agc_conf */
+typedef MLAN_PACK_START struct _MrvlIEtypes_csi_agc_conf_t {
+	/** Header */
+	MrvlIEtypesHeader_t header;
+	/** flag to Enable common AGC */
+	t_u8 commonAGCflag;
+	/** CSI format value */
+	t_u8 csiformat;
+} MLAN_PACK_END MrvlIEtypes_csi_agc_conf_t;
+
 /** HostCmd_CMD_CSI_START */
 typedef MLAN_PACK_START struct _HostCmd_DS_CSI_CFG {
 	/** Action */
@@ -3722,6 +3730,8 @@ typedef MLAN_PACK_START struct _HostCmd_DS_CSI_CFG {
 	mlan_csi_filter_t csi_filter[CSI_FILTER_MAX];
 	/**channel and bandconfig*/
 	MrvlIEtypes_csi_channel_bandcfg_t csi_channel_bandconfig;
+	/**Common AGC flag and csi format config */
+	MrvlIEtypes_csi_agc_conf_t csi_agc_config;
 } MLAN_PACK_END HostCmd_DS_CSI_CFG;
 
 typedef MLAN_PACK_START struct _HostCmd_DS_HAL_PHY_CFG {

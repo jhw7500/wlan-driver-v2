@@ -2023,7 +2023,8 @@ static memory_type_mapping mem_type_mapping_tbl_8897[] = {
 	defined(PCIEAW693) || defined(PCIEIW624)
 #define DEBUG_HOST_READY_8997 0xCC
 #define DEBUG_HOST_EVENT_READY 0xAA
-#define DEBUG_HOST_RESET_READY 0x99
+#define DEBUG_HOST_RESET_READY                                                 \
+	0x98 /* 0x98: Reset WiFi only, 0x99: Reset both BT and WiFi */
 static memory_type_mapping mem_type_mapping_tbl_8997 = {"DUMP", NULL, NULL,
 							0xDD, 0x00};
 
