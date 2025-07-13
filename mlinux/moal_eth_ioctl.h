@@ -912,9 +912,4 @@ typedef struct {
 } __ATTRIB_PACK__ wlan_ieee80211_chan_list;
 
 #define PRIV_CMD_TP_STATE "tp_state"
-
-#ifdef UAP_SUPPORT
-#define PRIV_CMD_AGCS "agcs"
-#endif
-
 #endif /* _WOAL_ETH_PRIV_H_ */

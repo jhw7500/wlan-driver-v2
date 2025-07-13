@@ -55,9 +55,9 @@ static mode_psd_t mode_psd_uap_FCC_6G[] = {
  * @brief Band: 6G, Region: EU UAP-Mode-PSD Table
  */
 static mode_psd_t mode_psd_uap_EU_6G[] = {
-	{"indoor_", "plus7"},
+	{"indoor_", "plus10"},
 	{"sp_", ""},
-	{"vlp_", "minus5"},
+	{"vlp_", "plus1"},
 };
 
 /**
@@ -1876,14 +1876,13 @@ static int woal_cfg80211_beacon_config(moal_private *priv,
 						  ->ht_cap.cap &
 					  0x1bff)) |
 					0x0c;
-			else if (wiphy->bands[IEEE80211_BAND_5GHZ]) {
+			else
 				sys_config->ht_cap_info =
 					(ht_cap &
 					 (wiphy->bands[IEEE80211_BAND_5GHZ]
 						  ->ht_cap.cap &
 					  0x1bff)) |
 					0x0c;
-			}
 		}
 		PRINTM(MCMND,
 		       "11n=%d, ht_cap=0x%x, channel=%d, bandcfg:chanBand=0x%x chanWidth=0x%x chan2Offset=0x%x scanMode=0x%x\n",
@@ -2380,8 +2379,8 @@ static int woal_cfg80211_add_mon_if(struct wiphy *wiphy,
 		goto fail;
 	}
 	if (woal_is_any_interface_active(handle)) {
-		if (woal_get_active_intf_channel(priv, &chan_info) !=
-		    MLAN_STATUS_SUCCESS) {
+		if (MLAN_STATUS_SUCCESS !=
+		    woal_get_active_intf_channel(priv, &chan_info)) {
 			/* stop monitor mode on error */
 			woal_set_net_monitor(priv, MOAL_IOCTL_WAIT, MFALSE, 0,
 					     NULL);
@@ -2777,6 +2776,7 @@ moal_private *woal_alloc_virt_interface(moal_handle *handle, t_u8 bss_index,
 	// Coverity raised warning for kernel API
 	// coverity[useless_call:SUPPRESS]
 	spin_lock_init(&priv->dhcp_discover_lock);
+	// Coverity raised warning for kernel API
 	// coverity[useless_call:SUPPRESS]
 	spin_lock_init(&priv->arp_request_lock);
 #endif

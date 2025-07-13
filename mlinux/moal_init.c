@@ -1870,7 +1870,6 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 {
 	t_u8 addr[ETH_ALEN];
 	bool is_valid_mac_addr = false;
-	unsigned int rps_mask = 0, nr_cpu = 0;
 	if (hw_test)
 		moal_extflg_set(handle, EXT_HW_TEST);
 #ifdef CONFIG_OF
@@ -2233,10 +2232,7 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 
 #if defined(CONFIG_RPS)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
-	nr_cpu = num_online_cpus();
-	rps_mask = (1U << nr_cpu) - 1;
 	handle->params.rps = rps & RPS_CPU_MASK;
-	handle->params.rps &= rps_mask;
 	PRINTM(MMSG, "rps set to %x from module param\n", handle->params.rps);
 #endif
 #endif
