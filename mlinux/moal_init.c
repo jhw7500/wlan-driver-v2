@@ -120,6 +120,10 @@ int bridge_consume_link_local;
 /** amsdu deaggr mode */
 static int amsdu_deaggr = 1;
 
+/** wifi_reset_config */
+/**Default reset is after 5 EAPOL failures, 0 disables the reset */
+static int wifi_reset_config = 5;
+
 static int tx_budget = 2600;
 static int mclient_scheduling = 1;
 
@@ -1050,6 +1054,14 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->bridge_keepalive_idle_ms_present = 1;
 			PRINTM(MMSG, "bridge_keepalive_idle_ms = %d\n",
 			       params->bridge_keepalive_idle_ms);
+		} else if (strncmp(line, "wifi_reset_config",
+				   strlen("wifi_reset_config")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->wifi_reset_config = out_data;
+			PRINTM(MMSG, "wifi_reset_config = %d\n",
+			       params->wifi_reset_config);
 		} else if (strncmp(line, "amsdu_deaggr",
 				   strlen("amsdu_deaggr")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1926,7 +1938,6 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 {
 	t_u8 addr[ETH_ALEN];
 	bool is_valid_mac_addr = false;
-	unsigned int rps_mask = 0, nr_cpu = 0;
 	if (hw_test)
 		moal_extflg_set(handle, EXT_HW_TEST);
 #ifdef CONFIG_OF
@@ -2092,6 +2103,9 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 			handle->params.bridge_keepalive_idle_ms_present = 1;
 		}
 	}
+	handle->params.wifi_reset_config = wifi_reset_config;
+	if (params)
+		handle->params.wifi_reset_config = params->wifi_reset_config;
 
 	handle->params.amsdu_deaggr = amsdu_deaggr;
 	if (params)
@@ -2294,10 +2308,7 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 
 #if defined(CONFIG_RPS)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
-	nr_cpu = num_online_cpus();
-	rps_mask = (1U << nr_cpu) - 1;
 	handle->params.rps = rps & RPS_CPU_MASK;
-	handle->params.rps &= rps_mask;
 	PRINTM(MMSG, "rps set to %x from module param\n", handle->params.rps);
 #endif
 #endif
@@ -3348,7 +3359,7 @@ module_param(wfd_name, charp, 0);
 MODULE_PARM_DESC(wfd_name, "WIFIDIRECT interface name");
 #if defined(STA_CFG80211) && defined(UAP_CFG80211)
 module_param(max_vir_bss, int, 0);
-MODULE_PARM_DESC(max_vir_bss, "Number of Virtual interfaces (0)");
+MODULE_PARM_DESC(max_vir_bss, "Number of Virtual interfaces (1)");
 #endif
 #endif /* WIFI_DIRECT_SUPPORT */
 module_param(nan_name, charp, 0);
@@ -3569,7 +3580,12 @@ module_param(bridge_consume_link_local, int, 0644);
 MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(bridge_local_hairpin, int, 0644);
 MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable). Fleet precondition: apply wlan iface arp_ignore=1 seal (wlan-package) or weak-host ARP opens on air — driver warns once via dmesg if unsealed");
-module_param(amsdu_deaggr, int, 0);
+	"0: use netif_rx/netif_rx_ni in rx; 1: use netif_receive_skb in rx (default)");
+module_param(wifi_reset_config, int, 0);
+MODULE_PARM_DESC(
+	wifi_reset_config,
+	"0: disable Wi-Fi reset, positive integer: max retries before reset (default 5)");
+	module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,
 	"0: buf copy in amsud deaggregation; 1: avoid buf copy in amsud deaggregation (default)");
