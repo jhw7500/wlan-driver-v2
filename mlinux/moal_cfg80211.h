@@ -143,7 +143,11 @@ int woal_cfg80211_change_virtual_intf(struct wiphy *wiphy,
 #endif
 				      struct vif_params *params);
 
-int woal_cfg80211_set_wiphy_params(struct wiphy *wiphy, u32 changed);
+int woal_cfg80211_set_wiphy_params(struct wiphy *wiphy,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+				    int radio_idx,
+#endif
+				    u32 changed);
 
 int woal_cfg80211_add_key(struct wiphy *wiphy, struct net_device *dev,
 #if ((KERNEL_VERSION(6, 1, 0) <= LINUX_VERSION_CODE) ||                        \
@@ -189,8 +193,16 @@ int woal_cfg80211_set_bitrate_mask(struct wiphy *wiphy, struct net_device *dev,
 				   const u8 *peer,
 				   const struct cfg80211_bitrate_mask *mask);
 #if KERNEL_VERSION(2, 6, 38) <= CFG80211_VERSION_CODE
-int woal_cfg80211_set_antenna(struct wiphy *wiphy, u32 tx_ant, u32 rx_ant);
-int woal_cfg80211_get_antenna(struct wiphy *wiphy, u32 *tx_ant, u32 *rx_ant);
+int woal_cfg80211_set_antenna(struct wiphy *wiphy,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+			       int radio_idx,
+#endif
+			       u32 tx_ant, u32 rx_ant);
+int woal_cfg80211_get_antenna(struct wiphy *wiphy,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+			       int radio_idx,
+#endif
+			       u32 *tx_ant, u32 *rx_ant);
 #endif
 
 #if KERNEL_VERSION(3, 14, 0) <= CFG80211_VERSION_CODE
