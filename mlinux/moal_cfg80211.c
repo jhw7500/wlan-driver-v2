@@ -1694,10 +1694,10 @@ done:
  * @return              0 -- success, otherwise fail
  */
 int woal_cfg80211_set_wiphy_params(struct wiphy *wiphy,
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
-				   int radio_idx,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+				    int radio_idx,
 #endif
-				   u32 changed)
+				    u32 changed)
 {
 	moal_private *priv = NULL;
 	moal_handle *handle = (moal_handle *)woal_get_wiphy_priv(wiphy);
@@ -2706,17 +2706,17 @@ done:
  * @brief Request the driver to get antenna configuration
  *
  * @param wiphy           A pointer to wiphy structure
- * @param radio_idx	  Radio index
+ * @param radio_idx 	   Radio index
  * @param tx_ant          Bitmaps of allowed antennas to use for TX
  * @param rx_ant          Bitmaps of allowed antennas to use for RX
  *
  * @return                0 -- success, otherwise fail
  */
 int woal_cfg80211_get_antenna(struct wiphy *wiphy,
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
-			      int radio_idx,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+			       int radio_idx,
 #endif
-			      u32 *tx_ant, u32 *rx_ant)
+			       u32 *tx_ant, u32 *rx_ant)
 {
 	moal_handle *handle = (moal_handle *)woal_get_wiphy_priv(wiphy);
 	moal_private *priv = NULL;
@@ -2777,17 +2777,17 @@ done:
  * @brief Request the driver to set antenna configuration
  *
  * @param wiphy           A pointer to wiphy structure
- * @param radio_idx	  Radio index
+ * @param radio_idx 	   Radio index
  * @param tx_ant          Bitmaps of allowed antennas to use for TX
  * @param rx_ant          Bitmaps of allowed antennas to use for RX
  *
  * @return                0 -- success, otherwise fail
  */
 int woal_cfg80211_set_antenna(struct wiphy *wiphy,
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
-			      int radio_idx,
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+			       int radio_idx,
 #endif
-			      u32 tx_ant, u32 rx_ant)
+			       u32 tx_ant, u32 rx_ant)
 {
 	moal_handle *handle = (moal_handle *)woal_get_wiphy_priv(wiphy);
 	moal_private *priv = NULL;

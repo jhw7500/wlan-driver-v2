@@ -544,6 +544,10 @@ typedef struct {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 static inline void woal_timer_handler(struct timer_list *t)
 {
+	pmoal_drv_timer timer = timer_container_of(timer, t, tl);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 15, 0)
+static inline void woal_timer_handler(struct timer_list *t)
+{
 	// Coverity violation raised for kernel's API
 	// coverity[cert_arr39_c_violation:SUPPRESS]
 	pmoal_drv_timer timer = from_timer(timer, t, tl);
