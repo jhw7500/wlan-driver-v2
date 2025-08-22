@@ -1631,7 +1631,6 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 {
 	moal_handle *handle = (moal_handle *)sfp->private;
 	int ret = 0;
-	int format_result = 0;
 	t_u32 i;
 	t_u32 *tmpbuf;
 	unsigned char *sfpbuf;
@@ -1657,9 +1656,9 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 
 	if (sfp->size < ((handle->ssu_dump_len * 9) / 4)) {
 		PRINTM(MCMND,
-		       "ssu dump size too big, size=%lu, ssu_dump_len=%lu\n",
-		       sfp->size,
-		       (unsigned long)((handle->ssu_dump_len * 9) / 4));
+		       "ssu dump size too big, size=%d, ssu_dump_len=%ld\n",
+		       (int)sfp->size,
+		       (long int)((handle->ssu_dump_len * 9) / 4));
 		sfp->count = sfp->size;
 		ret = 0;
 		MODULE_PUT;
@@ -1669,23 +1668,15 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 	tmpbuf = (t_u32 *)handle->ssu_dump_buf;
 	sfpbuf = sfp->buf;
 	for (i = 0; i < handle->ssu_dump_len / 4; i++) {
-		// Use array indexing instead of pointer arithmetic to avoid
-		// overflow
-		t_u32 current_word = tmpbuf[i];
-
-		if ((i + 1) % 8 == 0) {
-			format_result = snprintf(dw_string, sizeof(dw_string),
-						 "%08x\n", current_word);
-		} else {
-			format_result = snprintf(dw_string, sizeof(dw_string),
-						 "%08x ", current_word);
-		}
-		if (format_result <= 0 || format_result >= sizeof(dw_string)) {
-			PRINTM(MERROR, "String formatting failed at word %u\n",
-			       i);
-		}
+		if ((i + 1) % 8 == 0)
+			snprintf(dw_string, sizeof(dw_string), "%08x\n",
+				 *tmpbuf);
+		else
+			snprintf(dw_string, sizeof(dw_string), "%08x ",
+				 *tmpbuf);
 
 		moal_memcpy_ext(handle, sfpbuf, dw_string, 9, 9);
+		tmpbuf++;
 		sfpbuf += 9;
 	}
 
@@ -1988,6 +1979,10 @@ void woal_proc_init(moal_handle *handle)
 		r->data = handle;
 		r->proc_fops = &ssu_dump_fops;
 	}
+#endif
+	if (!r)
+		PRINTM(MERROR, "Failed to create proc ssu dump\n");
+#endif
 #endif
 	if (!r)
 		PRINTM(MERROR, "Failed to create proc ssu dump\n");

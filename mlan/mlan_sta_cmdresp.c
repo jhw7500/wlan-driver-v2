@@ -38,9 +38,7 @@
 #include "mlan_11ax.h"
 #include "mlan_11h.h"
 #include "mlan_meas.h"
-#ifdef SECURE_HOST
 #include "mlan_shc.h"
-#endif
 
 /********************************************************
  *			Local Variables
@@ -670,14 +668,16 @@ static mlan_status wlan_ret_802_11_snmp_mib(pmlan_private pmpriv,
 		/* Update state for Tpe Ie Ignore */
 		if (oid == Ignore_tpe_i) {
 			/* Set tpe ie ignore to private */
-			ul_temp = wlan_le16_to_cpu(*((t_u16 *)(psmib->value)));
+			ul_temp = wlan_le16_to_cpu(read_u16_unaligned(
+				pmpriv->adapter, psmib->value));
 			PRINTM(MCMND, "SNMP_RESP: Ignore_tpe_i = %u\n",
 			       ul_temp);
 		}
 	}
 
 	if (oid == User_band_config_i) {
-		ul_temp = wlan_le16_to_cpu(*((t_u16 *)(psmib->value)));
+		ul_temp = wlan_le16_to_cpu(
+			read_u16_unaligned(pmpriv->adapter, psmib->value));
 		PRINTM(MCMND, "SNMP_RESP: user defined bandcfg =0x%x\n",
 		       ul_temp);
 	}
@@ -828,6 +828,13 @@ static mlan_status wlan_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.isDPDdone =
 			wlan_le32_to_cpu(pget_log->isDPDdone);
+
+		pget_info->param.stats.cca_cnt_us =
+			wlan_le64_to_cpu(pget_log->cca_cnt_us);
+		pget_info->param.stats.rxAirtime_us =
+			wlan_le64_to_cpu(pget_log->rxAirtime_us);
+		pget_info->param.stats.txAirtime_us =
+			wlan_le64_to_cpu(pget_log->txAirtime_us);
 
 		if (pmpriv->adapter->getlog_enable) {
 			pget_info->param.stats.tx_frag_cnt =
@@ -3511,10 +3518,8 @@ mlan_status wlan_ops_sta_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 	case HostCmd_CMD_FUNC_INIT:
 	case HostCmd_CMD_FUNC_SHUTDOWN:
 		break;
-#ifdef SECURE_HOST
 	case HostCmd_CMD_SECURE_HOST:
 		break;
-#endif
 	case HostCmd_CMD_802_11_KEY_MATERIAL:
 		ret = wlan_ret_802_11_key_material(pmpriv, resp, pioctl_buf);
 		break;

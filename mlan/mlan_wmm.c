@@ -1530,8 +1530,8 @@ static raListTbl *wlan_wmm_get_next_priolist_ptr(pmlan_adapter pmadapter,
 		ra_list = mlan->wmm.selected_ra_list;
 
 		if (ra_list == MNULL || ra_list->total_pkts == 0 ||
-		    util_peek_list_nl(pmoal_handle, &ra_list->buf_head) ==
-			    MNULL) {
+		    MNULL == util_peek_list_nl(pmoal_handle,
+					       &ra_list->buf_head)) {
 			ra_list = wlan_wmm_get_next_ra_list(pmadapter, mlan);
 		} else if (!wlan_wmm_process_ra_list_quoats(pmadapter, mlan,
 							    ra_list)) {

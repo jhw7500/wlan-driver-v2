@@ -585,9 +585,8 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 			(t_u8)pmdevice->bss_attr[0].bss_num;
 	}
 
-#ifdef SECURE_HOST
 	pmadapter->shc_secure_host = pmdevice->secure_host;
-	if (pmadapter->shc_secure_host && pmadapter->second_mac) {
+	if (pmadapter->second_mac && pmadapter->shc_secure_host) {
 		if (pcb->moal_secure_host_derive_traffic_keys(
 			    pmadapter->pmoal_handle) ||
 		    pcb->moal_secure_host_data_ctx_init(
@@ -595,7 +594,6 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 			goto error;
 		}
 	}
-#endif
 
 	/* init function table */
 	for (j = 0; mlan_ops[j]; j++) {
@@ -2051,6 +2049,7 @@ mlan_status mlan_recv(t_void *padapter, pmlan_buffer pmbuf, t_u32 port)
 
 	MASSERT(len >= MLAN_TYPE_LEN);
 	recv_type = read_u32_unaligned(pmadapter, pbuf);
+	;
 	recv_type = wlan_le32_to_cpu(recv_type);
 	pbuf += MLAN_TYPE_LEN;
 	len -= MLAN_TYPE_LEN;

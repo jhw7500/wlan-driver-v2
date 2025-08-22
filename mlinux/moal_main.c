@@ -85,9 +85,7 @@ Change log:
 #include <linux/rtc.h>
 #include <linux/utsname.h>
 #endif
-#ifdef SECURE_HOST
 #include "moal_shc.h"
-#endif
 
 /********************************************************
 		 Global Variables
@@ -928,6 +926,22 @@ static mlan_callbacks woal_callbacks = {
 	.moal_tp_accounting_rx_param = moal_tp_accounting_rx_param,
 	.moal_amsdu_tp_accounting = moal_amsdu_tp_accounting,
 	.moal_calc_short_ssid = moal_calc_short_ssid,
+	.moal_secure_host_get_msg_id = moal_secure_host_get_msg_id,
+	.moal_secure_host_init = moal_secure_host_init,
+	.moal_secure_host_cleanup = moal_secure_host_cleanup,
+	.moal_secure_host_do_hello = moal_secure_host_do_hello,
+	.moal_secure_host_device_hello_rcvd =
+		moal_secure_host_device_hello_rcvd,
+	.moal_secure_host_do_finished = moal_secure_host_do_finished,
+	.moal_secure_host_derive_traffic_keys =
+		moal_secure_host_derive_traffic_keys,
+	.moal_secure_host_data_ctx_init = moal_secure_host_data_ctx_init,
+	.moal_secure_host_data_encrypt = moal_secure_host_data_encrypt,
+	.moal_secure_host_data_decrypt = moal_secure_host_data_decrypt,
+	.moal_unaligned_access.moal_read_u16 = moal_read_unaligned_u16,
+	.moal_unaligned_access.moal_read_u32 = moal_read_unaligned_u32,
+	.moal_unaligned_access.moal_write_u16 = moal_write_unaligned_u16,
+	.moal_unaligned_access.moal_write_u32 = moal_write_unaligned_u32,
 };
 
 #define PLSTATS_FILTER_TX_BYTES MBIT(0)
@@ -2350,9 +2364,7 @@ mlan_status woal_init_sw(moal_handle *handle)
 	t_void *pmlan;
 	int cfg80211_wext = handle->params.cfg80211_wext;
 
-#if defined(SECURE_HOST)
 	moal_handle *ref_handle = NULL;
-#endif
 
 	ENTER();
 
@@ -2620,27 +2632,26 @@ mlan_status woal_init_sw(moal_handle *handle)
 	if (IS_SD(handle->card_type)) {
 		device->sdio_rx_aggr_enable =
 			moal_extflg_isset(handle, EXT_SDIO_RX_AGGR);
-		device->int_mode =
-			(t_u32)moal_extflg_isset(handle, EXT_INTMODE);
-		device->gpio_pin = (t_u32)handle->params.gpiopin;
-		device->spi_mode = (((sdio_mmc_card *)handle->card)
-					    ->func->card->host->caps &
-				    MMC_CAP_SPI) ?
-					   1 :
-					   0;
+		device.int_mode = (t_u32)moal_extflg_isset(handle, EXT_INTMODE);
+		device.gpio_pin = (t_u32)handle->params.gpiopin;
+		device.spi_mode = (((sdio_mmc_card *)handle->card)
+					   ->func->card->host->caps &
+				   MMC_CAP_SPI) ?
+					  1 :
+					  0;
 #ifdef SDIO_MMC
 		device.sdio_blk_size = handle->sdio_blk_size;
 		device.max_blk_count =
 			((sdio_mmc_card *)handle->card)
 				->func->card->host->max_blk_count;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 36)
-		device->max_segs = ((sdio_mmc_card *)handle->card)
-					   ->func->card->host->max_segs;
-		device->max_seg_size = ((sdio_mmc_card *)handle->card)
-					       ->func->card->host->max_seg_size;
-		if (device->spi_mode) {
-			device->max_seg_size =
-				device->sdio_blk_size * device->max_blk_count;
+		device.max_segs = ((sdio_mmc_card *)handle->card)
+					  ->func->card->host->max_segs;
+		device.max_seg_size = ((sdio_mmc_card *)handle->card)
+					      ->func->card->host->max_seg_size;
+		if (device.spi_mode) {
+			device.max_seg_size =
+				device.sdio_blk_size * device.max_blk_count;
 		}
 #endif
 		PRINTM(MMSG,
@@ -2658,11 +2669,6 @@ mlan_status woal_init_sw(moal_handle *handle)
 		device->mpa_tx_cfg = MLAN_INIT_PARA_ENABLED;
 		device->mpa_rx_cfg = MLAN_INIT_PARA_ENABLED;
 #endif /* SDIO_MMC */
-		device.spi_mode = (((sdio_mmc_card *)handle->card)
-					   ->func->card->host->caps &
-				   MMC_CAP_SPI) ?
-					  1 :
-					  0;
 	}
 #endif /* SDIO */
 	device->feature_control = handle->card_info->feature_control;
@@ -2737,6 +2743,23 @@ mlan_status woal_init_sw(moal_handle *handle)
 	device.mclient_scheduling = handle->params.mclient_scheduling;
 	/* Clean up the mode_psd_string for 6E Indoor/Outdoor */
 	memset(handle->mode_psd_string, 0, sizeof(handle->mode_psd_string));
+
+	device.secure_host = (t_u32)handle->params.secure_host;
+
+	if (handle->second_mac && handle->params.secure_host &&
+	    handle->pref_mac) {
+		ref_handle = (moal_handle *)handle->pref_mac;
+		handle->secure = ref_handle->secure;
+	}
+
+	if (handle->second_mac && handle->params.secure_host &&
+	    !handle->secure) {
+		PRINTM(MERROR, "secure host handshake incomplete\n");
+		ret = MLAN_STATUS_FAILURE;
+		LEAVE();
+		return ret;
+	}
+
 	moal_memcpy_ext(handle, &device.callbacks, &woal_callbacks,
 			sizeof(mlan_callbacks), sizeof(mlan_callbacks));
 	if (!handle->params.amsdu_deaggr)
@@ -2824,6 +2847,15 @@ void woal_free_moal_handle(moal_handle *handle)
 	if (fwdump_fname) {
 		kfree(fwdump_fname);
 		fwdump_fname = NULL;
+	}
+
+	if (handle->params.secure_host) {
+		moal_secure_host_cleanup(handle);
+		handle->secure = NULL;
+		if (handle->pref_mac) {
+			ref_handle = (moal_handle *)handle->pref_mac;
+			ref_handle->secure = NULL;
+		}
 	}
 	/* Free module params */
 	woal_free_module_param(handle);
@@ -4318,8 +4350,8 @@ static mlan_status woal_add_card_dpc(moal_handle *handle)
 		woal_set_sdio_slew_rate(handle);
 #endif
 
-	if (woal_get_ind_rst_cfg(handle, MOAL_IOCTL_WAIT) !=
-	    MLAN_STATUS_SUCCESS) {
+	if (MLAN_STATUS_SUCCESS !=
+	    woal_get_ind_rst_cfg(handle, MOAL_IOCTL_WAIT)) {
 		PRINTM(MFATAL, "Set init ind_rst_cfg failed\n");
 		goto err;
 	}
@@ -4791,7 +4823,11 @@ static mlan_status woal_init_fw_dpc(moal_handle *handle)
 			PRINTM(MERROR,
 			       "WLAN: Fail download FW with nowwait: %u\n",
 			       moal_extflg_isset(handle, EXT_REQ_FW_NOWAIT));
-			if (handle->ops.reg_dbg)
+			if (handle->ops.reg_dbg
+#ifdef PCIE
+			    && !IS_PCIEAW693(handle->card_type)
+#endif
+			)
 				handle->ops.reg_dbg(handle);
 			goto done;
 		}
@@ -4866,7 +4902,11 @@ static mlan_status woal_init_fw_dpc(moal_handle *handle)
 	if (handle->hardware_status != HardwareStatusReady) {
 		wifi_status = WIFI_STATUS_INIT_FW_FAIL;
 		handle->event_fw_dump = MFALSE;
-		if (handle->ops.reg_dbg)
+		if (handle->ops.reg_dbg
+#ifdef PCIE
+		    && !IS_PCIEAW693(handle->card_type)
+#endif
+		)
 			handle->ops.reg_dbg(handle);
 #ifdef DEBUG_LEVEL1
 		if (drvdbg & MFW_D) {
@@ -11358,7 +11398,7 @@ t_void woal_store_ssu_dump(moal_handle *phandle, mlan_event *pmevent)
 		PRINTM(MERROR, "event_len is invalid\n");
 	}
 
-	PRINTM(MINFO, "ssu dump event: evt_len=%u toal_len=%llu\n",
+	PRINTM(MINFO, "ssu dump event: evt_len=%d toal_len=%llu\n",
 	       pmevent->event_len, phandle->ssu_dump_len);
 	PRINTM(MMSG, "==== SSU DUMP END: %ld bytes ====\n",
 	       (long int)phandle->ssu_dump_len);
@@ -11903,7 +11943,11 @@ static int woal_dump_moal_drv_info(moal_handle *phandle, t_u8 *buf)
 	ptr += snprintf(ptr, MAX_BUF_LEN,
 			"------------moal_debug_info End-------------\n");
 
-	if (phandle->ops.dump_reg_info)
+	if (phandle->ops.dump_reg_info
+#ifdef PCIE
+	    && !IS_PCIEAW693(phandle->card_type)
+#endif
+	)
 		ptr += phandle->ops.dump_reg_info(phandle, ptr);
 
 	LEAVE();
@@ -12864,7 +12908,11 @@ void woal_moal_debug_info(moal_private *priv, moal_handle *handle, u8 flag)
 #ifdef PCIE
 	if (IS_PCIE(phandle->card_type)) {
 #ifdef DEBUG_LEVEL1
-		if (phandle->ops.reg_dbg) {
+		if (phandle->ops.reg_dbg
+#ifdef PCIE
+		    && !IS_PCIEAW693(phandle->card_type)
+#endif
+		) {
 			phandle->ops.reg_dbg(phandle);
 		}
 #endif
@@ -12875,8 +12923,11 @@ void woal_moal_debug_info(moal_private *priv, moal_handle *handle, u8 flag)
 		if (flag && ((phandle->main_state == MOAL_END_MAIN_PROCESS) ||
 			     (phandle->main_state == MOAL_STATE_IDLE))) {
 #ifdef DEBUG_LEVEL1
-			if (phandle->ops.reg_dbg &&
-			    (drvdbg & (MREG_D | MFW_D))) {
+			if (phandle->ops.reg_dbg && (drvdbg & (MREG_D | MFW_D))
+#ifdef PCIE
+			    && !IS_PCIEAW693(phandle->card_type)
+#endif
+			) {
 				phandle->ops.reg_dbg(phandle);
 			}
 #endif
@@ -13754,6 +13805,29 @@ done:
 }
 
 /**
+ * @brief               After STA is connected or UAP BSS_START, start recording
+ * active/busy time
+ *
+ * @param priv          a pointer to moal_private structure
+ *
+ * @return              N/A
+ *
+ */
+void woal_survey_dump_reset(moal_private *priv)
+{
+	mlan_ds_get_stats stats;
+
+	memset(&stats, 0, sizeof(mlan_ds_get_stats));
+	if (MLAN_STATUS_SUCCESS ==
+	    woal_get_stats_info(priv, MOAL_IOCTL_WAIT, &stats)) {
+		priv->cca_cnt_base = stats.cca_cnt_us;
+		priv->rx_airtime_base = stats.rxAirtime_us;
+		priv->tx_airtime_base = stats.txAirtime_us;
+	}
+	moal_get_host_time_ns(&priv->bss_active_time);
+}
+
+/**
  *  @brief This workqueue function handles woal event queue
  *
  *  @param work    A pointer to work_struct
@@ -13929,6 +14003,24 @@ t_void woal_evt_work_queue(struct work_struct *work)
 		case WOAL_EVENT_PRINT_LINKSTATS:
 			woal_print_linkstats_info((moal_private *)evt->priv,
 						  MFALSE);
+			break;
+#ifdef UAP_SUPPORT
+		case WOAL_EVENT_AGCS:
+			if (evt->agcs_evt.type ==
+			    AGCS_EVENT_TYPE_PROCESS_EVENT) {
+				woal_process_agcs_event(
+					(moal_private *)evt->priv,
+					&evt->agcs_evt.stats);
+			} else if (evt->agcs_evt.type ==
+				   AGCS_EVENT_TYPE_SEL_CHANNEL) {
+				woal_process_ch_sel_and_switch(
+					(moal_private *)evt->priv,
+					&evt->agcs_evt);
+			}
+			break;
+#endif /* UAP_SUPPORT */
+		case WOAL_EVENT_SURVEY_DUMP_RESET:
+			woal_survey_dump_reset((moal_private *)evt->priv);
 			break;
 		default:
 			break;
@@ -14292,7 +14384,11 @@ t_void woal_main_work_queue(struct work_struct *work)
 	}
 	if (handle->reg_dbg == MTRUE) {
 		handle->reg_dbg = MFALSE;
-		if (handle->ops.reg_dbg)
+		if (handle->ops.reg_dbg
+#ifdef PCIE
+		    && !IS_PCIEAW693(handle->card_type)
+#endif
+		)
 			handle->ops.reg_dbg(handle);
 	}
 	if (handle->fw_dbg == MTRUE) {
@@ -15612,6 +15708,30 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 	moal_handle *ref_handle = NULL;
 
 	ENTER();
+	if ((handle->params.indrstcfg & 0xff) == 1) {
+		if (mode == FW_RELOAD_SDIO_INBAND_RESET ||
+		    mode == FW_RELOAD_PCIE_RESET ||
+		    mode == FW_RELOAD_SDIO_HW_RESET ||
+		    mode == FW_RELOAD_PCIE_INBAND_RESET) {
+			PRINTM(MERROR, "indrstcfg=1: mode %d is blocked\n",
+			       mode);
+			LEAVE();
+			return -EINVAL;
+		}
+	} else if ((handle->params.indrstcfg & 0xff) == 2) {
+		if (mode == FW_RELOAD_NO_EMULATION ||
+		    mode == FW_RELOAD_WITH_EMULATION) {
+			PRINTM(MERROR, "indrstcfg=2: mode %d is blocked\n",
+			       mode);
+			LEAVE();
+			return -EINVAL;
+		}
+	} else {
+		PRINTM(MERROR, "indrstcfg=0: IR mode is disabled\n");
+		LEAVE();
+		return -EINVAL;
+	}
+
 	if (phandle->fw_dump) {
 		PRINTM(MMSG, "Ignore fw reload req, fw dump is ongoing\n");
 		LEAVE();

@@ -1587,15 +1587,11 @@ mlan_status wlan_init_fw(pmlan_adapter pmadapter)
 #ifdef MFG_CMD_SUPPORT
 	if (pmadapter->mfg_mode != MTRUE) {
 #endif
-#ifdef SECURE_HOST
 		if (pmadapter->shc_secure_host) {
 			wlan_adapter_func_init(pmadapter);
 		} else {
-#endif
 			wlan_adapter_get_hw_spec(pmadapter);
-#ifdef SECURE_HOST
 		}
-#endif
 #ifdef MFG_CMD_SUPPORT
 	}
 #ifdef PCIE
@@ -1619,7 +1615,9 @@ mlan_status wlan_init_fw(pmlan_adapter pmadapter)
 			}
 		}
 	}
-	if (((pmadapter->card_type) & 0xff) == CARD_TYPE_AW693) {
+
+	if (((pmadapter->card_type) & 0xff) == CARD_TYPE_AW693 &&
+	    (!pmadapter->shc_secure_host)) {
 		ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
 				       HostCmd_ACT_GEN_SET, 0, MNULL, MNULL);
 		if (ret) {
@@ -1679,7 +1677,10 @@ static void wlan_update_hw_spec(pmlan_adapter pmadapter)
 		pmadapter->fw_bands |= BAND_AN;
 	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GN))
 		pmadapter->fw_bands &= ~BAND_GN;
-
+	if (!(pmadapter->fw_bands & BAND_A) && (pmadapter->fw_bands & BAND_AAC))
+		pmadapter->fw_bands &= ~BAND_AAC;
+	if (!(pmadapter->fw_bands & BAND_G) && (pmadapter->fw_bands & BAND_GAC))
+		pmadapter->fw_bands &= ~BAND_GAC;
 	pmadapter->config_bands = pmadapter->fw_bands;
 	for (i = 0; i < pmadapter->priv_num; i++) {
 		if (pmadapter->priv[i])

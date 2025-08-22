@@ -5356,15 +5356,10 @@ static mlan_status wlan_misc_cfg_ioctl(pmlan_adapter pmadapter,
 		status =
 			wlan_misc_auth_assoc_timeout_cfg(pmadapter, pioctl_req);
 		break;
-	case MLAN_OID_MISC_FOUNDRY_TYPE:
-		status = wlan_misc_ioctl_foundry_type(pmadapter, pioctl_req);
-		break;
-
 	case MLAN_OID_MISC_PER_BAND_TXPWR_CAP:
 		status = wlan_misc_ioctl_per_band_txpwr_cap(pmadapter,
 							    pioctl_req);
 		break;
-
 	default:
 		if (pioctl_req)
 			pioctl_req->status_code = MLAN_ERROR_IOCTL_INVALID;

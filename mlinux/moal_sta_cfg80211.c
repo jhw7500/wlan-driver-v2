@@ -7196,13 +7196,12 @@ static int woal_cfg80211_dump_survey(struct wiphy *wiphy,
 	     (priv->bss_started && (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_UAP))) &&
 	    pchan_stats[idx].chan_num == priv->channel) {
 		memset(&stats, 0, sizeof(mlan_ds_get_stats));
-		if (woal_get_stats_info(priv, MOAL_IOCTL_WAIT, &stats) ==
-		    MLAN_STATUS_SUCCESS) {
+		if (MLAN_STATUS_SUCCESS ==
+		    woal_get_stats_info(priv, MOAL_IOCTL_WAIT, &stats)) {
 			if (stats.cca_cnt_us != 0) {
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 0, 0)
-				survey->filled |= SURVEY_INFO_IN_USE |
-						  SURVEY_INFO_TIME |
+				survey->filled |= SURVEY_INFO_TIME |
 						  SURVEY_INFO_TIME_BUSY |
 						  SURVEY_INFO_TIME_RX |
 						  SURVEY_INFO_TIME_TX;

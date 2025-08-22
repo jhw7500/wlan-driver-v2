@@ -1624,6 +1624,7 @@ static mlan_status wlan_uap_cmd_sys_configure(pmlan_private pmpriv,
 	MrvlIEtypes_chan_bw_oper_t *poper_class_tlv = MNULL;
 	t_u8 length = 0;
 	t_u8 curr_oper_class = 1;
+	t_u8 global_oper_class = 0;
 	t_u8 *oper_class_ie = (t_u8 *)sys_config->tlv_buffer;
 	t_u16 i = 0;
 	t_u8 ac = 0;
@@ -1812,7 +1813,7 @@ static mlan_status wlan_uap_cmd_sys_configure(pmlan_private pmpriv,
 					poper_class_tlv->ds_chan_bw_oper.channel,
 					poper_class_tlv->ds_chan_bw_oper
 						.bandwidth,
-					&curr_oper_class);
+					&curr_oper_class, &global_oper_class);
 				if (ret != MLAN_STATUS_SUCCESS) {
 					PRINTM(MERROR,
 					       "Can not get current oper class! bandwidth = %d, channel = %d\n",
@@ -3228,9 +3229,10 @@ static mlan_status wlan_uap_cmd_snmp_mib(pmlan_private pmpriv,
 		case User_band_config_i:
 			psnmp_mib->oid = wlan_cpu_to_le16((t_u16)cmd_oid);
 			psnmp_mib->buf_size = wlan_cpu_to_le16(sizeof(t_u16));
-			ul_temp = *(t_u32 *)pdata_buf;
-			*((t_u16 *)(psnmp_mib->value)) =
-				wlan_cpu_to_le16((t_u16)ul_temp);
+			ul_temp =
+				read_u32_unaligned(pmpriv->adapter, pdata_buf);
+			write_u16_unaligned(pmpriv->adapter, psnmp_mib->value,
+					    wlan_cpu_to_le16((t_u16)ul_temp));
 			cmd->size += sizeof(t_u16);
 			break;
 		case StopDeauth_i:
@@ -3353,7 +3355,8 @@ static mlan_status wlan_uap_ret_snmp_mib(pmlan_private pmpriv,
 		while (tlv_buf_left >= sizeof(MrvlIEtypes_snmp_oid_t)) {
 			/* oid_offset cannot overflow struct size */
 			// coverity[overflow_sink:SUPPRESS]
-			tlv_type = wlan_le16_to_cpu(*(t_u16 *)psnmp_oid);
+			tlv_type = wlan_le16_to_cpu(
+				read_u16_unaligned(pmadapter, psnmp_oid));
 			psnmp_oid += sizeof(t_u16) + sizeof(t_u16);
 			// coverity[cert_arr30_c_violation:SUPPRESS]
 			// coverity[overrun:SUPPRESS]
@@ -3609,6 +3612,12 @@ static mlan_status wlan_uap_ret_get_log(pmlan_private pmpriv,
 			wlan_le32_to_cpu(pget_log->TXpwrMethod);
 		pget_info->param.stats.isDPDdone =
 			wlan_le32_to_cpu(pget_log->isDPDdone);
+		pget_info->param.stats.cca_cnt_us =
+			wlan_le64_to_cpu(pget_log->cca_cnt_us);
+		pget_info->param.stats.rxAirtime_us =
+			wlan_le64_to_cpu(pget_log->rxAirtime_us);
+		pget_info->param.stats.txAirtime_us =
+			wlan_le64_to_cpu(pget_log->txAirtime_us);
 
 		if (pmpriv->adapter->getlog_enable) {
 			pget_info->param.stats.tx_frag_cnt =
@@ -5092,6 +5101,242 @@ static mlan_status wlan_ret_stats(pmlan_private pmpriv,
 	return MLAN_STATUS_SUCCESS;
 }
 
+/**
+ *  @brief This function handles the command response of uap agcs config
+ *
+ *  @param pmpriv       A pointer to mlan_private structure
+ *  @param resp         A pointer to HostCmd_DS_COMMAND
+ *  @param pioctl_buf   A pointer to mlan_ioctl_req structure
+ *
+ *  @return             MLAN_STATUS_SUCCESS
+ */
+static mlan_status wlan_uap_ret_agcs_cfg(pmlan_private pmpriv,
+					 HostCmd_DS_COMMAND *resp,
+					 mlan_ioctl_req *pioctl_buf)
+{
+	HostCmd_DS_AGCS_CFG *pcmd_agcs_cfg =
+		(HostCmd_DS_AGCS_CFG *)&resp->params.agcs_cfg;
+	mlan_ds_misc_cfg *misc_cfg = MNULL;
+	mlan_ds_agcs_cfg *pagcs_cfg = MNULL;
+
+	ENTER();
+
+	if (pioctl_buf && pioctl_buf->action == MLAN_ACT_GET) {
+		misc_cfg = (mlan_ds_misc_cfg *)pioctl_buf->pbuf;
+		pagcs_cfg = (mlan_ds_agcs_cfg *)&misc_cfg->param.agcs_cfg;
+		pagcs_cfg->features = wlan_le32_to_cpu(pcmd_agcs_cfg->features);
+		pagcs_cfg->avg_threshold_percentage =
+			pcmd_agcs_cfg->avg_threshold_percentage;
+		pagcs_cfg->rx_min_pkt_count =
+			wlan_le16_to_cpu(pcmd_agcs_cfg->rx_min_pkt_count);
+		pagcs_cfg->tx_min_pkt_count =
+			wlan_le16_to_cpu(pcmd_agcs_cfg->tx_min_pkt_count);
+		pagcs_cfg->sample_time =
+			wlan_le32_to_cpu(pcmd_agcs_cfg->sample_time);
+		pagcs_cfg->sample_count_window =
+			pcmd_agcs_cfg->sample_count_window;
+		pagcs_cfg->continuous_hit_count =
+			pcmd_agcs_cfg->continuous_hit_count;
+		pagcs_cfg->nf_margin = pcmd_agcs_cfg->nf_margin;
+		pagcs_cfg->nav_mitigation_th = pcmd_agcs_cfg->nav_mitigation_th;
+		pagcs_cfg->ch_th = pcmd_agcs_cfg->ch_th;
+	}
+
+	LEAVE();
+	return MLAN_STATUS_SUCCESS;
+}
+
+/**
+ *  @brief This function prepares command of AGCS_CFG
+ *
+ *  @param pmpriv       A pointer to mlan_private structure
+ *  @param cmd          A pointer to HostCmd_DS_COMMAND structure
+ *  @param cmd_action
+ *  @param pdata_buf    A pointer to data buffer
+ *  @return             MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
+ */
+static mlan_status wlan_cmd_apcmd_agcs_cfg(pmlan_private pmpriv,
+					   HostCmd_DS_COMMAND *cmd,
+					   t_u16 cmd_action, t_void *pdata_buf)
+{
+	HostCmd_DS_AGCS_CFG *pcmd_agcs_cfg =
+		(HostCmd_DS_AGCS_CFG *)&cmd->params.agcs_cfg;
+	mlan_ds_agcs_cfg *pagcs_cfg = (mlan_ds_agcs_cfg *)pdata_buf;
+	ENTER();
+
+	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_APCMD_AGCS_CFG);
+	cmd->size = wlan_cpu_to_le16(sizeof(HostCmd_CMD_APCMD_AGCS_CFG) +
+				     S_DS_GEN + sizeof(HostCmd_DS_AGCS_CFG));
+
+	pcmd_agcs_cfg->action = wlan_cpu_to_le16(cmd_action);
+	pcmd_agcs_cfg->features = wlan_cpu_to_le32(pagcs_cfg->features);
+	pcmd_agcs_cfg->avg_threshold_percentage =
+		pagcs_cfg->avg_threshold_percentage;
+	pcmd_agcs_cfg->rx_min_pkt_count =
+		wlan_cpu_to_le32(pagcs_cfg->rx_min_pkt_count);
+	pcmd_agcs_cfg->tx_min_pkt_count =
+		wlan_cpu_to_le32(pagcs_cfg->tx_min_pkt_count);
+	pcmd_agcs_cfg->sample_time = wlan_cpu_to_le32(pagcs_cfg->sample_time);
+	pcmd_agcs_cfg->sample_count_window = pagcs_cfg->sample_count_window;
+	pcmd_agcs_cfg->continuous_hit_count = pagcs_cfg->continuous_hit_count;
+	pcmd_agcs_cfg->nf_margin = pagcs_cfg->nf_margin;
+	pcmd_agcs_cfg->nav_mitigation_th = pagcs_cfg->nav_mitigation_th;
+	pcmd_agcs_cfg->ch_th = pagcs_cfg->ch_th;
+
+	LEAVE();
+	return MLAN_STATUS_SUCCESS;
+}
+
+/**
+ *  @brief This function handle the agiled cs event
+ *
+ *  @param priv    A pointer to mlan_private structure
+ *  @param pbuf    A pointer to mlan_buffer which has event content.
+ *
+ *  @return        MLAN_STATUS_SUCCESS
+ */
+static mlan_status wlan_process_agcs_event(pmlan_private priv,
+					   pmlan_buffer pmbuf)
+{
+	pmlan_adapter pmadapter = priv->adapter;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+	t_u8 *evt_buf = MNULL;
+	pmlan_callbacks pcb = &pmadapter->callbacks;
+	pmlan_event pevent;
+	pagcs_event pacs_start_event = MNULL;
+	agcs_stats_info_t *stats = MNULL;
+
+	ENTER();
+
+	stats = (agcs_stats_info_t *)(pmbuf->pbuf + pmbuf->data_offset +
+				      sizeof(t_u32));
+
+	if (stats->type == AGCS_TYPE_STATS_REPORT) {
+		PRINTM(MMSG,
+		       "AGCS stats report ch_load=%d, noise=%d, nf_threshold=%d",
+		       stats->ch_load, stats->noise, stats->nf_threshold);
+		goto done;
+	} else if (stats->type == AGCS_TYPE_CS_TRIGGER) {
+		/* Allocate memory for event buffer */
+		status = pcb->moal_malloc(pmadapter->pmoal_handle,
+					  MAX_EVENT_SIZE, MLAN_MEM_DEF,
+					  &evt_buf);
+		if ((status == MLAN_STATUS_SUCCESS) && evt_buf) {
+			sta_node *sta_ptr;
+			t_u8 oper_class = 0;
+			t_u8 global_oper_class = 0;
+			t_u8 bandwidth;
+
+			if (wlan_is_station_list_empty(priv)) {
+				PRINTM(MERROR, "Not found any connected STA");
+				status = MLAN_STATUS_FAILURE;
+				goto done;
+			}
+			sta_ptr = (sta_node *)util_peek_list(
+				priv->adapter->pmoal_handle, &priv->sta_list,
+				priv->adapter->callbacks.moal_spin_lock,
+				priv->adapter->callbacks.moal_spin_unlock);
+			if (!sta_ptr) {
+				PRINTM(MERROR, "Not found any connected STA");
+				status = MLAN_STATUS_FAILURE;
+				goto done;
+			}
+			pevent = (pmlan_event)evt_buf;
+			pacs_start_event = (pagcs_event)pevent->event_buf;
+			pacs_start_event->type = AGCS_EVENT_TYPE_PROCESS_EVENT;
+			pacs_start_event->stats.ch_load =
+				(t_u16)wlan_le16_to_cpu(stats->ch_load);
+			pacs_start_event->stats.noise =
+				(t_s16)wlan_le16_to_cpu(stats->noise);
+			pacs_start_event->stats.nf_threshold =
+				(t_s16)wlan_le16_to_cpu(stats->nf_threshold);
+			pacs_start_event->stats.all_sta_ecs = MTRUE;
+			pacs_start_event->stats.all_sta_6g = MTRUE;
+			switch (priv->uap_bandwidth) {
+			case CHAN_BW_20MHZ:
+				bandwidth = BW_20MHZ;
+				break;
+			case CHAN_BW_40MHZ:
+				bandwidth = BW_40MHZ;
+				break;
+			case CHAN_BW_80MHZ:
+				bandwidth = BW_80MHZ;
+				break;
+			default:
+				bandwidth = BW_20MHZ;
+				break;
+			}
+
+			wlan_get_curr_oper_class(priv, priv->uap_channel,
+						 bandwidth, &oper_class,
+						 &global_oper_class);
+			while (sta_ptr &&
+			       (sta_ptr != (sta_node *)&priv->sta_list)) {
+				PRINTM(MCMND,
+				       "AGCS sta mac_addr" MACSTR
+				       " ExtChanSwitching:%d is_11ax_enabled:%d OperClass:%d\n",
+				       MAC2STR(sta_ptr->mac_addr),
+				       sta_ptr->ExtCap.ext_cap.ExtChanSwitching,
+				       sta_ptr->is_11ax_enabled,
+				       sta_ptr->OperClass.data[0]);
+
+				if ((sta_ptr->ExtCap.ext_cap.ExtChanSwitching ==
+				     0) &&
+				    (global_oper_class != 128)) {
+					pacs_start_event->stats.all_sta_ecs =
+						MFALSE;
+				}
+				if (sta_ptr->is_11ax_enabled == 0) {
+					pacs_start_event->stats.all_sta_6g =
+						MFALSE;
+				} else {
+					int i;
+					t_bool t_support_6g = MFALSE;
+
+					for (i = 0;
+					     i <
+					     sta_ptr->OperClass.ieee_hdr.len;
+					     i++) {
+						if (is_6ghz_op_class(
+							    sta_ptr->OperClass
+								    .data[i]) ==
+						    MTRUE) {
+							t_support_6g = MTRUE;
+							break;
+						}
+					}
+					pacs_start_event->stats.all_sta_6g &=
+						t_support_6g;
+				}
+				sta_ptr = sta_ptr->pnext;
+			}
+			PRINTM(MCMND, "AGCS all_sta_ecs:%d all_sta_6g:%d",
+			       pacs_start_event->stats.all_sta_ecs,
+			       pacs_start_event->stats.all_sta_6g);
+
+			/* Send event to moal */
+			pevent->bss_index = priv->bss_index;
+			pevent->event_id = MLAN_EVENT_ID_FW_AGCS_TRIGGER;
+			/* Event length is the agcs_event length in byte */
+			pevent->event_len = sizeof(agcs_event);
+			/* keep agcs_info in pmadapter */
+			memcpy_ext(pmadapter, &pmadapter->agcs_info,
+				   &pacs_start_event->stats, sizeof(agcs_stats),
+				   sizeof(agcs_stats));
+			status =
+				wlan_recv_event(priv, pevent->event_id, pevent);
+		}
+	}
+
+done:
+
+	if (evt_buf)
+		pcb->moal_mfree(pmadapter->pmoal_handle, evt_buf);
+
+	LEAVE();
+	return status;
+}
+
 /********************************************************
 			Global Functions
 ********************************************************/
@@ -5578,6 +5823,11 @@ mlan_status wlan_ops_uap_prepare_cmd(t_void *priv, t_u16 cmd_no,
 						      cmd_action, pdata_buf);
 		break;
 
+	case HostCmd_CMD_APCMD_AGCS_CFG:
+		ret = wlan_cmd_apcmd_agcs_cfg(pmpriv, cmd_ptr, cmd_action,
+					      pdata_buf);
+		break;
+
 	default:
 		PRINTM(MERROR, "PREP_CMD: unknown command- %#x\n", cmd_no);
 		if (pioctl_req)
@@ -6056,6 +6306,10 @@ mlan_status wlan_ops_uap_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 		break;
 
 	case HostCmd_CMD_MCLIENT_SCHEDULE_CFG:
+		break;
+
+	case HostCmd_CMD_APCMD_AGCS_CFG:
+		ret = wlan_uap_ret_agcs_cfg(pmpriv, resp, pioctl_buf);
 		break;
 
 	default:
@@ -6667,6 +6921,23 @@ mlan_status wlan_ops_uap_process_event(t_void *priv)
 		wlan_process_sta_ps_change_event(priv, pmbuf);
 		break;
 
+	case EVENT_AGCS_REPORT:
+		PRINTM(MEVENT, "EVENT: AGCS report\n");
+		wlan_process_agcs_event(priv, pmbuf);
+		break;
+
+	case EVENT_WIFI_CHANNEL_AVOID_LIST:
+		PRINTM(MEVENT, "EVENT: EVENT_WIFI_CHANNEL_AVOID_LIST\n");
+		pevent->event_id = MLAN_EVENT_ID_FW_WIFI_CHANNEL_AVOID_LIST;
+		pevent->bss_index = pmpriv->bss_index;
+		pevent->event_len = pmbuf->data_len;
+		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
+			   pmbuf->pbuf + pmbuf->data_offset, pevent->event_len,
+			   pevent->event_len);
+		DBG_HEXDUMP(MCMD_D, "WiFi channel avoid list",
+			    (t_u8 *)pevent->event_buf, pevent->event_len);
+		wlan_recv_event(pmpriv, pevent->event_id, pevent);
+		break;
 	default:
 		pevent->event_id = MLAN_EVENT_ID_DRV_PASSTHRU;
 		break;

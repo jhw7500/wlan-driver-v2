@@ -725,7 +725,6 @@ static inline t_void wlan_usb_tx_send_aggr(pmlan_adapter pmadapter,
 	} else if (pusb_tx_aggr->aggr_ctrl.aggr_mode ==
 		   MLAN_USB_AGGR_MODE_LEN_V2) {
 		t_u8 *payload = pmbuf_aggr->pbuf + pmbuf_aggr->data_offset;
-
 		write_u16_unaligned(pmadapter, &payload[0],
 				    wlan_cpu_to_le16(pmbuf_aggr->data_len));
 		write_u16_unaligned(pmadapter, &payload[2],
@@ -901,7 +900,7 @@ mlan_status wlan_usb_deaggr_rx_pkt(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 	RxPD *prx_pd;
 	t_u8 *pdata;
 	t_s32 aggr_len;
-	pmlan_buffer pdeaggr_buf = MNULL;
+	pmlan_buffer pdeaggr_buf;
 	t_u16 max_loop_cnt = 0;
 	/* (8 * (MLAN_USB_BLOCK_SIZE * 4)) */
 #define MAX_USB_RX_DATA_SIZE (MLAN_USB_RX_MAX_AGGR_NUM * MLAN_USB_MAX_PKT_SIZE)

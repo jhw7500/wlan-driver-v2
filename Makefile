@@ -173,7 +173,7 @@ APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 #############################################################################
 
 	ccflags-y += -I$(KERNELDIR)/include
-	ccflags-y += -DMLAN_RELEASE_VERSION='"540"'
+	ccflags-y += -DMLAN_RELEASE_VERSION='"540.p7"'
 
 	ccflags-y += -DFPNUM='"92"'
 
@@ -599,6 +599,12 @@ ccflags-y += -I$(src)/nanotls/include
 ccflags-y += -I$(src)/nanotls/lib/include
 ccflags-y += -I$(src)/nanotls/lib/aes/include
 
+$(info $(PWD))
+$(info $(src))
+ccflags-y += -I$(PWD)/nanotls/include
+ccflags-y += -I$(PWD)/nanotls/lib/include
+ccflags-y += -I$(PWD)/nanotls/lib/aes/include
+
 ccflags-y += -I$(src)/include
 ccflags-y += -I$(src)/lib/include
 ccflags-y += -I$(src)/lib/aes/include
@@ -619,9 +625,9 @@ MOALOBJS += nanotls/lib/src/blockwise.o \
             nanotls/src/nanotls-device.o \
             nanotls/src/nanotls-data.o \
             mlinux/moal_shc.o
-endif
 
-obj-$(CONFIG_NXP_WLAN_DRIVER) := mlan.o
+
+obj-m := mlan.o
 mlan-objs := $(MLANOBJS)
 
 ifeq ($(CONFIG_MUSB),y)
