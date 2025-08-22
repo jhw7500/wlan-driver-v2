@@ -3,7 +3,7 @@
  *  @brief This file contains the secure host interface functions.
  *
  *
- *  Copyright 2025-2026 NXP
+ *  Copyright 2025 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -20,23 +20,14 @@
  *
  */
 
-#include "nanotls-device.h"
-#include "nanotls-host.h"
-#include "nanotls-common.h"
-
-#ifdef INT_MAX
-#undef INT_MAX
-#endif
-
-#ifdef UINT_MAX
-#undef UINT_MAX
-#endif
-
 #include "mlan.h"
-#include "mlan_init.h"
 #include "mlan_util.h"
 #include "mlan_fw.h"
 #include "mlan_shc.h"
+#include "mlan_shc_key.h"
+#include "nanotls-device.h"
+#include "nanotls-host.h"
+#include "nanotls-common.h"
 
 /********************************************************
 			Local Variables
@@ -68,31 +59,17 @@ static mlan_status mlan_shc_data_decrypt(pmlan_adapter pmadapter, t_u8 *buf,
 					 t_u32 len)
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
+
 	pmlan_callbacks pcb = &pmadapter->callbacks;
 	t_void *enc_data = MNULL;
-
-	if (!len || len < SECURE_HOST_TAG_LEN)
-		return MLAN_STATUS_FAILURE;
 
 	ret = pcb->moal_malloc(pmadapter->pmoal_handle, len, MLAN_MEM_DEF,
 			       (t_u8 **)&enc_data);
 	if (ret != MLAN_STATUS_SUCCESS)
 		return ret;
 
-	/* OVERRUN & cert_arr30_c_violation:
-	 * len=16 (tag-only, no payload) is valid for APCMD_BSS_STOP command.
-	 * The decrypt function handles this case correctly.
-	 *
-	 * cert_str31_c_violation:
-	 * This handles binary encrypted WiFi data, NOT C strings.
-	 * No null termination needed for binary data.
-	 */
-	// coverity[OVERRUN:SUPPRESS]
-	// coverity[cert_arr30_c_violation:SUPPRESS]
-	// coverity[cert_str31_c_violation:SUPPRESS]
 	ret = pcb->moal_secure_host_data_decrypt(pmadapter->pmoal_handle,
 						 &enc_data, (void *)&buf, len);
-	// coverity[misra_c_2012_rule_17_7_violation:SUPPRESS]
 	pcb->moal_mfree(pmadapter->pmoal_handle, enc_data);
 
 	return ret;
@@ -213,7 +190,6 @@ mlan_status wlan_shc_secure_hostcmd_process(pmlan_adapter pmadapter,
 	t_u32 cmd_size = 0;
 
 	if ((!(pcmd->command & HostCmd_Encrypted_BIT)) &&
-	    pcmd->size >= S_DS_GEN &&
 	    (mlan_shc_data_encrypt(pmadapter, ((t_u8 *)pcmd + S_DS_GEN),
 				   (pcmd->size - S_DS_GEN)) !=
 	     MLAN_STATUS_FAILURE)) {
@@ -240,16 +216,10 @@ mlan_status wlan_shc_secure_hostresp_process(pmlan_adapter pmadapter,
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 
-	t_u16 cmd = wlan_le16_to_cpu(resp->command);
-	t_u16 cmd_size = wlan_le16_to_cpu(resp->size);
-
-	if ((cmd & HostCmd_Encrypted_BIT)) {
-		if (cmd_size <= S_DS_GEN)
-			return MLAN_STATUS_FAILURE;
-
+	if (wlan_le16_to_cpu(resp->command) & HostCmd_Encrypted_BIT) {
 		ret = mlan_shc_data_decrypt(pmadapter,
 					    ((t_u8 *)resp + S_DS_GEN),
-					    (cmd_size - S_DS_GEN));
+					    (resp->size - S_DS_GEN));
 		if (ret != MLAN_STATUS_FAILURE) {
 			resp->command &= ~HostCmd_Encrypted_BIT;
 			resp->size = wlan_le16_to_cpu(resp->size -
@@ -330,8 +300,7 @@ mlan_status mlan_shc_handshake(pmlan_adapter pmadapter, t_u8 type, t_void *msg)
 	switch (type) {
 	case TLS_HOST_HELLO:
 		if (!pcb->moal_secure_host_init(pmadapter->pmoal_handle,
-						pmadapter->key,
-						pmadapter->uuid) &&
+						ecdsa_pub) &&
 		    !pcb->moal_secure_host_do_hello(pmadapter->pmoal_handle,
 						    &buf)) {
 			ret = mlan_shc_prepare_msg(pmadapter, buf);
@@ -342,7 +311,7 @@ mlan_status mlan_shc_handshake(pmlan_adapter pmadapter, t_u8 type, t_void *msg)
 		if (pcb->moal_secure_host_device_hello_rcvd(
 			    pmadapter->pmoal_handle, msg))
 			break;
-		fallthrough;
+		/* fall through */
 	case TLS_HOST_FINISHED:
 		if (!pcb->moal_secure_host_do_finished(pmadapter->pmoal_handle,
 						       &buf) &&
@@ -356,6 +325,5 @@ mlan_status mlan_shc_handshake(pmlan_adapter pmadapter, t_u8 type, t_void *msg)
 		break;
 	}
 
-	// coverity[leaked_storage:SUPPRESS]
 	return ret;
 }

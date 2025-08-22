@@ -303,30 +303,6 @@ static mlan_status wlan_cmd_802_11_snmp_mib(pmlan_private pmpriv,
 			cmd->size += sizeof(t_u16);
 		}
 		break;
-	case Ignore_tpe_i:
-		psnmp_mib->oid = wlan_cpu_to_le16((t_u16)Ignore_tpe_i);
-		if (cmd_action == HostCmd_ACT_GEN_SET) {
-			psnmp_mib->query_type =
-				wlan_cpu_to_le16(HostCmd_ACT_GEN_SET);
-			psnmp_mib->buf_size = wlan_cpu_to_le16(sizeof(t_u16));
-			ul_temp = *(t_u32 *)pdata_buf;
-			*((t_u16 *)(psnmp_mib->value)) =
-				wlan_cpu_to_le16((t_u16)ul_temp);
-			cmd->size += sizeof(t_u16);
-		}
-		break;
-	case User_band_config_i:
-		psnmp_mib->oid = wlan_cpu_to_le16((t_u16)User_band_config_i);
-		if (cmd_action == HostCmd_ACT_GEN_SET) {
-			psnmp_mib->query_type =
-				wlan_cpu_to_le16(HostCmd_ACT_GEN_SET);
-			psnmp_mib->buf_size = wlan_cpu_to_le16(sizeof(t_u16));
-			ul_temp = *(t_u32 *)pdata_buf;
-			*((t_u16 *)(psnmp_mib->value)) =
-				wlan_cpu_to_le16((t_u16)ul_temp);
-			cmd->size += sizeof(t_u16);
-		}
-		break;
 	case WwsMode_i:
 		psnmp_mib->oid = wlan_cpu_to_le16((t_u16)WwsMode_i);
 		if (cmd_action == HostCmd_ACT_GEN_SET) {
@@ -1212,7 +1188,8 @@ static mlan_status wlan_cmd_802_11_sleep_period(pmlan_private pmpriv,
 			LEAVE();
 			return MLAN_STATUS_FAILURE;
 		}
-		pcmd_sleep_pd->sleep_pd = wlan_cpu_to_le16(*(t_u16 *)pdata_buf);
+		pcmd_sleep_pd->sleep_pd = wlan_cpu_to_le16(
+			read_u16_unaligned(pmpriv->adapter, pdata_buf));
 	}
 	pcmd_sleep_pd->action = wlan_cpu_to_le16(cmd_action);
 
@@ -4039,14 +4016,12 @@ static mlan_status wlan_cmd_auth_assoc_timeout_cfg(pmlan_private pmpriv,
 	return MLAN_STATUS_SUCCESS;
 }
 
-#ifdef SECURE_HOST
 mlan_status wlan_cmd_secure_host(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
 				 t_void *pdata_buf)
 {
 	HostCmd_DS_SECURE_HOST *shc = &cmd->params.shc;
 	SECURE_HOST_MSG_HEADER *tls_hdr = (SECURE_HOST_MSG_HEADER *)pdata_buf;
 	t_u16 tls_len = tls_hdr->len;
-
 	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_SECURE_HOST);
 	cmd->size = wlan_cpu_to_le16(S_DS_GEN + sizeof(shc->action) + tls_len);
 
@@ -4057,7 +4032,6 @@ mlan_status wlan_cmd_secure_host(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
 }
-#endif
 
 /**
  *  @brief This function prepare the command before sending to firmware.
@@ -4678,6 +4652,10 @@ mlan_status wlan_ops_sta_prepare_cmd(t_void *priv, t_u16 cmd_no,
 	case HostCmd_CMD_AUTH_ASSOC_TIMEOUT_CFG:
 		ret = wlan_cmd_auth_assoc_timeout_cfg(pmpriv, cmd_ptr,
 						      cmd_action, pdata_buf);
+		break;
+
+	case HostCmd_CMD_SECURE_HOST:
+		ret = wlan_cmd_secure_host(pmpriv, cmd_ptr, pdata_buf);
 		break;
 	default:
 		PRINTM(MERROR, "PREP_CMD: unknown command- %#x\n", cmd_no);

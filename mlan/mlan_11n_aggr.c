@@ -286,7 +286,8 @@ static int wlan_form_amsdu_subframe(pmlan_adapter pmadapter, mlan_buffer *pmbuf,
 	total_len = (t_u16)(pkt_len + LLC_SNAP_LEN -
 			    ((2 * MLAN_MAC_ADDR_LENGTH) + sizeof(t_u16)));
 
-	*(t_u16 *)(amsdu_buf + amsdu_buf_offset) = mlan_htons(total_len);
+	write_u16_unaligned(pmadapter, amsdu_buf + amsdu_buf_offset,
+			    mlan_htons(total_len));
 
 	amsdu_buf_offset += sizeof(t_u16);
 	memcpy_ext(pmadapter, amsdu_buf + amsdu_buf_offset, &snap, LLC_SNAP_LEN,

@@ -42,9 +42,7 @@ typedef struct _secure_host_t {
 } secure_host_t;
 
 t_u8 moal_secure_host_get_msg_id(t_void *msg);
-mlan_status moal_secure_host_init(t_void *pmoal,
-				  const t_u8 key[NANOTLS_ECDSA_PUBLIC_KEY_SIZE],
-				  const t_u8 uuid[NANOTLS_UUID_LEN]);
+mlan_status moal_secure_host_init(t_void *pmoal, const t_u8 esdca_pub[64]);
 void moal_secure_host_cleanup(t_void *pmoal);
 mlan_status moal_secure_host_do_hello(t_void *pmoal, t_void **msg);
 mlan_status moal_secure_host_device_hello_rcvd(t_void *pmoal, t_void *msg);
