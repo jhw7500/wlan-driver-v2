@@ -31,8 +31,6 @@ Change log:
 #ifndef _MLAN_MAIN_H_
 #define _MLAN_MAIN_H_
 
-#include "nanotls-host.h"
-
 #ifdef DEBUG_LEVEL1
 extern t_void (*print_callback)(t_pvoid pmoal_handle, t_u32 level,
 				char *pformat, IN...);
@@ -726,7 +724,6 @@ typedef enum _WLAN_HARDWARE_STATUS {
 	WlanHardwareStatusReady,
 	WlanHardwareStatusGetHwSpec,
 	WlanHardwareStatusGetHwSpecdone,
-	WlanHardwareStatusSecHandshake,
 	WlanHardwareStatusInitializing,
 	WlanHardwareStatusInitdone,
 	WlanHardwareStatusReset,
@@ -3184,8 +3181,6 @@ struct _mlan_adapter {
 	/** agiled channel switch info */
 	agcs_stats agcs_info;
 #endif /* UAP_SUPPORT */
-
-	t_u32 shc_secure_host;
 };
 
 /** IPv4 ARP request header */
@@ -5303,11 +5298,5 @@ static INLINE t_bool wlan_is_6ghz_op_class(t_u8 op_class)
 }
 
 extern void print_chan_switch_block_event(t_u16 reason_code);
-
-mlan_status wlan_adapter_func_init(pmlan_adapter pmadapter);
-mlan_status wlan_cmd_secure_host(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
-				 t_pvoid pdata_buf);
-mlan_status wlan_process_secure_host_event(pmlan_private pmpriv, t_u8 *data,
-					   t_u32 len);
 
 #endif /* !_MLAN_MAIN_H_ */
