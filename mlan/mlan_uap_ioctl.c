@@ -2113,7 +2113,7 @@ static mlan_status wlan_uap_chan_switch_cnt_cfg(pmlan_adapter pmadapter,
  *
  *  @return             MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
  */
-mlan_status wlan_uap_agcs_cfg(pmlan_adapter pmadapter,
+static mlan_status wlan_uap_agcs_cfg(pmlan_adapter pmadapter,
 			      pmlan_ioctl_req pioctl_req)
 {
 	mlan_private *pmpriv = pmadapter->priv[pioctl_req->bss_index];
