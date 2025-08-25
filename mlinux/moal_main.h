@@ -2888,7 +2888,6 @@ typedef struct _moal_mod_para {
 	int tpe_ie_ignore;
 	/* make_before_break during roam */
 	int make_before_break;
-	int secure_host;
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);
@@ -3482,8 +3481,6 @@ struct _moal_handle {
 	/* fw cap and cap_ext */
 	mlan_hw_info hw_info;
 #endif /* UAP_SUPPORT */
-
-	void *secure;
 
 #ifdef DUMP_TO_PROC
 #if defined(PCIE)
