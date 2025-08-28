@@ -1403,7 +1403,7 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 		PRINTM(MINFO, "EVENT: Dump FW info\n");
 		if (pmadapter->cmd_timer_is_set) {
 			pcb->moal_stop_timer(pmadapter->pmoal_handle,
-					     pmadapter->pmlan_cmd_timer);
+					pmadapter->pmlan_cmd_timer);
 			/* Cancel command timeout timer */
 			pmadapter->cmd_timer_is_set = MFALSE;
 		}
