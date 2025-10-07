@@ -3124,6 +3124,9 @@ static int woal_mgmt_tx(moal_private *priv, const u8 *buf, size_t len,
 		goto done;
 	}
 	if (!new_ie_len) {
+		/* The moal_memcpy_ext call uses a pre-validated buffer with
+		 * tracked remain_len, ensuring no overflow.
+		 */
 		// coverity[overrun:SUPPRESS]
 		moal_memcpy_ext(priv->phandle,
 				pbuf + HEADER_SIZE + sizeof(packet_len) +
@@ -3132,6 +3135,9 @@ static int woal_mgmt_tx(moal_private *priv, const u8 *buf, size_t len,
 				remain_len);
 	} else {
 		/* new IEs post cleanup of 11ax IEs received from kernel */
+		/* The moal_memcpy_ext call uses a pre-validated buffer with
+		 * tracked remain_len, ensuring no overflow.
+		 */
 		// coverity[overrun:SUPPRESS]
 		// coverity[cert_arr30_c_violation: SUPPRESS]
 		moal_memcpy_ext(priv->phandle,
@@ -3962,6 +3968,13 @@ int woal_cfg80211_set_qos_map(struct wiphy *wiphy, struct net_device *dev,
 	/**clear dscp map*/
 	if (!qos_map) {
 		memset(priv->dscp_map, 0xFF, sizeof(priv->dscp_map));
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+		if (priv->qos_map) {
+			kfree(priv->qos_map);
+			priv->qos_map = NULL;
+		}
+#endif
+
 		goto done;
 	}
 
@@ -4024,6 +4037,25 @@ int woal_cfg80211_set_qos_map(struct wiphy *wiphy, struct net_device *dev,
 			PRINTM(MERROR, "Failed to set beacon wps/p2p ie\n");
 			goto done;
 		}
+
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+		if (!priv->qos_map) {
+			priv->qos_map = kzalloc(sizeof(struct cfg80211_qos_map),
+						GFP_KERNEL);
+			if (!priv->qos_map) {
+				PRINTM(MERROR,
+				       "Set QoS MAP: Failed to alloc memory\n");
+				LEAVE();
+				return ret;
+			}
+		}
+
+		moal_memcpy_ext(priv->phandle, priv->qos_map, qos_map,
+				sizeof(struct cfg80211_qos_map),
+				sizeof(struct cfg80211_qos_map));
+		DBG_HEXDUMP(MCMD_D, "AP: QoS Map", (t_u8 *)priv->qos_map,
+			    sizeof(struct cfg80211_qos_map));
+#endif
 	}
 
 done:
@@ -6067,6 +6099,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 					mcs_nss[1] = mcs_nss[0] |= 0x0c;
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6097,6 +6131,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6145,6 +6181,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 					mcs_nss[1] = mcs_nss[0] |= 0x0c;
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6187,6 +6225,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
