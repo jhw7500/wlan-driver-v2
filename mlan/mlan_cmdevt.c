@@ -792,7 +792,6 @@ static t_u8 *wlan_strstr(t_u8 *s1, t_u8 *s2)
 static const t_u8 *wlan_strchr(const t_u8 *s, int c)
 {
 	const t_u8 *pos = s;
-
 	while (*pos != '\0') {
 		if (*pos == (t_u8)c)
 			return pos;
@@ -830,7 +829,7 @@ static t_u32 wlan_process_hostcmd_cfg(pmlan_private pmpriv, t_u16 cfg_type,
 	mlan_adapter *pmadapter = MNULL;
 	mlan_callbacks *pcb = MNULL;
 	t_u8 hostcmd_flag = MFALSE;
-	t_u8 *temp = pos;
+	const t_u8 *temp = pos;
 	t_u8 len = 0;
 	char psd_name[50];
 	t_u8 *intf_p;
@@ -904,11 +903,14 @@ static t_u32 wlan_process_hostcmd_cfg(pmlan_private pmpriv, t_u16 cfg_type,
 		}
 		/* Excluding the 6E Mode based PSD string */
 		if (cfg_type == CFG_TYPE_HOSTCMD) {
-			if (*pos == 'r' || *pos == 'e' || *pos == 's') {
+			if ((start_raw == MFALSE) &&
+			    (*pos == 'r' || *pos == 'e' || *pos == 's')) {
 				memset(pmadapter, psd_name, 0,
 				       sizeof(psd_name));
 				len = 0;
-				while (*temp != ' ') {
+				while (((temp - data) < size) &&
+				       (*temp != ' ') &&
+				       (len < sizeof(psd_name) - 1)) {
 					temp++;
 					len++;
 				}
@@ -921,8 +923,10 @@ static t_u32 wlan_process_hostcmd_cfg(pmlan_private pmpriv, t_u16 cfg_type,
 				 * "rg_powerXX.bin" */
 				intf_p = wlan_strstr(psd_name, "PSD");
 				if (intf_p) {
-					while (*temp != '}') {
-						while (*temp != '\n')
+					while (((temp - data) < size) &&
+					       *temp != '}') {
+						while (((temp - data) < size) &&
+						       *temp != '\n')
 							temp++;
 						temp++;
 					}
@@ -3615,7 +3619,8 @@ mlan_status wlan_fill_hal_rtt_results(pmlan_private pmpriv,
 
 		rtt_result_elem->len = pos - rtt_result_elem->data;
 		/* Check the left length's validity */
-		if (event_left_len < (tlv_rtt_result_len + sizeof(tlv_rtt_result->header)))
+		if (event_left_len <
+		    (tlv_rtt_result_len + sizeof(tlv_rtt_result->header)))
 			break;
 		tlv += tlv_rtt_result_len + sizeof(tlv_rtt_result->header);
 		event_left_len -=
@@ -3989,14 +3994,16 @@ mlan_status wlan_ret_802_11_hs_cfg(pmlan_private pmpriv,
 	phs_cfg->action = wlan_le16_to_cpu(phs_cfg->action);
 	if (phs_cfg->action == HS_CONFIGURE) {
 		PRINTM(MCMND,
-		       "CMD_RESP: HS_CFG cmd reply result=%#x, action=0x%x conditions=0x%x gpio=0x%x gap=0x%x\n",
+		       "CMD_RESP: HS_CFG cmd reply result=%#x,"
+		       " action=0x%x conditions=0x%x gpio=0x%x gap=0x%x\n",
 		       resp->result, phs_cfg->action,
 		       phs_cfg->params.hs_config.conditions,
 		       phs_cfg->params.hs_config.gpio,
 		       phs_cfg->params.hs_config.gap);
 	} else {
 		PRINTM(MCMND,
-		       "CMD_RESP: HS_CFG cmd reply result=%#x, action=0x%x (Activate)\n",
+		       "CMD_RESP: HS_CFG cmd reply result=%#x,"
+		       " action=0x%x (Activate)\n",
 		       resp->result, phs_cfg->action);
 	}
 	if ((phs_cfg->action == HS_ACTIVATE &&

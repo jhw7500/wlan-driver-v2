@@ -5525,8 +5525,6 @@ mlan_status wlan_radio_ioctl_remain_chan_cfg(pmlan_adapter pmadapter,
 		    !radio_cfg->param.remain_chan.remove) {
 			PRINTM(MCMND, "Set New Remain on channe: chan=%d\n",
 			       radio_cfg->param.remain_chan.channel);
-			LEAVE();
-			return MLAN_STATUS_SUCCESS;
 		}
 	}
 

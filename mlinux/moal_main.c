@@ -100,6 +100,13 @@ struct semaphore AddRemoveCardSem;
 moal_handle *m_handle[MAX_MLAN_ADAPTER];
 static int reg_work;
 
+#if defined(USB) && defined(USB_CUSTOMER_VIDPID)
+static char *c_vidpid;
+#endif
+/********************************************************
+		Local Variables
+********************************************************/
+
 #ifdef SD8887
 static struct _card_info card_info_SD8887 = {
 	.embedded_supp = 1,
@@ -848,7 +855,8 @@ static struct _card_info card_info_SD8987 = {
 
 /** Driver version */
 char driver_version[MLAN_MAX_VER_STR_LEN] =
-	INTF_CARDTYPE KERN_VERSION "--" MLAN_RELEASE_VERSION "-("
+	INTF_CARDTYPE KERN_VERSION "--" MLAN_RELEASE_VERSION "-GPL"
+				   "-("
 				   "FP" FPNUM ")"
 #ifdef DEBUG_LEVEL2
 				   "-dbg"
@@ -2727,6 +2735,8 @@ mlan_status woal_init_sw(moal_handle *handle)
 	device.mclient_scheduling = handle->params.mclient_scheduling;
 	/* Clean up the mode_psd_string for 6E Indoor/Outdoor */
 	memset(handle->mode_psd_string, 0, sizeof(handle->mode_psd_string));
+	memset(handle->mode_psd_ru_string, 0,
+	       sizeof(handle->mode_psd_ru_string));
 
 	moal_memcpy_ext(handle, &device.callbacks, &woal_callbacks,
 			sizeof(mlan_callbacks), sizeof(mlan_callbacks));
@@ -3375,6 +3385,10 @@ static mlan_status woal_process_hostcmd_cfg(moal_private *priv, t_u8 *data,
 		if (*pos == '}') {
 			cmd_len = *((t_u16 *)(buf + strlen(CMD_STR) +
 					      sizeof(t_u32) + sizeof(t_u16)));
+			/* The destination pointer is within the allocated
+			 * buffer and the memcpy is not exceeding the buffer
+			 * size.
+			 */
 			// coverity[overrun-buffer-arg:SUPPRESS]
 			moal_memcpy_ext(priv->phandle, buf + strlen(CMD_STR),
 					&cmd_len, sizeof(t_u32), sizeof(t_u32));
@@ -3391,11 +3405,15 @@ static mlan_status woal_process_hostcmd_cfg(moal_private *priv, t_u8 *data,
 		}
 		/* 6E Mode based string parsing logic */
 		if ((priv->phandle->fw_bands & BAND_6G) &&
-		    (priv->phandle->mode_psd_string[0] != '\0')) {
-			if (*pos == 'r' || *pos == 'e' || *pos == 's') {
+		    ((priv->phandle->mode_psd_string[0] != '\0') ||
+		     (priv->phandle->mode_psd_ru_string[0] != '\0'))) {
+			if ((start_raw == MFALSE) &&
+			    (*pos == 'r' || *pos == 'e' || *pos == 's')) {
 				memset(psd_name, 0, sizeof(psd_name));
 				len = 0;
-				while (*temp != ' ') {
+				while (((temp - data) < size) &&
+				       (*temp != ' ') &&
+				       (len < sizeof(psd_name) - 1)) {
 					temp++;
 					len++;
 				}
@@ -3405,21 +3423,35 @@ static mlan_status woal_process_hostcmd_cfg(moal_private *priv, t_u8 *data,
 				       psd_name);
 
 				/* Picking up the correct Mode/PSD string from
-				 * "rg_powerXX.bin" */
-				if ((priv->phandle->mode_psd_string[0] == 0) ||
+				 * "rgpower_XX.bin" */
+				if ((priv->phandle->mode_psd_string[0] != 0) &&
 				    (strcmp(psd_name,
-					    priv->phandle->mode_psd_string) !=
+					    priv->phandle->mode_psd_string) ==
 				     0)) {
-					while (*temp != '}') {
-						while (*temp != '\n')
-							temp++;
-						temp++;
-					}
-				} else {
 					/* Match */
 					PRINTM(MMSG, "Downloading: %s\n",
 					       priv->phandle->mode_psd_string);
 					goto next;
+				} else if ((priv->phandle
+						    ->mode_psd_ru_string[0] !=
+					    0) &&
+					   (strcmp(psd_name,
+						   priv->phandle
+							   ->mode_psd_ru_string) ==
+					    0)) {
+					/* Match */
+					PRINTM(MMSG, "Downloading: %s\n",
+					       priv->phandle
+						       ->mode_psd_ru_string);
+					goto next;
+				} else {
+					while (((temp - data) < size) &&
+					       *temp != '}') {
+						while (((temp - data) < size) &&
+						       *temp != '\n')
+							temp++;
+						temp++;
+					}
 				}
 				/* No Match */
 				pos = temp + 1;
@@ -4515,10 +4547,7 @@ static mlan_status woal_req_dpd_data(moal_handle *handle,
 			}
 		}
 		if (handle->dpd_data) {
-			/* typecasted to get address pointed by dpd_data->data
-			 */
-			// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
-			param->pdpd_data_buf = (t_u8 *)handle->dpd_data->data;
+			param->pdpd_data_buf = handle->dpd_data->data;
 			param->dpd_data_len = handle->dpd_data->size;
 		} else {
 			param->dpd_data_len = UNKNOW_DPD_LENGTH;
@@ -4604,10 +4633,7 @@ static mlan_status woal_req_txpwr_data(moal_handle *handle,
 			}
 		}
 		if (handle->txpwr_data) {
-			param->ptxpwr_data_buf =
-				// Typecasting is done to read the value
-				// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
-				(t_u8 *)handle->txpwr_data->data;
+			param->ptxpwr_data_buf = handle->txpwr_data->data;
 			param->txpwr_data_len = handle->txpwr_data->size;
 		}
 	}
@@ -4901,6 +4927,7 @@ done:
 		handle->user_data = NULL;
 	}
 	handle->mode_psd_string[0] = '\0';
+	handle->mode_psd_ru_string[0] = '\0';
 
 	LEAVE();
 	return ret;
@@ -11044,6 +11071,33 @@ void woal_update_dscp_mapping(moal_private *priv)
 					       sizeof(IEEEtypes_Header_t) +
 					       dscp_except_num *
 						       sizeof(DSCP_Exception_t));
+
+#ifdef STA_CFG80211
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+		if (!priv->qos_map) {
+			priv->qos_map = kzalloc(sizeof(struct cfg80211_qos_map),
+						GFP_KERNEL);
+			if (!priv->qos_map) {
+				PRINTM(MERROR,
+				       "DSCP update: memory alloc fail\n");
+				LEAVE();
+			}
+		}
+
+		priv->qos_map->num_des = dscp_except_num;
+		moal_memcpy_ext(priv->phandle, priv->qos_map->dscp_exception,
+				dscp_except,
+				sizeof(priv->qos_map->dscp_exception),
+				sizeof(priv->qos_map->dscp_exception));
+		moal_memcpy_ext(priv->phandle, priv->qos_map->up, pdscp_range,
+				sizeof(priv->qos_map->up),
+				sizeof(priv->qos_map->up));
+
+		DBG_HEXDUMP(MCMD_D, "STA: QoS Map", (t_u8 *)priv->qos_map,
+			    sizeof(struct cfg80211_qos_map));
+#endif
+#endif
+
 		for (i = 0; i < MAX_NUM_TID; i++) {
 			PRINTM(MEVENT, "TID %d: dscp_low=%d, dscp_high=%d\n", i,
 			       pdscp_range->dscp_low_value,
@@ -11208,10 +11262,23 @@ t_void woal_send_disconnect_to_system(moal_private *priv,
 		priv->ft_md = 0;
 		priv->ft_cap = 0;
 		memset(priv->dscp_map, 0xFF, sizeof(priv->dscp_map));
+#ifdef STA_CFG80211
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+		if (priv->qos_map) {
+			kfree(priv->qos_map);
+			priv->qos_map = NULL;
+		}
+#endif
+#endif
 		/* Clear the mode_psd_string for STA disconnect */
-		if (priv->phandle->fw_bands & BAND_6G)
+		if (priv->phandle->fw_bands & BAND_6G) {
 			memset(priv->phandle->mode_psd_string, 0,
 			       sizeof(priv->phandle->mode_psd_string));
+			memset(priv->phandle->mode_psd_ru_string, 0,
+			       sizeof(priv->phandle->mode_psd_ru_string));
+		}
+		if (!moal_extflg_isset(priv->phandle, EXT_COUNTRY_IE_IGNORE))
+			woal_reset_peer_country_info(priv);
 	}
 #endif /* STA_CFG80211 */
 
@@ -15644,6 +15711,7 @@ done:
 		handle->user_data = NULL;
 	}
 	handle->mode_psd_string[0] = '\0';
+	handle->mode_psd_ru_string[0] = '\0';
 	LEAVE();
 	return;
 }
@@ -15908,23 +15976,12 @@ static int woal_init_module(void)
 	woal_init_from_dev_tree();
 #endif
 
-#if defined(USB)
-	if (c_vidpid == NULL) {
-		// c_vidpid is set at wifi_mod_para.conf
-		woal_get_c_vidpid(&c_vidpid);
-		if (c_vidpid != NULL) {
-			woal_usb_init_extended_table(c_vidpid);
-			kfree(c_vidpid);
-			c_vidpid = NULL;
-		}
-	} else {
-		PRINTM(MINFO, "get customer USB VID/PID from %s\n", c_vidpid);
-		// c_vidpid is set outside wifi_mod_para.conf
+#if defined(USB) && defined(USB_CUSTOMER_VIDPID)
+	if (c_vidpid != NULL)
 		woal_usb_init_extended_table(c_vidpid);
-	}
 #endif
 
-	/* Create workqueue for hang process */
+		/* Create workqueue for hang process */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 14)
 	/* For kernel less than 2.6.14 name can not be greater than 10
 	   characters */
@@ -16399,7 +16456,7 @@ MODULE_PARM_DESC(
 	reg_work,
 	"0: disable register work_queue; 1: enable register work_queue");
 
-#if defined(USB)
+#if defined(USB) && defined(USB_CUSTOMER_VIDPID)
 module_param(c_vidpid, charp, 0);
 MODULE_PARM_DESC(c_vidpid, "Customer USB VID/PID configuration file");
 #endif

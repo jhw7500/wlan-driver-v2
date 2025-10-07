@@ -281,8 +281,7 @@ static mlan_status wlan_usb_prog_fw_w_helper(pmlan_adapter pmadapter,
 			DataLength = 0;
 		} else {
 			/* reset length and Copy the header of the firmware data
-			 * to get the length
-			 */
+			 * to get the length */
 			fwdata->fw_header.data_length = 0;
 			if (firmware)
 				memcpy_ext(pmadapter, &fwdata->fw_header,
@@ -900,7 +899,7 @@ mlan_status wlan_usb_deaggr_rx_pkt(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 	RxPD *prx_pd;
 	t_u8 *pdata;
 	t_s32 aggr_len;
-	pmlan_buffer pdeaggr_buf;
+	pmlan_buffer pdeaggr_buf = MNULL;
 	t_u16 max_loop_cnt = 0;
 	/* (8 * (MLAN_USB_BLOCK_SIZE * 4)) */
 #define MAX_USB_RX_DATA_SIZE (MLAN_USB_RX_MAX_AGGR_NUM * MLAN_USB_MAX_PKT_SIZE)
@@ -937,8 +936,7 @@ mlan_status wlan_usb_deaggr_rx_pkt(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 
 		/* make new buffer and copy packet to it (including RxPD).
 		 * Also, reserve headroom so that there must have space
-		 * to change RxPD to TxPD for bridge packet in uAP mode
-		 */
+		 * to change RxPD to TxPD for bridge packet in uAP mode */
 		/* pdeaggr_buf is freed in moal_recv_complete(), therefore
 		 * Overwriting pdeaggr_buf is not harmful.
 		 */
@@ -965,7 +963,6 @@ mlan_status wlan_usb_deaggr_rx_pkt(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 		 * handling completed, Coverity is not able to trace callbacks
 		 * registered for and process_rx_packet and moal_recv_complete
 		 */
-		// coverity[overwrite_var:SUPPRESS]
 		// coverity[RESOURCE_LEAK]: SUPPRESS
 		/* send new packet to processing */
 		ret = wlan_handle_rx_packet(pmadapter, pdeaggr_buf);

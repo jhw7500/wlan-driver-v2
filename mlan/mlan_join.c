@@ -2002,10 +2002,9 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 					   pmpriv->assoc_req_size,
 					   ASSOC_RSP_BUF_SIZE);
 
-				// coverity[no_effect:SUPPRESS]
-				memset(pmpriv->adapter,
-				       pmpriv->curr_bss_params.prev_bssid, 0,
-				       MLAN_MAC_ADDR_LENGTH);
+				_memset(pmpriv->adapter,
+					pmpriv->curr_bss_params.prev_bssid, 0,
+					MLAN_MAC_ADDR_LENGTH);
 			}
 		} else
 			wlan_reset_connect_state(pmpriv, MTRUE);

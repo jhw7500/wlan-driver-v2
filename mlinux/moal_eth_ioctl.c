@@ -5711,6 +5711,9 @@ static int woal_priv_hssetpara(moal_private *priv, t_u8 *respbuf,
 		       respbuf + (strlen(CMD_NXP) + strlen(PRIV_CMD_HSSETPARA)),
 		       CMD_BUF_LEN -
 			       (strlen(CMD_NXP) + strlen(PRIV_CMD_HSSETPARA)));
+		/* respbuf is allocated with kzalloc, ensuring null-termination
+		 * snprintf is used safely with bounded size.
+		 */
 		// coverity[cert_str32_c_violation:SUPPRESS]
 		if (snprintf(respbuf, CMD_BUF_LEN, "%s%s%s", CMD_NXP,
 			     PRIV_CMD_HSCFG, buf) <= 0)
@@ -13208,6 +13211,8 @@ static int woal_channel_switch(moal_private *priv, t_u8 block_tx,
 
 	priv->phandle->chsw_wait_q_woken = MFALSE;
 	/* wait for channel switch to complete  */
+	// Coverity error raised for kernel's API
+	// coverity[check_return:SUPPRESS]
 	wait_rv = wait_event_interruptible_timeout(
 		priv->phandle->chsw_wait_q, priv->phandle->chsw_wait_q_woken,
 		(u32)HZ * (switch_count + 2) * 110 / 1000);
@@ -23279,7 +23284,14 @@ static int woal_priv_per_band_txpwr_cap(moal_private *priv, t_u8 *respbuf,
 
 	if (data[0] != BAND_2GHZ && data[0] != BAND_5GHZ &&
 	    data[0] != BAND_6GHZ) {
-		PRINTM(MERROR, "Invalid band\n");
+		PRINTM(MERROR, "per_band_txpwr_cap: Invalid band input\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	/* tx power capping cannot be negative or above 25 dBm */
+	if (data[1] < 0 || data[1] > 25) {
+		PRINTM(MERROR,
+		       "per_band_txpwr_cap: Invalid power value input\n");
 		ret = -EINVAL;
 		goto done;
 	}

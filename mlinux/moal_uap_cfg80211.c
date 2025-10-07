@@ -1390,6 +1390,8 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 		       ((heoper_ie->option[1] & HE_OPER_CTRL_MASK) >> 3));
 		memset(priv->phandle->mode_psd_string, 0,
 		       sizeof(priv->phandle->mode_psd_string));
+		memset(priv->phandle->mode_psd_ru_string, 0,
+		       sizeof(priv->phandle->mode_psd_ru_string));
 
 		switch ((heoper_ie->option[1] & HE_OPER_CTRL_MASK) >> 3) {
 		/* Indoor Mode */
@@ -1398,6 +1400,9 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncpy(priv->phandle->mode_psd_string,
 				"region_pwr_cfg_6G_PSD_",
 				strlen("region_pwr_cfg_6G_PSD_") + 1);
+			strncpy(priv->phandle->mode_psd_ru_string,
+				"subband_ru_power_cfg_6G_PSD_",
+				strlen("subband_ru_power_cfg_6G_PSD_") + 1);
 
 			/* Prepare the 6E operation mode/psd based string */
 			switch (priv->phandle->dfs_region) {
@@ -1425,6 +1430,12 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_IND].psd_dbm,
 				strlen(mode_psd_6G[UAP_MODE_IND].psd_dbm));
+			strncat(priv->phandle->mode_psd_ru_string,
+				mode_psd_6G[UAP_MODE_IND].op_mode,
+				strlen(mode_psd_6G[UAP_MODE_IND].op_mode));
+			strncat(priv->phandle->mode_psd_ru_string,
+				mode_psd_6G[UAP_MODE_IND].psd_dbm,
+				strlen(mode_psd_6G[UAP_MODE_IND].psd_dbm));
 			break;
 		}
 		/* Standard Power Mode */
@@ -1433,6 +1444,9 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncpy(priv->phandle->mode_psd_string,
 				"region_pwr_cfg_6G_PSD_",
 				strlen("region_pwr_cfg_6G_PSD_") + 1);
+			strncpy(priv->phandle->mode_psd_ru_string,
+				"subband_ru_power_cfg_6G_PSD_",
+				strlen("subband_ru_power_cfg_6G_PSD_") + 1);
 
 			/* Prepare the 6E operation mode/psd based string */
 			switch (priv->phandle->dfs_region) {
@@ -1460,6 +1474,12 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_SP].psd_dbm,
 				strlen(mode_psd_6G[UAP_MODE_SP].psd_dbm));
+			strncat(priv->phandle->mode_psd_ru_string,
+				mode_psd_6G[UAP_MODE_SP].op_mode,
+				strlen(mode_psd_6G[UAP_MODE_SP].op_mode));
+			strncat(priv->phandle->mode_psd_ru_string,
+				mode_psd_6G[UAP_MODE_SP].psd_dbm,
+				strlen(mode_psd_6G[UAP_MODE_SP].psd_dbm));
 			break;
 		}
 		/* Very Low Power Mode */
@@ -1468,6 +1488,9 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncpy(priv->phandle->mode_psd_string,
 				"region_pwr_cfg_6G_PSD_",
 				strlen("region_pwr_cfg_6G_PSD_") + 1);
+			strncpy(priv->phandle->mode_psd_ru_string,
+				"subband_ru_power_cfg_6G_PSD_",
+				strlen("subband_ru_power_cfg_6G_PSD_") + 1);
 
 			/* Prepare the 6E operation mode/psd based string */
 			switch (priv->phandle->dfs_region) {
@@ -1495,6 +1518,12 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_VLP].psd_dbm,
 				strlen(mode_psd_6G[UAP_MODE_VLP].psd_dbm));
+			strncat(priv->phandle->mode_psd_ru_string,
+				mode_psd_6G[UAP_MODE_VLP].op_mode,
+				strlen(mode_psd_6G[UAP_MODE_VLP].op_mode));
+			strncat(priv->phandle->mode_psd_ru_string,
+				mode_psd_6G[UAP_MODE_VLP].psd_dbm,
+				strlen(mode_psd_6G[UAP_MODE_VLP].psd_dbm));
 			break;
 		}
 		default:
@@ -1506,9 +1535,11 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			goto done;
 		}
 		/* Download the uAP mode specific PSD table */
-		PRINTM(MMSG, "DFS region = %d Opmode string = %s\n",
+		PRINTM(MMSG,
+		       "DFS region = %d Opmode string = %s ru string = %s\n",
 		       priv->phandle->dfs_region,
-		       priv->phandle->mode_psd_string);
+		       priv->phandle->mode_psd_string,
+		       priv->phandle->mode_psd_ru_string);
 		if (MLAN_STATUS_SUCCESS !=
 		    woal_request_country_power_table(priv, country_code,
 						     MOAL_IOCTL_WAIT, 1)) {
@@ -2192,9 +2223,12 @@ static int woal_cfg80211_beacon_config(moal_private *priv,
 		 * as per the AP Operation mode */
 		if (sys_config->bandcfg.chanBand == BAND_6GHZ)
 			woal_dnld_uap_6e_psd_table(priv, ie, ie_len);
-		else
+		else {
 			memset(priv->phandle->mode_psd_string, 0,
 			       sizeof(priv->phandle->mode_psd_string));
+			memset(priv->phandle->mode_psd_ru_string, 0,
+			       sizeof(priv->phandle->mode_psd_ru_string));
+		}
 
 #if CFG80211_VERSION_CODE > KERNEL_VERSION(5, 3, 0)
 		if (params->twt_responder == MFALSE) {
@@ -3887,16 +3921,17 @@ int woal_cfg80211_set_beacon(struct wiphy *wiphy, struct net_device *dev,
 				goto done;
 			}
 		}
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
 		/* Handling for uAP PSD table download for host triggered
 		 * and FW triggered (AP+STA) ECSA cases */
 		if (params->tail && params->tail_len &&
 		    priv->chan.chan->band == NL80211_BAND_6GHZ) {
-			// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
-			DBG_HEXDUMP(MCMD_D, "6E ECSA Beacon",
-				    (t_u8 *)params->tail, params->tail_len);
+			DBG_HEXDUMP(MCMD_D, "6E ECSA Beacon", params->tail,
+				    params->tail_len);
 			woal_dnld_uap_6e_psd_table(priv, params->tail,
 						   params->tail_len);
 		}
+#endif
 #endif
 	}
 
@@ -4026,9 +4061,12 @@ int woal_cfg80211_del_beacon(struct wiphy *wiphy, struct net_device *dev)
 	}
 	woal_clear_all_mgmt_ies(priv, MOAL_NO_WAIT);
 	/* Clear the mode_psd_string for AP stop */
-	if (priv->phandle->fw_bands & BAND_6G)
+	if (priv->phandle->fw_bands & BAND_6G) {
 		memset(priv->phandle->mode_psd_string, 0,
 		       sizeof(priv->phandle->mode_psd_string));
+		memset(priv->phandle->mode_psd_ru_string, 0,
+		       sizeof(priv->phandle->mode_psd_ru_string));
+	}
 #ifdef STA_SUPPORT
 	if (!woal_is_any_interface_active(priv->phandle)) {
 		pmpriv = woal_get_priv((moal_handle *)priv->phandle,

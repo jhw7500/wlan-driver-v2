@@ -6162,6 +6162,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 					mcs_nss[1] = mcs_nss[0] |= 0x0c;
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6192,6 +6194,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6240,6 +6244,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 					mcs_nss[1] = mcs_nss[0] |= 0x0c;
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp
@@ -6282,6 +6288,8 @@ void woal_cfg80211_notify_antcfg(moal_private *priv, struct wiphy *wiphy,
 
 					moal_memcpy_ext(
 						priv->phandle,
+						/* This cast is safe and
+						   intentional. */
 						// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 						(t_void *)&bands->iftype_data
 							->he_cap.he_mcs_nss_supp

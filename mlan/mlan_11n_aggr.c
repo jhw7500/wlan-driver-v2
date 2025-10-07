@@ -669,6 +669,8 @@ mlan_status wlan_11n_deaggregate_pkt(mlan_private *priv, pmlan_buffer pmbuf)
 			pmadapter->pmoal_handle, &out_ts_sec, &out_ts_usec);
 		delay += (t_u32)(out_ts_sec - in_ts_sec) * 1000000;
 		delay += (t_u32)(out_ts_usec - in_ts_usec);
+		// input values are internally generated and controlled, not
+		// externally sourced
 		// coverity[misra_c_2012_directive_4_14_violation:SUPPRESS]
 		pmadapter->callbacks.moal_amsdu_tp_accounting(
 			pmadapter->pmoal_handle, delay, copy_delay);

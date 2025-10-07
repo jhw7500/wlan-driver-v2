@@ -375,10 +375,10 @@ mlan_status wlan_allocate_adapter(pmlan_adapter pmadapter)
 		}
 #ifdef DEBUG_LEVEL1
 		if (mlan_drvdbg & MMPA_D) {
-			pmadapter->pcard_sd->mpa_buf_size =
-				SDIO_MP_DBG_NUM *
-				pmadapter->pcard_sd->mp_aggr_pkt_limit *
-				pmadapter->pcard_sd->sdio_blk_size;
+			pmadapter->pcard_sd->mpa_buf_size = (SECURE_MULT_UINT32(
+				SDIO_MP_DBG_NUM,
+				pmadapter->pcard_sd->mp_aggr_pkt_limit,
+				pmadapter->pcard_sd->sdio_blk_size));
 			if (pmadapter->callbacks.moal_vmalloc &&
 			    pmadapter->callbacks.moal_vfree)
 				ret = pmadapter->callbacks.moal_vmalloc(

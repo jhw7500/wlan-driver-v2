@@ -601,7 +601,7 @@ static t_u16 woal_update_card_type(t_void *card)
 			driver_version + strlen(INTF_CARDTYPE) +
 				strlen(KERN_VERSION),
 			V15, strlen(V15),
-			strlen(driver_version) -
+			strnlen(driver_version, MLAN_MAX_VER_STR_LEN - 1) -
 				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
 	}
 #endif
@@ -639,6 +639,20 @@ static t_u16 woal_update_card_type(t_void *card)
 		card_type = CARD_TYPE_SD8978;
 		moal_memcpy_ext(NULL, driver_version, "SDIW416",
 				strlen("SDIW416"), strlen(driver_version));
+		moal_memcpy_ext(
+			NULL,
+			driver_version + strlen(INTF_CARDTYPE) +
+				strlen(KERN_VERSION),
+			V16, strlen(V16),
+			strnlen(driver_version, MLAN_MAX_VER_STR_LEN - 1) -
+				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
+	}
+#endif
+#ifdef SD8997
+	if (cardp_sd->func->device == SD_DEVICE_ID_8997) {
+		card_type = CARD_TYPE_SD8997;
+		moal_memcpy_ext(NULL, driver_version, CARD_SD8997,
+				strlen(CARD_SD8997), strlen(driver_version));
 		moal_memcpy_ext(
 			NULL,
 			driver_version + strlen(INTF_CARDTYPE) +

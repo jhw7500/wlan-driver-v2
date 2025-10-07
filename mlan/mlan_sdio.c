@@ -519,7 +519,8 @@ static mlan_status wlan_get_rd_port(mlan_adapter *pmadapter, t_u8 *pport)
 	if (pmadapter->pcard_sd->mp_rd_bitmap &
 	    (1 << pmadapter->pcard_sd->curr_rd_port)) {
 		pmadapter->pcard_sd->mp_rd_bitmap &=
-			(t_u32)(~(1 << pmadapter->pcard_sd->curr_rd_port));
+			~(t_u32)((t_u32)1U
+				 << ((t_u32)pmadapter->pcard_sd->curr_rd_port));
 		*pport = pmadapter->pcard_sd->curr_rd_port;
 
 		/* hw rx wraps round only after port (MAX_PORT-1) */
@@ -1952,14 +1953,26 @@ tx_curr_single:
 			       [pmadapter->pcard_sd->last_mp_index *
 				mp_aggr_pkt_limit],
 		       0, sizeof(t_u16) * mp_aggr_pkt_limit);
-		pmadapter->pcard_sd
-			->last_mp_wr_info[pmadapter->pcard_sd->last_mp_index *
-					  mp_aggr_pkt_limit] =
-			read_u16_unaligned(pmadapter,
-					   mbuf->pbuf + mbuf->data_offset);
-		pmadapter->pcard_sd
-			->last_curr_wr_port[pmadapter->pcard_sd->last_mp_index] =
-			pmadapter->pcard_sd->curr_wr_port;
+		/* CID 24721242: (#1 of 1): CERT-C Array (CERT ARR30-C)
+		 * Fix for array bounds violation */
+		/* CID 48066770: (#1 of 1):
+		 * Negative array index read (REVERSE_NEGATIVE) */
+		/* CID 48066772 48066773 48066774: (#1 of 1):
+		 * Out-of-bounds write (OVERRUN) */
+		if (mp_index < SDIO_MP_DBG_NUM) {
+			t_u16 index = mp_index * mp_aggr_pkt_limit;
+
+			if (index <
+			    SDIO_MP_DBG_NUM * SDIO_MP_AGGR_DEF_PKT_LIMIT_MAX)
+				pmadapter->pcard_sd->last_mp_wr_info[index] =
+					read_u16_unaligned(
+						pmadapter,
+						mbuf->pbuf + mbuf->data_offset);
+
+			pmadapter->pcard_sd->last_curr_wr_port[mp_index] =
+				pmadapter->pcard_sd->curr_wr_port;
+		}
+
 		if (pmadapter->pcard_sd->mpa_buf)
 			memcpy_ext(pmadapter,
 				   pmadapter->pcard_sd->mpa_buf +
@@ -3057,9 +3070,10 @@ void wlan_decode_spa_buffer(mlan_adapter *pmadapter, t_u8 *buf, t_u32 len)
 			break;
 		}
 		if (pkt_len > SDIO_INTF_HEADER_LEN) {
-			// mbuf_deaggr is already initialized as NULL
-			// coverity[RESOURCE_LEAK:SUPPRESS]
-			// coverity[misra_c_2012_rule_22_1_violation:SUPPRESS]
+			/* mbuf_deaggr is freed in moal_recv_complete(),
+			 * therefore Overwriting mbuf_deaggr is not harmful.
+			 */
+			// coverity[overwrite_var:SUPPRESS]
 			mbuf_deaggr = wlan_alloc_mlan_buffer(
 				pmadapter, pkt_len - SDIO_INTF_HEADER_LEN,
 				MLAN_RX_HEADER_LEN, MOAL_ALLOC_MLAN_BUFFER);
@@ -3088,8 +3102,10 @@ void wlan_decode_spa_buffer(mlan_adapter *pmadapter, t_u8 *buf, t_u32 len)
 	}
 done:
 	LEAVE();
-	// Buffer mbuf_deaggr will be free in Kernel API.
-	// coverity[misra_c_2012_rule_22_1_violation:SUPPRESS]
+	/* mbuf_deaggr is freed in moal_recv_complete(), therefore
+	 * Overwriting mbuf_deaggr is not harmful.
+	 */
+	// coverity[overwrite_var:SUPPRESS]
 	return;
 }
 
