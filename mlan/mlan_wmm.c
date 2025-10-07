@@ -5281,6 +5281,7 @@ static t_u32 wlam_wmm_get_ht_rate(t_u32 bw, t_u32 sgi, t_u32 mcs)
 
 	if (bw == bw_40)
 		rate = (rate * 2077u) / 1000;
+	}
 	/* The maximum possible value of rate after all operations
 	 * remains within the bounds of a 32-bit unsigned integer.
 	 */

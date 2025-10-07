@@ -415,9 +415,6 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 		PRINTM(MMSG,
 		       "Attach mlan adapter operations.card_type is 0x%x.\n",
 		       pmdevice->card_type);
-		/* coverity assumes that Passing pmadapter to memset,
-		 *  sets pmadapter->callbacks.moal_memcpy_ext to NULL
-		 */
 		memcpy_ext(pmadapter, &pmadapter->ops, &mlan_pcie_ops,
 			   sizeof(mlan_adapter_operations),
 			   sizeof(mlan_adapter_operations));
@@ -1568,7 +1565,7 @@ process_start:
 			    (pmadapter->tx_lock_flag == MTRUE))
 				break;
 
-			if (pmadapter->data_sent || pmadapter->driver_status ||
+			if (pmadapter->data_sent ||
 			    wlan_is_tdls_link_chan_switching(
 				    pmadapter->tdls_status) ||
 			    (wlan_bypass_tx_list_empty(pmadapter) &&

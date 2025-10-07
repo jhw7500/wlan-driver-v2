@@ -1368,6 +1368,7 @@ typedef MLAN_PACK_START struct _radiotap_timestamp {
 	 * 1 microseconds,
 	 * 2 nanoseconds,
 	 * 3-15 reserved */
+	// bit-field usage is required to match protocol-defined layout
 	// coverity[misra_c_2012_rule_6_1_violation:SUPPRESS]
 	t_u8 unit : 4;
 	/* position:
@@ -1378,6 +1379,7 @@ typedef MLAN_PACK_START struct _radiotap_timestamp {
 	 * 4-14 reserved
 	 * 15 unknown or vendor/OOB defined
 	 */
+	// bit-field usage is required to match protocol-defined layout
 	// coverity[misra_c_2012_rule_6_1_violation:SUPPRESS]
 	t_u8 position : 4;
 	/* flags

@@ -945,6 +945,10 @@ enum vendor_sub_command {
 	subcmd_set_get_tx_ampdu_prot_mode = 0x1924,
 	subcmd_twt_setup = 0x1925,
 	subcmd_twt_teardown = 0x1926,
+	subcmd_btwt_ap_config_set = 0x1927,
+	subcmd_btwt_ap_config_get = 0x1928,
+	// Get Usable channel list
+	subcmd_get_usable_channels = 0x1950,
 	sub_cmd_max,
 };
 
