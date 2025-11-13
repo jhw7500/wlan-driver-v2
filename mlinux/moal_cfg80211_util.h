@@ -1006,51 +1006,6 @@ enum mrvl_wlan_vendor_attr_roam_auth {
 		MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_AFTER_LAST - 1
 };
 
-/** WiFi roaming capabilities structure */
-typedef struct {
-	/** max blacklist size */
-	u32 max_blacklist_size;
-	/** max whitelist size */
-	u32 max_whitelist_size;
-} wifi_roaming_capabilities;
-
-/** WiFi BSSID params structure */
-typedef struct {
-	/** Num of BSSID */
-	u32 num_bssid;
-	/** List of AP mac address */
-	t_u8 mac_addr[MAX_AP_LIST][MLAN_MAC_ADDR_LENGTH];
-} wifi_bssid_params;
-
-/** SSID structure */
-typedef struct {
-	/** Length */
-	u32 length;
-	/** SSID */
-	char ssid[MLAN_MAX_SSID_LENGTH];
-} ssid_t;
-
-/** WiFi SSID params structure */
-typedef struct {
-	/** No of SSID */
-	u32 num_ssid;
-	/** Whitelist SSID */
-	ssid_t whitelist_ssid[MAX_SSID_NUM];
-} wifi_ssid_params;
-
-/*Attribute for wifi hal*/
-enum mrvl_wlan_vendor_attr_fw_roaming {
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_INVALID = 0,
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CAPA,
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CONTROL,
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CONFIG_BSSID,
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_CONFIG_SSID,
-	/* keep last */
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_AFTER_LAST,
-	MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_MAX =
-		MRVL_WLAN_VENDOR_ATTR_FW_ROAMING_AFTER_LAST - 1
-};
-
 enum attr_rtt {
 	ATTR_RTT_INVALID = 0,
 	ATTR_RTT_CAPA,

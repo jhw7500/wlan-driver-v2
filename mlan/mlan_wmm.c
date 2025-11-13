@@ -1013,8 +1013,7 @@ static t_bool wlan_wmm_txq_count_donw(mlan_wmm_contention *txq_cont,
 		txq_cont->remaining_backoff -= duration;
 
 	/* Input values are bounded and subtraction logic ensures no integer
-	 * overflow during contention timer update.
-	 */
+	 * overflow during contention timer update. */
 	// coverity[integer_overflow:SUPPRESS]
 	return txq_cont->remaining_backoff == 0 &&
 	       txq_cont->remaining_aifs == 0;

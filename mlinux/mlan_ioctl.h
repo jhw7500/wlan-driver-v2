@@ -398,6 +398,7 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_MISC_AUTH_ASSOC_TIMEOUT_CONFIG = 0x00200099,
 
 	MLAN_OID_MISC_PREV_ASSOC_INFO = 0x0020009A,
+	MLAN_OID_MISC_FOUNDRY_TYPE = 0X0020009B,
 
 	MLAN_OID_MISC_NAV_MITIGATION_HW = 0x0020009C,
 	MLAN_OID_MISC_PREAMBLE_PWR_BOOST = 0x0020009D,
@@ -676,6 +677,8 @@ typedef struct _mlan_ds_scan {
 		mlan_scan_cfg scan_cfg;
 		/** 6E Scan config parameters */
 		mlan_scan_6g_cfg scan_6g_cfg;
+		/** Select the band to flush from scan table */
+		t_u32 band;
 	} param;
 } mlan_ds_scan, *pmlan_ds_scan;
 
@@ -6443,6 +6446,8 @@ typedef struct _mlan_ds_foundry_type {
 	t_u8 foundry_type;
 } mlan_ds_foundry_type;
 
+#define MAX_RFUS 2
+#define MAX_PATHS 2
 typedef struct _mlan_ds_tsp_cfg {
 	/** TSP config action 0-GET, 1-SET */
 	t_u16 action;
@@ -6503,6 +6508,10 @@ typedef struct _mlan_ds_misc_per_band_txpwr_cap {
 	t_u8 power;
 	/** band */
 	t_u8 band;
+	/** stronger rssi threshold */
+	t_s8 strong_rssi_thresh;
+	/** weaker rssi threshold */
+	t_s8 weak_rssi_thresh;
 } mlan_ds_misc_per_band_txpwr_cap;
 
 /** valid range for mlan_ds_auth_assoc_timeout_cfg */
@@ -6563,6 +6572,9 @@ typedef struct _mlan_ds_agcs_cfg {
 	t_u16 nav_mitigation_th;
 	/* ch threshold to trigger channel switch for nighthawk */
 	t_u16 ch_th;
+	/* Channel switching is triggered only when the current pkts > the min
+	 * average packet percentage. */
+	t_u16 min_pkt_percentage;
 } mlan_ds_agcs_cfg;
 #endif /* UAP_SUPPORT */
 
@@ -6749,6 +6761,7 @@ typedef struct _mlan_ds_misc_cfg {
 		mlan_ds_ed_mac_cfg edmac_cfg;
 		mlan_ds_gpio_cfg_ops gpio_cfg_ops;
 		mlan_ds_auth_assoc_timeout_cfg auth_assoc_cfg;
+		mlan_ds_foundry_type soc_foundry_type;
 		mlan_ds_misc_per_band_txpwr_cap per_band_txpwr_cap;
 #ifdef UAP_SUPPORT
 		/** config AGCS for MLAN_OID_MISC_AGCS_CONFIG */
@@ -6811,6 +6824,11 @@ typedef struct _agcs_stats {
 	t_s16 noise;
 	/** The noise floor threshold currently used by fw */
 	t_s16 nf_threshold;
+	/** Record the scan channel list index according to 6G/5G/2G */
+	t_u8 scan_idx;
+	/** When the current band is 5g, has the same/diff class of 5g been
+	 * scanned? */
+	t_u8 is_5g_scaned;
 } agcs_stats, *pagcs_stats;
 
 /** Type definition of agcs_event for WOAL_EVENT_AGCS */

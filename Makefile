@@ -173,7 +173,7 @@ APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 #############################################################################
 
 	ccflags-y += -I$(KERNELDIR)/include
-	ccflags-y += -DMLAN_RELEASE_VERSION='"540.p22"'
+	ccflags-y += -DMLAN_RELEASE_VERSION='"540.p33"'
 
 	ccflags-y += -DFPNUM='"92"'
 
@@ -511,11 +511,11 @@ endif
 endif
 endif
 
+
+
+
 # Default for out-of-tree builds
 CONFIG_NXP_WLAN_DRIVER ?= m
-ifeq ($(CONFIG_SECURE_HOST), y)
-       ccflags-y += -DSECURE_HOST
-endif
 
 MOALOBJS =	mlinux/moal_main.o \
 		mlinux/moal_ioctl.o \
@@ -599,9 +599,7 @@ ccflags-y += -I$(src)/nanotls/include
 ccflags-y += -I$(src)/nanotls/lib/include
 ccflags-y += -I$(src)/nanotls/lib/aes/include
 
-
-
-obj-m := mlan.o
+obj-$(CONFIG_NXP_WLAN_DRIVER) := mlan.o
 mlan-objs := $(MLANOBJS)
 
 ifeq ($(CONFIG_MUSB),y)

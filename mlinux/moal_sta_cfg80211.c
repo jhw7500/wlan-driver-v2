@@ -202,7 +202,7 @@ static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
 #endif
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
 				      int radio_idx,
 #endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
@@ -214,7 +214,7 @@ static int woal_cfg80211_set_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
 #endif
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
 				      int radio_idx,
 #endif
 #if CFG80211_VERSION_CODE < KERNEL_VERSION(2, 6, 36)
@@ -5816,6 +5816,8 @@ static int woal_cfg80211_scan(struct wiphy *wiphy, struct net_device *dev,
 				continue;
 		}
 #endif
+		// ssid_len is validated to ensure safe copying within SSID
+		// buffer size
 		// coverity[cert_arr30_c_violation: SUPPRESS]
 		moal_memcpy_ext(priv->phandle, scan_req->ssid_list[i].ssid,
 				priv->phandle->scan_request->ssids[i].ssid,
@@ -6047,7 +6049,7 @@ static int woal_cfg80211_scan(struct wiphy *wiphy, struct net_device *dev,
 		}
 	}
 
-	if (woal_do_scan(priv, scan_req) != MLAN_STATUS_SUCCESS) {
+	if (MLAN_STATUS_SUCCESS != woal_do_scan(priv, scan_req)) {
 		PRINTM(MERROR, "woal_do_scan fails!\n");
 		ret = -EAGAIN;
 		goto done;
@@ -7399,7 +7401,7 @@ static int woal_cfg80211_set_power_mgmt(struct wiphy *wiphy,
 static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
 				      int radio_idx,
 #endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
@@ -7453,7 +7455,7 @@ static int woal_cfg80211_set_tx_power(struct wiphy *wiphy,
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 				      struct wireless_dev *wdev,
 #endif
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
 				      int radio_idx,
 #endif
 #if CFG80211_VERSION_CODE < KERNEL_VERSION(2, 6, 36)
@@ -11477,12 +11479,6 @@ mlan_status woal_register_sta_cfg80211(struct net_device *dev, t_u8 bss_type)
 #endif
 		}
 	}
-	if (priv->phandle->params.txpwrlimit_cfg &&
-	    bss_type == MLAN_BSS_TYPE_STA) {
-		if (IS_CARDAW693(priv->phandle->card_type))
-			woal_dnld_tx_pwr_offset_table(priv, "WW",
-						      MOAL_IOCTL_WAIT);
-	}
 	LEAVE();
 	return ret;
 }
@@ -11872,18 +11868,18 @@ int woal_priv_init_link_stats(moal_private *priv)
 			/* Update drvdbg bit while plinkstats is disabled */
 			drvdbg &= ~MLSTATS;
 			woal_set_drvdbg(priv, drvdbg);
-			PRINTM(MMSG, "PLINKSTATS is disabled!\n");
+			PRINTM(MMSG, "PLINKSTATS is disabled! \n");
 			break;
 		case 1: /* enable */
 			/* Init print_linkstats parameter according to the input
 			 */
 			woal_apply_plinkstats_config(priv, plinkstats_arg, len);
-			PRINTM(MMSG, "PLINKSTATS is Enabled\n");
+			PRINTM(MMSG, "PLINKSTATS is Enabled \n");
 			break;
 		case 2: /* reset */
 			/* Reset link statistics */
 			woal_print_linkstats_info(priv, MTRUE);
-			PRINTM(MMSG, "PLINKSTATS is Restored\n");
+			PRINTM(MMSG, "PLINKSTATS is Restored \n");
 			break;
 		default: /* default for any error input */
 			PRINTM(MERROR, "Invalid PLINKSTATS parameter passed\n");
@@ -12603,16 +12599,20 @@ void woal_dnld_sta_6e_psd_table(moal_private *priv, t_u8 *resp_buf,
 		}
 		strncat(priv->phandle->mode_psd_string,
 			mode_psd_6G[AP_MODE_IND].op_mode,
-			strlen(mode_psd_6G[AP_MODE_IND].op_mode));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_string,
 			mode_psd_6G[AP_MODE_IND].psd_dbm,
-			strlen(mode_psd_6G[AP_MODE_IND].psd_dbm));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_ru_string,
 			mode_psd_6G[AP_MODE_IND].op_mode,
-			strlen(mode_psd_6G[AP_MODE_IND].op_mode));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_ru_string,
 			mode_psd_6G[AP_MODE_IND].psd_dbm,
-			strlen(mode_psd_6G[AP_MODE_IND].psd_dbm));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		break;
 	}
 	/* Standard Power Mode */
@@ -12641,16 +12641,20 @@ void woal_dnld_sta_6e_psd_table(moal_private *priv, t_u8 *resp_buf,
 		}
 		strncat(priv->phandle->mode_psd_string,
 			mode_psd_6G[AP_MODE_SP].op_mode,
-			strlen(mode_psd_6G[AP_MODE_SP].op_mode));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_string,
 			mode_psd_6G[AP_MODE_SP].psd_dbm,
-			strlen(mode_psd_6G[AP_MODE_SP].psd_dbm));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_ru_string,
 			mode_psd_6G[AP_MODE_SP].op_mode,
-			strlen(mode_psd_6G[AP_MODE_SP].op_mode));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_ru_string,
 			mode_psd_6G[AP_MODE_SP].psd_dbm,
-			strlen(mode_psd_6G[AP_MODE_SP].psd_dbm));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		break;
 	}
 	/* Very Low Power Mode */
@@ -12679,16 +12683,20 @@ void woal_dnld_sta_6e_psd_table(moal_private *priv, t_u8 *resp_buf,
 		}
 		strncat(priv->phandle->mode_psd_string,
 			mode_psd_6G[AP_MODE_VLP].op_mode,
-			strlen(mode_psd_6G[AP_MODE_VLP].op_mode));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_string,
 			mode_psd_6G[AP_MODE_VLP].psd_dbm,
-			strlen(mode_psd_6G[AP_MODE_VLP].psd_dbm));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_ru_string,
 			mode_psd_6G[AP_MODE_VLP].op_mode,
-			strlen(mode_psd_6G[AP_MODE_VLP].op_mode));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		strncat(priv->phandle->mode_psd_ru_string,
 			mode_psd_6G[AP_MODE_VLP].psd_dbm,
-			strlen(mode_psd_6G[AP_MODE_VLP].psd_dbm));
+			(sizeof(priv->phandle->mode_psd_string) -
+			 strlen(priv->phandle->mode_psd_string) - 1));
 		break;
 	}
 	default:

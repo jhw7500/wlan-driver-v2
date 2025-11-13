@@ -3285,6 +3285,7 @@ void woal_print_linkstats_event(void *context)
 	queue_work(handle->evt_workqueue, &handle->evt_work);
 
 	LEAVE();
+	/* evt is freed in woal_evt_work_queue, hence suppressed*/
 	// coverity[misra_c_2012_rule_22_1_violation:SUPPRESS]
 	return;
 }
@@ -13678,6 +13679,40 @@ void woal_process_chan_event(moal_private *priv, t_u8 type, t_u8 channel,
 	}
 }
 
+/**
+ * @brief               Check fw bands support 2G
+ *
+ * @param bands         fw bands
+ *
+ * @return              TRUE if supported, FALSE otherwise
+ *
+ */
+static BOOLEAN woal_2g_support(t_u16 fw_bands)
+{
+	t_u16 supported_bands = BAND_B | BAND_G | BAND_GN;
+
+	supported_bands |= BAND_GAC;
+	supported_bands |= BAND_GAX;
+	return (fw_bands & supported_bands) ? MTRUE : MFALSE;
+}
+
+/**
+ * @brief               Check fw bands support 5G
+ *
+ * @param bands         fw bands
+ *
+ * @return              TRUE if supported, FALSE otherwise
+ *
+ */
+static BOOLEAN woal_5g_support(t_u16 fw_bands)
+{
+	t_u16 supported_bands = BAND_A | BAND_AN;
+
+	supported_bands |= BAND_AAC;
+	supported_bands |= BAND_AAX;
+	return (fw_bands & supported_bands) ? MTRUE : MFALSE;
+}
+
 #ifdef UAP_SUPPORT
 /**
  *  @brief This function prepare agcs event
@@ -13840,6 +13875,99 @@ mlan_status moal_agcs_trans_state(moal_private *priv, agcs_state next_state)
 }
 
 /**
+ * @brief               AGCS select channel list
+ *
+ * @param phandle       Pointer to moal_handle structure
+ * @param band          Destination band channel list
+ * @param dest_scan_cfg Pointer to destination wlan_user_scan_cfg structure
+ * @param cur_idx       Pointer to channel index
+ * @param pchaninfo     Pointer to current chan_band_info structure
+ * @param support_ecsa  All clients support ECSA
+ *
+ *  @return             MLAN_STATUS_SUCCESS -- success, otherwise fail
+ *
+ */
+static mlan_status woal_agcs_pick_scan_list(moal_handle *phandle, t_u8 band,
+					    wlan_user_scan_cfg *dest_scan_cfg,
+					    t_u8 *cur_idx,
+					    chan_band_info *pchaninfo,
+					    t_u8 support_ecsa)
+{
+	wlan_user_scan_chan *pchan_list;
+	t_u8 chidx;
+	mlan_status status = MLAN_STATUS_FAILURE;
+
+	if (((band == BAND_6GHZ) &&
+	     !(phandle->hw_info.fw_cap_ext & FW_CAPINFO_EXT_6G)) ||
+	    ((band == BAND_5GHZ) && !woal_5g_support(phandle->fw_bands)) ||
+	    ((band == BAND_2GHZ) && !woal_2g_support(phandle->fw_bands))) {
+		/* UAP does not support this band */
+		PRINTM(MMSG, "AGCS UAP does not support this band(%d)\n", band);
+		goto done;
+	}
+	if (!dest_scan_cfg) {
+		PRINTM(MERROR, "AGCS dest_scan_cfg is NULL\n");
+		goto done;
+	}
+
+	pchan_list = phandle->agcs_info.chan_list;
+	for (chidx = 0; (pchan_list[chidx].chan_number != 0) &&
+			(chidx < WLAN_USER_SCAN_CHAN_MAX) &&
+			((*cur_idx) < WLAN_USER_SCAN_CHAN_MAX);
+	     chidx++) {
+		if (band == BAND_5GHZ &&
+		    pchan_list[chidx].radio_type == BAND_5GHZ &&
+		    pchaninfo->bandcfg.chanBand == BAND_5GHZ) {
+			if (!support_ecsa) {
+				if ((pchaninfo->channel < 149) &&
+				    (pchan_list[chidx].chan_number >= 149)) {
+					/* selected channel is not the same
+					 * class as uap current channel */
+					continue;
+				}
+				if ((pchaninfo->channel >= 149) &&
+				    (pchan_list[chidx].chan_number < 149)) {
+					/* selected channel is not the same
+					 * class as uap current channel */
+					continue;
+				}
+			} else {
+				if ((pchaninfo->channel < 149) &&
+				    (pchan_list[chidx].chan_number < 149)) {
+					/* selected channel is the same class as
+					 * uap current channel */
+					continue;
+				}
+				if ((pchaninfo->channel >= 149) &&
+				    (pchan_list[chidx].chan_number >= 149)) {
+					/* selected channel is the same class as
+					 * uap current channel */
+					continue;
+				}
+			}
+		}
+
+		/* When the band in the list is the same as the destination band
+		 * and the channel is different from the current channel,
+		 * selected. */
+		if ((pchan_list[chidx].radio_type == band) &&
+		    (pchaninfo->channel != pchan_list[chidx].chan_number)) {
+			moal_memcpy_ext(
+				phandle,
+				(t_void *)&dest_scan_cfg->chan_list[(*cur_idx)],
+				(const t_void *)&pchan_list[chidx],
+				sizeof(wlan_user_scan_chan),
+				sizeof(wlan_user_scan_chan));
+			(*cur_idx)++;
+			status = MLAN_STATUS_SUCCESS;
+		}
+	}
+
+done:
+	return status;
+}
+
+/**
  * @brief               Process agiled cs event
  *
  * @param priv          a pointer to moal_private structure
@@ -13851,12 +13979,16 @@ mlan_status moal_agcs_trans_state(moal_private *priv, agcs_state next_state)
 void woal_process_agcs_event(moal_private *priv, pagcs_stats pstart_event)
 {
 	moal_private *pmpriv = NULL;
-	mlan_status status = MLAN_STATUS_SUCCESS;
+	mlan_status status = MLAN_STATUS_FAILURE;
 	chan_band_info chaninfo;
-	t_u8 chidx, next_ch;
+	t_u8 cur_idx;
 	moal_handle *phandle = NULL;
 	wlan_user_scan_cfg *scan_cfg = NULL;
 	wlan_user_scan_chan *pchan_list;
+	t_u8 scan_band_priority[3];
+	t_u8 band_count;
+	t_u8 current_band_idx = 0;
+	t_u8 swap_class = 0;
 
 	memset(&chaninfo, 0, sizeof(chaninfo));
 
@@ -13871,6 +14003,13 @@ void woal_process_agcs_event(moal_private *priv, pagcs_stats pstart_event)
 			PRINTM(MERROR, "moal_handle is NULL\n");
 			status = MLAN_STATUS_FAILURE;
 			goto done;
+		}
+		/* For the first channel select of this channel switch event,
+		 * record the scan event content. */
+		if (phandle->agcs_state == AGCS_STATE_START) {
+			moal_memcpy_ext(phandle, &phandle->agcs_scan_event,
+					pstart_event, sizeof(agcs_stats),
+					sizeof(agcs_stats));
 		}
 		status = moal_agcs_trans_state(priv, AGCS_STATE_TRIGGERED);
 		if (status == MLAN_STATUS_FAILURE) {
@@ -13896,201 +14035,66 @@ void woal_process_agcs_event(moal_private *priv, pagcs_stats pstart_event)
 			goto done;
 		}
 
-		next_ch = 0;
-		chidx = 0;
-		if (pstart_event->all_sta_ecs) {
-			/* If all connected STAs support ECS, channel switch to
-			 * diff operating class */
-			if ((pstart_event->all_sta_6g) &&
-			    (priv->phandle->hw_info.fw_cap_ext &
-			     FW_CAPINFO_EXT_6G)) {
-				/* If all connected STAs support 6g, switch to
-				 * diff band(5g<->6g) */
-				if (chaninfo.bandcfg.chanBand == BAND_6GHZ) {
-					for (chidx = 0, next_ch = 0;
-					     (pchan_list[chidx].chan_number !=
-					      0) &&
-					     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-					     chidx++) {
-						if (pchan_list[chidx]
-							    .radio_type ==
-						    BAND_5GHZ) {
-							moal_memcpy_ext(
-								phandle,
-								(t_void *)&scan_cfg
-									->chan_list
-										[next_ch],
-								(const t_void
-									 *)&pchan_list
-									[chidx],
-								sizeof(wlan_user_scan_chan),
-								sizeof(wlan_user_scan_chan));
-							next_ch++;
-						}
-					}
-				} else {
-					for (chidx = 0, next_ch = 0;
-					     (pchan_list[chidx].chan_number !=
-					      0) &&
-					     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-					     chidx++) {
-						if (pchan_list[chidx]
-							    .radio_type ==
-						    BAND_6GHZ) {
-							moal_memcpy_ext(
-								phandle,
-								(t_void *)&scan_cfg
-									->chan_list
-										[next_ch],
-								(const t_void
-									 *)&pchan_list
-									[chidx],
-								sizeof(wlan_user_scan_chan),
-								sizeof(wlan_user_scan_chan));
-							next_ch++;
-						}
-					}
-				}
-			} else {
-				/* switch to diff operating class(upper 5g <->
-				 * lower 5g) */
-				if (chaninfo.channel < 149) {
-					for (chidx = 0, next_ch = 0;
-					     (pchan_list[chidx].chan_number !=
-					      0) &&
-					     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-					     chidx++) {
-						if ((pchan_list[chidx]
-							     .radio_type ==
-						     BAND_5GHZ) &&
-						    (pchan_list[chidx]
-							     .chan_number >=
-						     149)) {
-							moal_memcpy_ext(
-								phandle,
-								(t_void *)&scan_cfg
-									->chan_list
-										[next_ch],
-								(const t_void
-									 *)&pchan_list
-									[chidx],
-								sizeof(wlan_user_scan_chan),
-								sizeof(wlan_user_scan_chan));
-							next_ch++;
-						}
-					}
-				} else {
-					for (chidx = 0, next_ch = 0;
-					     (pchan_list[chidx].chan_number !=
-					      0) &&
-					     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-					     chidx++) {
-						if ((pchan_list[chidx]
-							     .radio_type ==
-						     BAND_5GHZ) &&
-						    (pchan_list[chidx]
-							     .chan_number <
-						     149)) {
-							moal_memcpy_ext(
-								phandle,
-								(t_void *)&scan_cfg
-									->chan_list
-										[next_ch],
-								(const t_void
-									 *)&pchan_list
-									[chidx],
-								sizeof(wlan_user_scan_chan),
-								sizeof(wlan_user_scan_chan));
-							next_ch++;
-						}
-					}
-				}
-			}
+		cur_idx = 0;
+		status = MLAN_STATUS_FAILURE;
+		memset(scan_band_priority, 0, sizeof(scan_band_priority));
+		band_count = 0;
+		/* Setup band priority based on current channel and STA
+		 * capabilities */
+		if (chaninfo.bandcfg.chanBand == BAND_6GHZ) {
+			/* If the current channel is 6G, the target band
+			 * priority selection order is 5G->6G->2G */
+			scan_band_priority[band_count++] = BAND_5GHZ;
+			scan_band_priority[band_count++] = BAND_6GHZ;
+			scan_band_priority[band_count++] = BAND_2GHZ;
 		} else {
-			/* channel switch to same operating class */
-			if (chaninfo.channel < 14) {
-				for (chidx = 0, next_ch = 0;
-				     (pchan_list[chidx].chan_number != 0) &&
-				     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-				     chidx++) {
-					if ((pchan_list[chidx].radio_type ==
-					     BAND_2GHZ) &&
-					    (chaninfo.channel !=
-					     pchan_list[chidx].chan_number)) {
-						moal_memcpy_ext(
-							phandle,
-							(t_void *)&scan_cfg
-								->chan_list
-									[next_ch],
-							(const t_void
-								 *)&pchan_list
-								[chidx],
-							sizeof(wlan_user_scan_chan),
-							sizeof(wlan_user_scan_chan));
-						next_ch++;
-					}
-				}
-			} else if (chaninfo.channel < 149) {
-				/* lower 5g channels */
-				for (chidx = 0, next_ch = 0;
-				     (pchan_list[chidx].chan_number != 0) &&
-				     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-				     chidx++) {
-					if ((pchan_list[chidx].radio_type ==
-					     BAND_5GHZ) &&
-					    (pchan_list[chidx].chan_number <
-					     149) &&
-					    (chaninfo.channel !=
-					     pchan_list[chidx].chan_number)) {
-						moal_memcpy_ext(
-							phandle,
-							(t_void *)&scan_cfg
-								->chan_list
-									[next_ch],
-							(const t_void
-								 *)&pchan_list
-								[chidx],
-							sizeof(wlan_user_scan_chan),
-							sizeof(wlan_user_scan_chan));
-						next_ch++;
-					}
-				}
-			} else {
-				/* upper 5g channels */
-				for (chidx = 0, next_ch = 0;
-				     (pchan_list[chidx].chan_number != 0) &&
-				     (chidx < WLAN_USER_SCAN_CHAN_MAX);
-				     chidx++) {
-					if ((pchan_list[chidx].radio_type ==
-					     BAND_5GHZ) &&
-					    (pchan_list[chidx].chan_number >=
-					     149) &&
-					    (chaninfo.channel !=
-					     pchan_list[chidx].chan_number)) {
-						moal_memcpy_ext(
-							phandle,
-							(t_void *)&scan_cfg
-								->chan_list
-									[next_ch],
-							(const t_void
-								 *)&pchan_list
-								[chidx],
-							sizeof(wlan_user_scan_chan),
-							sizeof(wlan_user_scan_chan));
-						next_ch++;
-					}
-				}
-			}
+			/* If the current channel is 6G, the target band
+			 * priority selection order is 6G->5G->2G */
+			if (pstart_event->all_sta_6g)
+				scan_band_priority[band_count++] = BAND_6GHZ;
+			scan_band_priority[band_count++] = BAND_5GHZ;
+			/* select the same/diff class in 5g */
+			if (chaninfo.bandcfg.chanBand == BAND_5GHZ)
+				scan_band_priority[band_count++] = BAND_5GHZ;
+			scan_band_priority[band_count++] = BAND_2GHZ;
 		}
 
-		if (scan_cfg->chan_list[0].chan_number == 0) {
-			PRINTM(MERROR, "Fail to select channel\n");
+		for (current_band_idx = phandle->agcs_scan_event.scan_idx;
+		     current_band_idx < band_count; current_band_idx++) {
+			swap_class = pstart_event->all_sta_ecs;
+			if (scan_band_priority[current_band_idx] == BAND_5GHZ &&
+			    chaninfo.bandcfg.chanBand == BAND_5GHZ) {
+				/* Different/same channels are selected based on
+				 * whether all STAs support ECSA. If no channel
+				 * is selected, the same/different category
+				 * channels are selected again.
+				 */
+				if (phandle->agcs_scan_event.is_5g_scaned)
+					swap_class = !swap_class;
+				else
+					phandle->agcs_scan_event.is_5g_scaned =
+						MTRUE;
+			}
+			status = woal_agcs_pick_scan_list(
+				phandle, scan_band_priority[current_band_idx],
+				scan_cfg, &cur_idx, &chaninfo, swap_class);
+			if (cur_idx)
+				break;
+		}
+		phandle->agcs_scan_event.scan_idx = current_band_idx + 1;
+
+		if ((scan_cfg->chan_list[0].chan_number == 0) ||
+		    (phandle->agcs_scan_event.scan_idx > band_count)) {
+			PRINTM(MMSG,
+			       "No channel selected, cur_idx=%d scan_idx=%d\n",
+			       cur_idx, phandle->agcs_scan_event.scan_idx);
 			status = MLAN_STATUS_FAILURE;
 			goto done;
 		}
 		/** scan type: 0 legacy, 1: enhance scan*/
 		scan_cfg->ext_scan_type = EXT_SCAN_ENHANCE;
-		phandle->agcs_num_in_chan_stats = next_ch;
+		phandle->agcs_num_in_chan_stats = cur_idx;
+
 		/* Call for scan */
 		status = woal_request_userscan(priv, MOAL_NO_WAIT, scan_cfg);
 		if (status == MLAN_STATUS_FAILURE) {
@@ -14133,6 +14137,7 @@ void woal_process_ch_sel_and_switch(moal_private *priv, pagcs_event pevent)
 	ChanStatistics_t *pchan_stats, *pbest_chan_stats;
 	int i;
 	t_u16 best_ch_load = 0;
+	int ret;
 
 	if (!priv || !priv->phandle) {
 		PRINTM(MERROR, "priv or handle is null\n");
@@ -14164,12 +14169,19 @@ void woal_process_ch_sel_and_switch(moal_private *priv, pagcs_event pevent)
 
 		for (i = 0; i < (int)scan_resp.num_in_chan_stats; i++) {
 			if (pchan_stats[i].cca_scan_duration) {
-				if (pbest_chan_stats->noise >
-				    pchan_stats[i].noise) {
+				best_ch_load =
+					pchan_stats[i].cca_busy_duration * 100 /
+					pchan_stats[i].cca_scan_duration;
+				if ((pbest_chan_stats->noise >
+				     pchan_stats[i].noise) &&
+				    (best_ch_load <
+				     handle->agcs_info
+					     .chload_threshold_percentage)) {
 					pbest_chan_stats = &pchan_stats[i];
 				}
 			}
 		}
+		best_ch_load = 0;
 		if (pbest_chan_stats->cca_scan_duration) {
 			best_ch_load = pbest_chan_stats->cca_busy_duration *
 				       100 /
@@ -14205,7 +14217,19 @@ void woal_process_ch_sel_and_switch(moal_private *priv, pagcs_event pevent)
 					new_oper_class = 132;
 				break;
 			case CHAN_BW_80MHZ:
-				band_width = CHANNEL_BW_80MHZ;
+				/* If the target band is 2G, then the bandwidth
+				 * must be downgraded to 40MHz */
+				if (pbest_chan_stats->bandcfg.chanBand ==
+				    BAND_2GHZ) {
+					if (chaninfo.bandcfg.chan2Offset ==
+					    SEC_CHAN_BELOW)
+						band_width =
+							CHANNEL_BW_40MHZ_BELOW;
+					else
+						band_width =
+							CHANNEL_BW_40MHZ_ABOVE;
+				} else
+					band_width = CHANNEL_BW_80MHZ;
 				if (pbest_chan_stats->bandcfg.chanBand ==
 				    BAND_6GHZ)
 					new_oper_class = 133;
@@ -14219,18 +14243,23 @@ void woal_process_ch_sel_and_switch(moal_private *priv, pagcs_event pevent)
 			}
 
 			moal_agcs_trans_state(priv, AGCS_STATE_CSA_START);
-			woal_channel_switch(priv, MTRUE, new_oper_class,
-					    pbest_chan_stats->chan_num,
-					    handle->agcs_info.csa_cnt,
-					    pbest_chan_stats->bandcfg.chanBand,
-					    band_width, MTRUE);
+			ret = woal_channel_switch(
+				priv, MFALSE, new_oper_class,
+				pbest_chan_stats->chan_num,
+				handle->agcs_info.csa_cnt,
+				pbest_chan_stats->bandcfg.chanBand, band_width,
+				MTRUE);
+			if (ret) {
+				moal_agcs_trans_state(priv,
+						      AGCS_STATE_COMPLETE);
+			}
 		} else {
-			moal_agcs_trans_state(priv, AGCS_STATE_COMPLETE);
 			PRINTM(MEVENT,
 			       "AGCS no channel switch NF_newChannel(%d) < NF_threshold(%d) && chload_newChannel(%d) < ChLoad_TH(%d)\n",
 			       pbest_chan_stats->noise,
 			       pevent->stats.nf_threshold, best_ch_load,
 			       handle->agcs_info.chload_threshold_percentage);
+			woal_process_agcs_event(priv, &handle->agcs_scan_event);
 		}
 	}
 }
@@ -22987,9 +23016,12 @@ static int woal_priv_get_uuid(moal_private *priv, t_u8 *respbuf,
 /* Channel switch announcement count */
 #define AGCS_PARAMS_CSA_COUNT 5
 /* nav migigation(long duration) pkts threshold */
-#define AGCS_PARAMS_NAV_MITIGATION_THR 10
+#define AGCS_PARAMS_NAV_MITIGATION_THR 50
 /* ch threshold to trigger channel switch for nighthawk */
 #define AGCS_PARAMS_TRG_CHLOAD_THR 75
+/* Channel switching is triggered only when the current pkts > the min average
+ * packet percentage. */
+#define AGCS_PARAMS_MIN_PKTS_PERCENT 5
 
 /* After AGCS triggered, scan the candidate channel list with duration, unit is
  * ms */
@@ -23046,6 +23078,9 @@ static void wlan_copy_agcs_info(moal_handle *phandle,
 			AGCS_PARAMS_NAV_MITIGATION_THR;
 	if (pagcs_info_req->ch_th == 0)
 		pagcs_info_req->ch_th = AGCS_PARAMS_TRG_CHLOAD_THR;
+	if (pagcs_info_req->min_pkt_percentage == 0)
+		pagcs_info_req->min_pkt_percentage =
+			AGCS_PARAMS_MIN_PKTS_PERCENT;
 
 	if (pagcs_info_req->chan_list[0].chan_number == 0) {
 		for (tmp_idx = 0; (tmp_idx < sizeof(agcs_chan_2g)) &&
@@ -23158,6 +23193,8 @@ static int woal_priv_agcs(moal_private *priv, t_u8 *respbuf, t_u32 respbuflen)
 		misc->param.agcs_cfg.nav_mitigation_th =
 			pagcs_info_req->nav_mitigation_th;
 		misc->param.agcs_cfg.ch_th = pagcs_info_req->ch_th;
+		misc->param.agcs_cfg.min_pkt_percentage =
+			pagcs_info_req->min_pkt_percentage;
 
 		req->action = MLAN_ACT_SET;
 	}
@@ -23187,6 +23224,8 @@ static int woal_priv_agcs(moal_private *priv, t_u8 *respbuf, t_u32 respbuflen)
 		pagcs_info_req->nav_mitigation_th =
 			misc->param.agcs_cfg.nav_mitigation_th;
 		pagcs_info_req->ch_th = misc->param.agcs_cfg.ch_th;
+		pagcs_info_req->min_pkt_percentage =
+			misc->param.agcs_cfg.min_pkt_percentage;
 
 		if (priv->phandle->agcs_info.chload_threshold_percentage == 0)
 			pagcs_info_req->chload_threshold_percentage =
@@ -23244,7 +23283,7 @@ static int woal_priv_per_band_txpwr_cap(moal_private *priv, t_u8 *respbuf,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_misc_cfg *misc = NULL;
 	int ret = 0;
-	int data[2] = {0};
+	int data[4] = {0};
 	int header_len = 0, user_data_len = 0;
 	mlan_status status = MLAN_STATUS_SUCCESS;
 
@@ -23272,7 +23311,7 @@ static int woal_priv_per_band_txpwr_cap(moal_private *priv, t_u8 *respbuf,
 
 	parse_arguments(respbuf + header_len, data, ARRAY_SIZE(data),
 			&user_data_len);
-	if (!user_data_len || user_data_len > 2) {
+	if (!user_data_len || user_data_len > 4) {
 		PRINTM(MERROR, "Invalid number of args!\n");
 		ret = -EINVAL;
 		goto done;
@@ -23288,16 +23327,46 @@ static int woal_priv_per_band_txpwr_cap(moal_private *priv, t_u8 *respbuf,
 		ret = -EINVAL;
 		goto done;
 	}
-	/* tx power capping cannot be negative or above 25 dBm */
-	if (data[1] < 0 || data[1] > 25) {
-		PRINTM(MERROR,
-		       "per_band_txpwr_cap: Invalid power value input\n");
+
+	if (data[0] == BAND_6GHZ && !woal_is_6g_sub_band_allowed(priv)) {
+		PRINTM(MERROR, "per_band_txpwr_cap: 6g band not supported\n");
 		ret = -EINVAL;
 		goto done;
 	}
-
+	/* tx power capping cannot be negative or above 25 dBm */
+	if (data[1] < 0 || data[1] > 25) {
+		if (data[1] == 0xff && data[0] == BAND_6GHZ) {
+			/* rssi based tpc */
+		} else {
+			PRINTM(MERROR,
+			       "per_band_txpwr_cap: Invalid power value input\n");
+			ret = -EINVAL;
+			goto done;
+		}
+	}
+	if (data[0] == BAND_6GHZ && data[1] == 0xff) {
+		if ((data[2] == 0 || data[3] == 0) && (data[2] != data[3])) {
+			/* both thresholds must be 0 for dynamic TPC */
+			PRINTM(MERROR,
+			       "per_band_txpwr_cap: Invalid RSSI value input\n");
+			ret = -EINVAL;
+			goto done;
+		} else if (((data[2] > 0 || data[2] < -120) ||
+			    (data[3] > 0 || data[3] < -120) ||
+			    (data[2] < data[3]))) {
+			/* both thresholds must be between -1 and -120 dBm
+			 * inclusive for peer rssi threshold based TPC
+			 */
+			PRINTM(MERROR,
+			       "per_band_txpwr_cap: Invalid RSSI value input\n");
+			ret = -EINVAL;
+			goto done;
+		}
+	}
 	misc->param.per_band_txpwr_cap.band = (t_u8)data[0];
 	misc->param.per_band_txpwr_cap.power = (t_u8)data[1];
+	misc->param.per_band_txpwr_cap.strong_rssi_thresh = (t_s8)data[2];
+	misc->param.per_band_txpwr_cap.weak_rssi_thresh = (t_s8)data[3];
 	/* Send IOCTL request to MLAN */
 	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
 	if (status != MLAN_STATUS_SUCCESS) {
@@ -23307,6 +23376,8 @@ static int woal_priv_per_band_txpwr_cap(moal_private *priv, t_u8 *respbuf,
 
 	data[0] = misc->param.per_band_txpwr_cap.band;
 	data[1] = misc->param.per_band_txpwr_cap.power;
+	data[2] = misc->param.per_band_txpwr_cap.strong_rssi_thresh;
+	data[3] = misc->param.per_band_txpwr_cap.weak_rssi_thresh;
 	moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data, sizeof(data),
 			respbuflen);
 	ret = sizeof(data);
@@ -24385,7 +24456,6 @@ int woal_android_priv_cmd(struct net_device *dev, struct ifreq *req)
 			len = woal_priv_get_foundry_type(priv, buf,
 							 priv_cmd.total_len);
 			goto handled;
-
 		} else if (strnicmp(buf + strlen(CMD_NXP),
 				    PRIV_CMD_CROSS_CHIP_SYNCH,
 				    strlen(PRIV_CMD_CROSS_CHIP_SYNCH)) == 0) {

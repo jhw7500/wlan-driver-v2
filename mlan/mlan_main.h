@@ -31,6 +31,9 @@ Change log:
 #ifndef _MLAN_MAIN_H_
 #define _MLAN_MAIN_H_
 
+#define PUBLIC_KEY_SIZE 64
+#define UUID_LEN 16
+
 #ifdef DEBUG_LEVEL1
 extern t_void (*print_callback)(t_pvoid pmoal_handle, t_u32 level,
 				char *pformat, IN...);
@@ -3181,6 +3184,9 @@ struct _mlan_adapter {
 	/** agiled channel switch info */
 	agcs_stats agcs_info;
 #endif /* UAP_SUPPORT */
+	t_u8 key[PUBLIC_KEY_SIZE];
+	t_u8 uuid[UUID_LEN];
+	t_u32 fw_meta_data_len;
 };
 
 /** IPv4 ARP request header */
@@ -5298,5 +5304,17 @@ static INLINE t_bool wlan_is_6ghz_op_class(t_u8 op_class)
 }
 
 extern void print_chan_switch_block_event(t_u16 reason_code);
+
+mlan_status mlan_read_meta_data(mlan_adapter *pmadapter, pmlan_fw_image pmfw);
+
+static inline t_bool wlan_copy_on_tx_enabled(const mlan_adapter *adapter)
+{
+	return adapter->init_para.copy_on_tx;
+}
+
+static inline t_bool wlan_copy_on_rx_enabled(const mlan_adapter *adapter)
+{
+	return adapter->init_para.copy_on_rx;
+}
 
 #endif /* !_MLAN_MAIN_H_ */

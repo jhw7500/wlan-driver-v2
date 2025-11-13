@@ -6268,6 +6268,8 @@ mlan_status woal_cancel_scan(moal_private *priv, t_u8 wait_option)
 	 * command response
 	 */
 	woal_sched_timeout(300);
+	/* scan_priv is cleared after scan completion in a controlled context
+	 * where concurrent access is not expected */
 	// coverity[LOCK_EVASION:SUPPRESS]
 	handle->scan_priv = NULL;
 done:
@@ -7380,13 +7382,9 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 		if (priv->media_connected && !priv->cfg_disconnect) {
 			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
 			       MAC2STR(priv->cfg_bssid));
-			if (woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
-					    priv->cfg_bssid,
-					    DEF_DEAUTH_REASON_CODE) !=
-			    MLAN_STATUS_SUCCESS) {
-				PRINTM(MERROR, "%s: woal_disconnect failed\n",
-				       __func__);
-			}
+			woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+					priv->cfg_bssid,
+					DEF_DEAUTH_REASON_CODE);
 		}
 	} else if (bandctrl == BANDCTRL_SET_BANDCFG) {
 		priv->fake_scan_complete = MFALSE;
@@ -7396,13 +7394,9 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 		    (priv->channel > 14)) {
 			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
 			       MAC2STR(priv->cfg_bssid));
-			if (woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
-					    priv->cfg_bssid,
-					    DEF_DEAUTH_REASON_CODE) !=
-			    MLAN_STATUS_SUCCESS) {
-				PRINTM(MERROR, "%s: woal_disconnect failed\n",
-				       __func__);
-			}
+			woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+					priv->cfg_bssid,
+					DEF_DEAUTH_REASON_CODE);
 		}
 		woal_flush_scan_table(priv, BAND_SELECT_2G_ONLY);
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)

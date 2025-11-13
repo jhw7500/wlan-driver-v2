@@ -1031,6 +1031,10 @@ static mlan_status wlan_ret_tx_power_cfg(pmlan_private pmpriv,
 			LEAVE();
 			return MLAN_STATUS_FAILURE;
 		}
+		/* Suppressed due to validated TLV length and controlled buffer
+		 * access within wlan_get_power_level, ensuring safe memory
+		 * operations.
+		 */
 		// coverity[overrun-buffer-val:SUPPRESS]
 		// coverity[cert_str31_c_violation:SUPPRESS]
 		// coverity[cert_arr30_c_violation:SUPPRESS]
@@ -3522,7 +3526,6 @@ mlan_status wlan_ops_sta_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 	case HostCmd_CMD_DS_GET_FOUNDRY_TYPE:
 		ret = wlan_ret_foundry_type(pmpriv, resp, pioctl_buf);
 		break;
-
 	case HostCmd_CMD_SUPPLICANT_PMK:
 		ret = wlan_ret_802_11_supplicant_pmk(pmpriv, resp, pioctl_buf);
 		break;

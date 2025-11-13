@@ -3517,7 +3517,6 @@ static void woal_sdiommc_work(struct work_struct *work)
 
 	PRINTM(MMSG, "========START IN-BAND RESET===========\n");
 	handle = card->handle;
-	woal_send_auto_recovery_start_event(handle);
 	// handle-> mac0 , ref_handle->second mac
 	if (handle->pref_mac) {
 		if (handle->second_mac) {

@@ -65,6 +65,13 @@ Change log:
 
 #include <linux/crc32.h>
 
+#if defined(UAP_SUPPORT) && defined(XDP_SUPPORT)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+static struct sk_buff *woal_process_xdp(moal_private *priv,
+					struct net_device *ndev,
+					pmlan_buffer pmbuf);
+#endif
+#endif
 /********************************************************
 		Local Variables
 ********************************************************/
@@ -269,10 +276,6 @@ mlan_status moal_malloc_cached(t_void *pmoal, t_u32 size, t_u8 **ppbuf,
 	dma_addr_t dma;
 	gfp_t flag;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
-	DEFINE_DMA_ATTRS(attrs);
-#endif
-
 	*pbuf_pa = 0;
 
 	if (unlikely(!card))
@@ -281,19 +284,12 @@ mlan_status moal_malloc_cached(t_void *pmoal, t_u32 size, t_u8 **ppbuf,
 	flag = in_atomic()     ? GFP_ATOMIC :
 	       irqs_disabled() ? GFP_ATOMIC :
 				 GFP_KERNEL;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-	/* Kernel 5.10+: Use dma_alloc_noncoherent with 5 params */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
 	*ppbuf = dma_alloc_noncoherent(&card->dev->dev, size, &dma,
 				       DMA_BIDIRECTIONAL, flag);
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
-	/* Kernel 4.8-5.9: Use dma_alloc_attrs with unsigned long attrs */
+#else
 	*ppbuf = dma_alloc_attrs(&card->dev->dev, size, &dma, flag,
 				 DMA_ATTR_NON_CONSISTENT);
-#else
-	/* Kernel < 4.8 (including 4.4): Use dma_alloc_attrs with struct
-	 * dma_attrs * */
-	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
-	*ppbuf = dma_alloc_attrs(&card->dev->dev, size, &dma, flag, &attrs);
 #endif
 
 	if (unlikely(*ppbuf == NULL)) {
@@ -325,26 +321,15 @@ mlan_status moal_mfree_cached(t_void *pmoal, t_u32 size, t_u8 *pbuf,
 	moal_handle *handle = (moal_handle *)pmoal;
 	pcie_service_card *card = handle->card;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
-	DEFINE_DMA_ATTRS(attrs);
-#endif
-
 	if (unlikely(!pbuf || !card))
 		return MLAN_STATUS_FAILURE;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-	/* Kernel 5.10+: Use dma_free_noncoherent with 5 params */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
 	dma_free_noncoherent(&card->dev->dev, size, pbuf, buf_pa,
 			     DMA_BIDIRECTIONAL);
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
-	/* Kernel 4.8-5.9: Use dma_free_attrs with unsigned long attrs */
+#else
 	dma_free_attrs(&card->dev->dev, size, pbuf, buf_pa,
 		       DMA_ATTR_NON_CONSISTENT);
-#else
-	/* Kernel < 4.8 (including 4.4): Use dma_free_attrs with struct
-	 * dma_attrs * */
-	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
-	dma_free_attrs(&card->dev->dev, size, pbuf, buf_pa, &attrs);
 #endif
 
 	atomic_dec(&handle->malloc_cons_count);
@@ -2745,6 +2730,74 @@ static t_u8 moal_user_priority_to_qos(t_u32 userPriority)
 	return aci;
 }
 
+#if defined(UAP_SUPPORT) && defined(XDP_SUPPORT)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+/**
+ *  @brief This function acts based on action returned by bpf program
+ *         XDP_DROP: drop packet
+ *         XDP_PASS: upload packet to network stack
+ *         XDP_REDIRECT: redirect packet to other XDP enabled interface
+ *  @param pmoal Pointer to the MOAL context
+ *  @param pmbuf Pointer to the mlan buffer structure
+ *
+ *  @return NULL or sk_buff
+ */
+static struct sk_buff *woal_process_xdp(moal_private *priv,
+					struct net_device *ndev,
+					pmlan_buffer pmbuf)
+{
+	t_u32 xdp_act;
+	struct xdp_buff xdp_buff;
+	struct sk_buff *skb = NULL;
+	struct page *page;
+	__u8 *data;
+	int ret = 0;
+
+	page = dev_alloc_page();
+	if (unlikely(!page))
+		netdev_err(ndev, "page alloc failed\n");
+
+	data = page_address(page);
+
+	memcpy(data + XDP_PACKET_HEADROOM, pmbuf->pbuf + pmbuf->data_offset,
+	       pmbuf->data_len);
+	xdp_init_buff(&xdp_buff, PAGE_SIZE - XDP_PACKET_HEADROOM,
+		      &priv->xdp_rxq);
+	xdp_prepare_buff(&xdp_buff, data, XDP_PACKET_HEADROOM, pmbuf->data_len,
+			 false);
+	xdp_buff_clear_frags_flag(&xdp_buff);
+
+	xdp_act = bpf_prog_run_xdp(priv->xdp_prog, &xdp_buff);
+	switch (xdp_act) {
+	case XDP_DROP:
+		__free_page(page);
+		break;
+	case XDP_PASS:
+		skb = build_skb(xdp_buff.data_hard_start, PAGE_SIZE);
+		skb_reserve(skb, XDP_PACKET_HEADROOM);
+		skb_put(skb, xdp_buff.data_end - xdp_buff.data);
+#if defined(CONFIG_PAGE_POOL)
+		skb_mark_for_recycle(skb);
+#endif
+		skb->dev = ndev;
+		skb->protocol = eth_type_trans(skb, skb->dev);
+		skb->ip_summed = CHECKSUM_NONE;
+		return skb;
+	case XDP_REDIRECT:
+		ret = xdp_do_redirect(ndev, &xdp_buff, priv->xdp_prog);
+		if (ret)
+			PRINTM(MERROR, "XDP: redirect failed:%d\n", ret);
+		priv->phandle->xdp_rd++;
+		break;
+	default:
+		return skb;
+	}
+
+	return skb;
+}
+#endif
+#endif
+
 /**
  *  @brief This function uploads the packet to the network stack
  *
@@ -2898,9 +2951,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				       "\n",
 				       priv->netdev->name,
 				       MAC2STR(ethh->h_source));
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
-				priv->deauth_evt_cnt = 0;
-#endif
 			} else if (ntohs(ethh->h_proto) == NXP_ETH_P_WAPI) {
 				PRINTM(MEVENT,
 				       "wlan: %s Rx WAPI pkt from " MACSTR "\n",
@@ -3304,7 +3354,6 @@ static void woal_rx_mgmt_pkt_event(moal_private *priv, t_u8 *pkt, t_u16 len)
 static void woal_process_csi_status_report(pmlan_event pmevent)
 {
 	csi_status_info *pcsi_status = (csi_status_info *)pmevent->event_buf;
-
 	if (pcsi_status->status == CSI_STATUS_ENABLED) {
 		PRINTM(MEVENT,
 		       "csi status report: enable and start csi on channel %d \r\n",
@@ -5700,6 +5749,94 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 #endif
 #endif
 		break;
+	case MLAN_EVENT_ID_FW_ROAM_OFFLOAD_RESULT:
+#ifdef STA_CFG80211
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+		woal_cfg80211_vendor_event(priv, event_set_key_mgmt_offload,
+					   &enable, sizeof(enable));
+#endif
+		moal_memcpy_ext(priv->phandle, priv->cfg_bssid,
+				pmevent->event_buf, ETH_ALEN, ETH_ALEN);
+		tlv = (MrvlIEtypesHeader_t *)((t_u8 *)pmevent->event_buf +
+					      MLAN_MAC_ADDR_LENGTH);
+		tlv_buf_left = pmevent->event_len - MLAN_MAC_ADDR_LENGTH;
+		while (tlv_buf_left >= sizeof(MrvlIEtypesHeader_t)) {
+			tlv_type = woal_le16_to_cpu(tlv->type);
+			tlv_len = woal_le16_to_cpu(tlv->len);
+
+			if (tlv_buf_left <
+			    (tlv_len + sizeof(MrvlIEtypesHeader_t))) {
+				PRINTM(MERROR,
+				       "Error processing firmware roam success TLVs, bytes left < TLV length\n");
+				break;
+			}
+
+			switch (tlv_type) {
+			case TLV_TYPE_APINFO:
+				pinfo = (apinfo *)tlv;
+				break;
+			case TLV_TYPE_ASSOC_REQ_IE:
+				req_tlv = (apinfo *)tlv;
+				break;
+			default:
+				break;
+			}
+			tlv_buf_left -= tlv_len + sizeof(MrvlIEtypesHeader_t);
+			tlv = (MrvlIEtypesHeader_t
+				       *)((t_u8 *)tlv + tlv_len +
+					  sizeof(MrvlIEtypesHeader_t));
+		}
+		if (!pinfo) {
+			PRINTM(MERROR,
+			       "ERROR:AP info in roaming event buffer is NULL\n");
+			goto done;
+		}
+		if (req_tlv) {
+			req_ie = req_tlv->rsp_ie;
+			ie_len = req_tlv->header.len;
+		}
+		woal_inform_bss_from_scan_result(priv, NULL, MOAL_NO_WAIT);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
+		roam_info =
+			kzalloc(sizeof(struct cfg80211_roam_info), GFP_ATOMIC);
+		if (roam_info) {
+#if ((CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)) ||                     \
+     (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 31))
+			roam_info->links[0].bssid = priv->cfg_bssid;
+#else
+			roam_info->bssid = priv->cfg_bssid;
+#endif
+			roam_info->req_ie = req_ie;
+			roam_info->req_ie_len = ie_len;
+			roam_info->resp_ie = pinfo->rsp_ie;
+			roam_info->resp_ie_len = pinfo->header.len;
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+			if (priv->wdev->u.client.ssid_len)
+#else
+			if (priv->wdev->ssid_len)
+#endif
+				cfg80211_roamed(priv->netdev, roam_info,
+						GFP_KERNEL);
+			kfree(roam_info);
+		}
+#else
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 0, 0)
+		cfg80211_roamed(priv->netdev, NULL, priv->cfg_bssid, req_ie,
+				ie_len, pinfo->rsp_ie, pinfo->header.len,
+				GFP_KERNEL);
+#else
+		cfg80211_roamed(priv->netdev, priv->cfg_bssid, req_ie, ie_len,
+				pinfo->rsp_ie, pinfo->header.len, GFP_KERNEL);
+#endif
+#endif
+
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+		woal_roam_ap_info(priv, pmevent->event_buf, pmevent->event_len);
+#endif
+#endif
+		PRINTM(MMSG, "FW Roamed to bssid " MACSTR " successfully\n",
+		       MAC2STR(pmevent->event_buf));
+		break;
 	case MLAN_EVENT_ID_DRV_RTT_RESULT:
 		DBG_HEXDUMP(MEVT_D, "RTT result", pmevent->event_buf,
 			    pmevent->event_len);
@@ -6081,4 +6218,18 @@ inline void moal_write_unaligned_u32(void *dest, t_u32 val)
 #else
 	memcpy(dest, &val, sizeof(t_u32));
 #endif
+}
+
+/**
+ *  @brief This function generates crc through kernek API
+ *
+ *  @param initial_crc     Starting crc
+ *  @param data            A pointer to input data buffer
+ *  @param len             Length of the buffer
+ *
+ *  @return                crc value
+ */
+t_u32 moal_crc32_be(t_u32 initial_crc, t_u8 const *data, unsigned long len)
+{
+	return crc32_be(initial_crc, data, len);
 }

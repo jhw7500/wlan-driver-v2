@@ -101,7 +101,7 @@ static int wifi_reset_config = 5;
 static int tx_budget = 2600;
 static int mclient_scheduling = 1;
 
-static int copy_policy;
+static int copy_policy = 0;
 
 static int ext_scan;
 
@@ -109,10 +109,10 @@ static int ext_scan;
 static int bootup_cal_ctrl;
 /** IEEE PS mode */
 static int ps_mode;
-/** plinkstats parameter */
-static char *plinkstats;
 /** tcpackenh parameter */
 static int tcpackenh = 1;
+/** plinkstats parameter */
+static char *plinkstats = NULL;
 /** passive to active scan */
 static int p2a_scan;
 /** scan chan gap */
@@ -142,7 +142,7 @@ static int wacp_mode = WACP_MODE_DEFAULT;
 #ifdef XDP_SUPPORT
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 /** XDP(express datapath) mode */
-static int xdp;
+static int xdp = 0;
 #endif
 #endif
 
@@ -498,7 +498,19 @@ mlan_status check_device_name_info(char *device_name, t_u16 *card_type)
 int secure_host = 0;
 #endif
 
-#if defined(USB) && defined(USB_CUSTOMER_VIDPID)
+/** bandctrl */
+static int bandctrl = 0;
+
+#if defined(USB)
+/**
+ *  @brief This function checks if a device name exists in the card type mapping
+ * table
+ *
+ *  @param device_name  A pointer to the device name string to search for
+ *  @param card_type    A pointer to store the corresponding card type if found
+ *  @return             MLAN_STATUS_SUCCESS if device name is found,
+ * MLAN_STATUS_FAILURE otherwise
+ */
 mlan_status check_device_name_info(char *device_name, t_u16 *card_type)
 {
 	t_u32 tbl_size =
@@ -1158,13 +1170,6 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				goto err;
 			params->ps_mode = out_data;
 			PRINTM(MMSG, "ps_mode = %d\n", params->ps_mode);
-		} else if (strncmp(line, "plinkstats", strlen("plinkstats")) ==
-			   0) {
-			if (parse_line_read_string(line, &out_str) !=
-			    MLAN_STATUS_SUCCESS)
-				goto err;
-			woal_dup_string(&params->plinkstats, out_str);
-			PRINTM(MMSG, "plinkstats=%s\n", params->plinkstats);
 		} else if (strncmp(line, "tcpackenh", strlen("tcpackenh")) ==
 			   0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1172,6 +1177,13 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				goto err;
 			params->tcpackenh = out_data;
 			PRINTM(MMSG, "tcpackenh = %d\n", params->tcpackenh);
+		} else if (strncmp(line, "plinkstats", strlen("plinkstats")) ==
+			   0) {
+			if (parse_line_read_string(line, &out_str) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			woal_dup_string(&params->plinkstats, out_str);
+			PRINTM(MMSG, "plinkstats=%s\n", params->plinkstats);
 		} else if (strncmp(line, "p2a_scan", strlen("p2a_scan")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
 			    MLAN_STATUS_SUCCESS)
@@ -1332,7 +1344,10 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				       sizeof(handle->mode_psd_file));
 				strncpy(handle->mode_psd_file,
 					params->txpwrlimit_cfg,
-					strlen(params->txpwrlimit_cfg) + 1);
+					sizeof(handle->mode_psd_file) - 1);
+				handle->mode_psd_file
+					[sizeof(handle->mode_psd_file) - 1] =
+					'\0';
 				PRINTM(MMSG, "Mode PSD file name: %s",
 				       handle->mode_psd_file);
 			}
@@ -1955,6 +1970,12 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			PRINTM(MMSG, "make_before_break=%x\n",
 			       params->make_before_break);
 		}
+		else if (strncmp(line, "bandctrl", strlen("bandctrl")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->bandctrl = out_data;
+		}
 	}
 
 	if (params->tx_budget <= 0)
@@ -2244,7 +2265,8 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (handle->params.txpwrlimit_cfg) {
 		memset(handle->mode_psd_file, 0, sizeof(handle->mode_psd_file));
 		strncpy(handle->mode_psd_file, handle->params.txpwrlimit_cfg,
-			strlen(handle->params.txpwrlimit_cfg) + 1);
+			sizeof(handle->mode_psd_file) - 1);
+		handle->mode_psd_file[sizeof(handle->mode_psd_file) - 1] = '\0';
 		PRINTM(MINFO, "Mode PSD file name: %s", handle->mode_psd_file);
 	}
 
@@ -2448,6 +2470,10 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		handle->params.tpe_ie_ignore = params->tpe_ie_ignore;
 	handle->params.make_before_break = make_before_break;
+
+	handle->params.bandctrl = bandctrl;
+	if (params)
+		handle->params.bandctrl = params->bandctrl;
 }
 
 /**
@@ -2470,6 +2496,10 @@ void woal_free_module_param(moal_handle *handle)
 	if (params->wifi_fw_name) {
 		kfree(params->wifi_fw_name);
 		params->wifi_fw_name = NULL;
+	}
+	if (params->plinkstats) {
+		kfree(params->plinkstats);
+		params->plinkstats = NULL;
 	}
 	if (params->hw_name) {
 		kfree(params->hw_name);
@@ -3083,6 +3113,13 @@ void woal_init_from_dev_tree(void)
 				make_before_break = data;
 			}
 		}
+
+		else if (!strncmp(prop->name, "bandctrl", strlen("bandctrl"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MIOCTL, "bandctrl=0x%x\n", data);
+				bandctrl = data;
+			}
+		}
 	}
 	of_node_put(dt_node);
 	LEAVE();
@@ -3315,6 +3352,7 @@ mlan_status woal_get_c_vidpid(char **c_vidpid)
 	t_u8 line[MAX_LINE_LEN], *data = NULL;
 	t_u32 size, i, tbl_size;
 	char *card_type = NULL, *blk_id = NULL, *out_str = NULL;
+	;
 
 	if (mod_para == NULL) {
 		PRINTM(MMSG, "No module param cfg file specified\n");
@@ -3395,8 +3433,7 @@ err:
 
 /* Register module parameter 'plinkstats' for runtime configuration.
  * Accepts string input via sysfs or kernel command line.
- * Format: "0" to disable, "1" to enable, "2" to reset.
- */
+ * Format: "0" to disable, "1" to enable, "2" to reset. */
 module_param(plinkstats, charp, 0);
 MODULE_PARM_DESC(plinkstats, "0: Disable; 1: Enable; 2: Reset");
 module_param(mod_para, charp, 0);
@@ -3877,3 +3914,7 @@ module_param(make_before_break, int, 0);
 MODULE_PARM_DESC(
 	make_before_break,
 	"1: make_before_break during roam; 0: no make_before_break during roam");
+
+module_param(bandctrl, int, 0660);
+MODULE_PARM_DESC(bandctrl,
+		 "0: Disable bandctrl mode(default); 1: Enable bandctrl mode");

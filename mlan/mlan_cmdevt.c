@@ -1555,7 +1555,7 @@ static mlan_status wlan_dnld_cmd_to_fw(mlan_private *pmpriv,
 						   (t_u8 *)pcmd + S_DS_GEN)),
 	       cmd_size, wlan_le16_to_cpu(pcmd->seq_num), timeout);
 
-	DBG_HEXDUMP(MCMD_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
+		DBG_HEXDUMP(MCMD_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
 
 #if defined(SDIO) || defined(PCIE)
 	if (!IS_USB(pmadapter->card_type)) {
@@ -2675,7 +2675,8 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 
 	/* Check init command response */
 	if (pmadapter->hw_status == WlanHardwareStatusInitializing ||
-	    pmadapter->hw_status == WlanHardwareStatusGetHwSpec) {
+	    pmadapter->hw_status == WlanHardwareStatusGetHwSpec
+	) {
 		if (ret == MLAN_STATUS_FAILURE) {
 #if 0
 			//ignore command error for WARM RESET
@@ -2770,8 +2771,6 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 		   (HostCmd_CMD_GET_HW_SPEC == cmdresp_no)) {
 		pmadapter->hw_status = WlanHardwareStatusGetHwSpecdone;
 	}
-#if defined(PCIEAW693)
-#endif
 
 done:
 	LEAVE();
@@ -5517,12 +5516,12 @@ mlan_status wlan_adapter_get_hw_spec(pmlan_adapter pmadapter)
 	}
 #endif
 
-	ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT, HostCmd_ACT_GEN_SET,
-			       0, MNULL, MNULL);
-	if (ret) {
-		ret = MLAN_STATUS_FAILURE;
-		goto done;
-	}
+		ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
+				       HostCmd_ACT_GEN_SET, 0, MNULL, MNULL);
+		if (ret) {
+			ret = MLAN_STATUS_FAILURE;
+			goto done;
+		}
 
 	/** DPD data dnld cmd prepare */
 	if ((pmadapter->pdpd_data) && (pmadapter->dpd_data_len > 0)) {
@@ -8277,6 +8276,8 @@ mlan_status wlan_ret_tx_rx_pkt_stats(pmlan_private pmpriv,
 			cmdsize - S_DS_GEN - sizeof(HostCmd_DS_TX_RX_HISTOGRAM);
 		if (length > 0) {
 			info->param.tx_rx_histogram.size = length;
+			/* buffer size is validated and memcpy_ext ensures safe
+			 * bounded copying within allocated memory regions. */
 			// coverity[overrun-buffer-arg:SUPPRESS]
 			// coverity[cert_arr30_c_violation:SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
@@ -11589,8 +11590,11 @@ mlan_status wlan_cmd_chan_trpc_config(pmlan_private pmpriv,
 			sizeof(MrvlIEtypesHeader_t));
 
 		tlv->band = cap->band;
-		if (cmd_action == HostCmd_ACT_GEN_SET)
+		if (cmd_action == HostCmd_ACT_GEN_SET) {
 			tlv->power = cap->power;
+			tlv->strong_rssi_thresh = cap->strong_rssi_thresh;
+			tlv->weak_rssi_thresh = cap->weak_rssi_thresh;
+		}
 		size += sizeof(MrvlIEtypes_per_band_txpwr_cap);
 	} else {
 		trpc_cfg->sub_band = wlan_cpu_to_le16(cfg->sub_band);
@@ -11711,6 +11715,8 @@ mlan_status wlan_ret_chan_trpc_config(pmlan_private pmpriv,
 			tlv = (MrvlIEtypes_per_band_txpwr_cap *)header;
 			cap->band = tlv->band;
 			cap->power = tlv->power;
+			cap->strong_rssi_thresh = tlv->strong_rssi_thresh;
+			cap->weak_rssi_thresh = tlv->weak_rssi_thresh;
 		} else {
 			cfg = (mlan_ds_misc_chan_trpc_cfg *)&(
 				misc->param.trpc_cfg);
@@ -11863,103 +11869,18 @@ mlan_status wlan_ret_foundry_type(pmlan_private pmpriv,
 {
 	const HostCmd_DS_GET_FOUNDRY_TYPE *fab_cmd = &resp->params.foundry_type;
 	mlan_ds_misc_cfg *misc_cfg = MNULL;
-
 	ENTER();
 	if (pioctl_buf) {
 		misc_cfg = (mlan_ds_misc_cfg *)pioctl_buf->pbuf;
 		misc_cfg->param.soc_foundry_type.foundry_type =
 			wlan_le16_to_cpu(fab_cmd->foundry_type);
-		PRINTM(MCMND, "get SOC foundry_type %d\n",
+		PRINTM(MCMND, "get SOC foundry_type %d \n",
 		       fab_cmd->foundry_type);
 	}
 
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
 }
-
-/**
- *  @brief This function prepares command to set debug temperature
- *
- *  @param pmpriv       A pointer to mlan_private structure
- *  @param cmd          A pointer to HostCmd_DS_COMMAND structure
- *  @param cmd_action   the action: GET or SET
- *  @param pdata_buf    A pointer to data buffer
- *  @return             MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
- */
-mlan_status wlan_cmd_set_debug_temperature(pmlan_private pmpriv,
-					   HostCmd_DS_COMMAND *cmd,
-					   t_u16 cmd_action, t_void *pdata_buf)
-{
-	HostCmd_DS_SET_DEBUG_TEMPERATURE *temp_config = &cmd->params.temp_cfg;
-	mlan_ds_set_debug_temperature *cfg =
-		(mlan_ds_set_debug_temperature *)pdata_buf;
-	t_u8 rfu = 0;
-	t_u8 rpath = 0;
-
-	ENTER();
-	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_SET_DEBUG_TEMPERATURE);
-	cmd->size = wlan_cpu_to_le16(sizeof(HostCmd_DS_SET_DEBUG_TEMPERATURE) +
-				     S_DS_GEN);
-	temp_config->action = wlan_cpu_to_le16(cmd_action);
-	temp_config->simulation_enable =
-		wlan_cpu_to_le16(cfg->simulation_enable);
-	if (temp_config->simulation_enable == 0) {
-		cmd->size = wlan_cpu_to_le16(
-			sizeof(temp_config->action) +
-			sizeof(temp_config->simulation_enable) + S_DS_GEN);
-	} else {
-		temp_config->cau_temp = wlan_cpu_to_le32(cfg->cau_temp);
-		for (rfu = 0; rfu < MAX_RFUS; rfu++) {
-			for (rpath = 0; rpath < MAX_PATHS; rpath++) {
-				temp_config->rf_temp[rfu][rpath] =
-					wlan_cpu_to_le32(
-						cfg->rf_temp[rfu][rpath]);
-			}
-		}
-	}
-	LEAVE();
-	return MLAN_STATUS_SUCCESS;
-}
-
-/**
- *  @brief This function handles the command response of debug temperature
- *
- *  @param pmpriv       A pointer to mlan_private structure
- *  @param resp         A pointer to HostCmd_DS_COMMAND
- *  @param pioctl_buf   A pointer to command buffer
- *
- *  @return             MLAN_STATUS_SUCCESS
- */
-mlan_status wlan_ret_debug_temperature(pmlan_private pmpriv,
-				       HostCmd_DS_COMMAND *resp,
-				       mlan_ioctl_req *pioctl_buf)
-{
-	HostCmd_DS_SET_DEBUG_TEMPERATURE *temp_config =
-		(HostCmd_DS_SET_DEBUG_TEMPERATURE *)&resp->params.temp_cfg;
-	mlan_ds_misc_cfg *cfg = MNULL;
-	t_u8 rfu = 0;
-	t_u8 rpath = 0;
-
-	ENTER();
-	if (pioctl_buf) {
-		cfg = (mlan_ds_misc_cfg *)pioctl_buf->pbuf;
-		cfg->param.temp_cfg.simulation_enable =
-			wlan_le16_to_cpu(temp_config->simulation_enable);
-		cfg->param.temp_cfg.cau_temp =
-			wlan_le32_to_cpu(temp_config->cau_temp);
-		for (rfu = 0; rfu < MAX_RFUS; rfu++) {
-			for (rpath = 0; rpath < MAX_PATHS; rpath++) {
-				cfg->param.temp_cfg
-					.rf_temp[rfu][rpath] = wlan_le32_to_cpu(
-					temp_config->rf_temp[rfu][rpath]);
-			}
-		}
-	}
-
-	LEAVE();
-	return MLAN_STATUS_SUCCESS;
-}
-
 /**
  *  @brief This function prepares command of RANGE_EXT
  *

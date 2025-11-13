@@ -144,4 +144,6 @@ inline t_u32 moal_read_unaligned_u32(const void *src);
 inline void moal_write_unaligned_u16(void *dest, t_u16 val);
 inline void moal_write_unaligned_u32(void *dest, t_u32 val);
 
+t_u32 moal_crc32_be(t_u32 initial_crc, t_u8 const *data, unsigned long len);
+
 #endif /*_MOAL_H */
