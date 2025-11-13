@@ -557,7 +557,9 @@ err_init_fw:
 						 handle->init_wait_q_woken);
 	}
 #ifdef ANDROID_KERNEL
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+	wakeup_source_trash(handle->ws);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
 	wakeup_source_trash(&handle->ws);
 #else
 	wake_lock_destroy(&handle->wake_lock);
@@ -1477,6 +1479,8 @@ static mlan_status woal_pcie_init(pcie_service_card *card)
 	}
 #endif
 
+	card->cache_alignment_mask = dma_get_cache_alignment() - 1;
+
 	ret = pci_request_region(pdev, 0, DRV_NAME);
 	if (ret) {
 		PRINTM(MERROR, "req_reg(0) error\n");
@@ -1550,7 +1554,6 @@ static mlan_status woal_pcie_register_dev(moal_handle *handle)
 	card->handle = handle;
 
 	switch (pcie_int_mode) {
-		/* fall through */
 	case PCIE_INT_MODE_MSI:
 		pcie_int_mode = PCIE_INT_MODE_MSI;
 		ret = pci_enable_msi(pdev);
@@ -1567,7 +1570,7 @@ static mlan_status woal_pcie_register_dev(moal_handle *handle)
 		}
 		// follow through
 
-		/* fall through */
+		fallthrough;
 	case PCIE_INT_MODE_LEGACY:
 		pcie_int_mode = PCIE_INT_MODE_LEGACY;
 		ret = request_irq(pdev->irq, woal_pcie_interrupt, IRQF_SHARED,

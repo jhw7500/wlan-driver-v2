@@ -3023,6 +3023,9 @@ static mlan_status wlan_sec_ioctl_get_key(pmlan_adapter pmadapter,
 			index = pmpriv->wep_key_curr_index;
 			sec->param.encrypt_key.key_index =
 				pmpriv->wep_key[index].key_index;
+			/* memcpy_ext enforces bounds checking and key_length is
+			 * validated to ensure safe copying within fixed-size
+			 * key_material buffer */
 			// coverity[cert_arr30_c_violation: SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
 			memcpy_ext(pmadapter,
@@ -3054,6 +3057,9 @@ static mlan_status wlan_sec_ioctl_get_key(pmlan_adapter pmadapter,
 		if (pmpriv->wep_key[index].key_length) {
 			sec->param.encrypt_key.key_index =
 				pmpriv->wep_key[index].key_index;
+			/* memcpy_ext enforces bounds checking and key_length is
+			 * validated to ensure safe copying within fixed-size
+			 * key_material buffer */
 			// coverity[cert_arr30_c_violation: SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
 			memcpy_ext(pmadapter,
@@ -5357,6 +5363,9 @@ static mlan_status wlan_misc_cfg_ioctl(pmlan_adapter pmadapter,
 	case MLAN_OID_MISC_AUTH_ASSOC_TIMEOUT_CONFIG:
 		status =
 			wlan_misc_auth_assoc_timeout_cfg(pmadapter, pioctl_req);
+		break;
+	case MLAN_OID_MISC_FOUNDRY_TYPE:
+		status = wlan_misc_ioctl_foundry_type(pmadapter, pioctl_req);
 		break;
 	case MLAN_OID_MISC_PER_BAND_TXPWR_CAP:
 		status = wlan_misc_ioctl_per_band_txpwr_cap(pmadapter,

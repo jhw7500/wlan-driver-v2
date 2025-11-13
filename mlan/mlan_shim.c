@@ -734,12 +734,6 @@ mlan_status mlan_read_meta_data(mlan_adapter *pmadapter, pmlan_fw_image pmfw)
 	if (memcmp(pmadapter, magic,
 		   (pmfw->pfw_buf + pmfw->fw_len) - META_MAGIC_OFFSET,
 		   META_MAGIC_LEN)) {
-#ifdef SECURE_HOST
-		if (pmadapter->shc_secure_host)
-			PRINTM(MERROR,
-			       "Secure host failed: No Meta magic in FW\n");
-		else
-#endif
 			ret = MLAN_STATUS_SUCCESS;
 
 		LEAVE();
@@ -1397,6 +1391,22 @@ static void mlan_refill_rx_ring(t_void *padapter)
 	return;
 }
 #endif
+
+/**
+ *  @brief clean up txrx
+ *
+ *  @param adapter	A pointer to mlan_adapter structure
+ *
+ *  @return		N/A
+ */
+static t_void wlan_free_txrx(pmlan_adapter pmadapter)
+{
+	t_u8 i;
+	for (i = 0; i < pmadapter->priv_num; i++) {
+		if (pmadapter->priv[i])
+			wlan_clean_txrx(pmadapter->priv[i]);
+	}
+}
 
 /**
  *  @brief The main process

@@ -1427,16 +1427,20 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			}
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_IND].op_mode,
-				strlen(mode_psd_6G[UAP_MODE_IND].op_mode));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_IND].psd_dbm,
-				strlen(mode_psd_6G[UAP_MODE_IND].psd_dbm));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_ru_string,
 				mode_psd_6G[UAP_MODE_IND].op_mode,
-				strlen(mode_psd_6G[UAP_MODE_IND].op_mode));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_ru_string,
 				mode_psd_6G[UAP_MODE_IND].psd_dbm,
-				strlen(mode_psd_6G[UAP_MODE_IND].psd_dbm));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			break;
 		}
 		/* Standard Power Mode */
@@ -1471,16 +1475,20 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			}
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_SP].op_mode,
-				strlen(mode_psd_6G[UAP_MODE_SP].op_mode));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_SP].psd_dbm,
-				strlen(mode_psd_6G[UAP_MODE_SP].psd_dbm));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_ru_string,
 				mode_psd_6G[UAP_MODE_SP].op_mode,
-				strlen(mode_psd_6G[UAP_MODE_SP].op_mode));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_ru_string,
 				mode_psd_6G[UAP_MODE_SP].psd_dbm,
-				strlen(mode_psd_6G[UAP_MODE_SP].psd_dbm));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			break;
 		}
 		/* Very Low Power Mode */
@@ -1515,16 +1523,20 @@ void woal_dnld_uap_6e_psd_table(moal_private *priv, const t_u8 *beacon_buf,
 			}
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_VLP].op_mode,
-				strlen(mode_psd_6G[UAP_MODE_VLP].op_mode));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_string,
 				mode_psd_6G[UAP_MODE_VLP].psd_dbm,
-				strlen(mode_psd_6G[UAP_MODE_VLP].psd_dbm));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_ru_string,
 				mode_psd_6G[UAP_MODE_VLP].op_mode,
-				strlen(mode_psd_6G[UAP_MODE_VLP].op_mode));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			strncat(priv->phandle->mode_psd_ru_string,
 				mode_psd_6G[UAP_MODE_VLP].psd_dbm,
-				strlen(mode_psd_6G[UAP_MODE_VLP].psd_dbm));
+				(sizeof(priv->phandle->mode_psd_string) -
+				 strlen(priv->phandle->mode_psd_string) - 1));
 			break;
 		}
 		default:
@@ -3662,6 +3674,7 @@ int woal_cfg80211_add_beacon(struct wiphy *wiphy, struct net_device *dev,
 {
 	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
 	int ret = 0;
+	t_u32 bandctrl = 0;
 	moal_private *sta_priv =
 		woal_get_priv_bss_type(priv->phandle, MLAN_BSS_TYPE_STA);
 

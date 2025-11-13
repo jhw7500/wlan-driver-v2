@@ -4,7 +4,7 @@
  * @brief This file contains the STA CFG80211 specific defines.
  *
  *
- * Copyright 2011-2021, 2025-2026 NXP
+ * Copyright 2011-2021, 2025 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991

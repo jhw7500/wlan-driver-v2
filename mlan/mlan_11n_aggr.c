@@ -882,7 +882,7 @@ int wlan_11n_aggregate_pkt(mlan_private *priv, raListTbl *pra_list,
 	PRINTM(MDAT_D, "Handling Aggr packet\n");
 #ifdef PCIEAW693
 	if (!wlan_copy_on_tx_enabled(pmadapter) &&
-	    IS_PCIEAW693(pmadapter->card_type))
+	    IS_PCIEAW693(pmadapter->card_type)) {
 		return wlan_send_amsdu_subframe_list(priv, pra_list, headroom,
 						     ptrindex);
 #endif

@@ -3417,7 +3417,9 @@ err_init_fw:
 						 handle->init_wait_q_woken);
 	}
 #ifdef ANDROID_KERNEL
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+	wakeup_source_trash(handle->ws);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 0)
 	wakeup_source_trash(&handle->ws);
 #else
 	wake_lock_destroy(&handle->wake_lock);

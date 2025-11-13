@@ -1834,6 +1834,13 @@ typedef struct _moal_priv_linkstats {
 	t_s16 noise;
 } moal_priv_linkstats;
 
+#define BANDCTRL_SET_BANDCFG MBIT(0)
+#define BANDCTRL_BLOCK_SCAN MBIT(1)
+#define BANDCTRL_2G_ONLY MBIT(2)
+
+#define BAND_SELECT_ALL 0
+#define BAND_SELECT_2G_ONLY 1
+
 /** Private structure for MOAL */
 struct _moal_private {
 	/** Handle structure */
@@ -2264,6 +2271,16 @@ struct _moal_private {
 	t_u64 rx_airtime_base;
 	/*TX airtime count*/
 	t_u64 tx_airtime_base;
+
+	t_u32 band_ctrl;
+
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	/** xdp */
+	struct bpf_prog *xdp_prog;
+	struct xdp_rxq_info xdp_rxq;
+#endif
+#endif
 };
 
 #ifdef SDIO
@@ -2914,6 +2931,10 @@ typedef struct _moal_mod_para {
 	int tpe_ie_ignore;
 	/* make_before_break during roam */
 	int make_before_break;
+	int bandctrl;
+
+	/** plinkstats_cfg setting */
+	char *plinkstats;
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);
@@ -3019,6 +3040,9 @@ typedef MLAN_PACK_START struct {
 	t_u16 nav_mitigation_th;
 	/* ch threshold to trigger channel switch for nighthawk */
 	t_u16 ch_th;
+	/* Channel switching is triggered only when the current pkts > the min
+	 * average packet percentage. */
+	t_u16 min_pkt_percentage;
 } MLAN_PACK_END wlan_agcs_info;
 #endif /* UAP_SUPPORT */
 
@@ -3508,6 +3532,8 @@ struct _moal_handle {
 	wlan_agcs_info agcs_info;
 	/* fw cap and cap_ext */
 	mlan_hw_info hw_info;
+	/* agcs scan event */
+	agcs_stats agcs_scan_event;
 #endif /* UAP_SUPPORT */
 
 #ifdef DUMP_TO_PROC
@@ -3516,6 +3542,12 @@ struct _moal_handle {
 	t_u64 ssu_dump_len;
 	/** Pointer of ssu dump buffer */
 	t_u8 *ssu_dump_buf;
+#endif
+#endif
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	struct page *page;
+	t_u32 xdp_rd;
 #endif
 #endif
 };
@@ -4924,7 +4956,8 @@ extern mlan_status moal_agcs_trans_state(moal_private *priv,
 extern void woal_agcs_event(moal_private *priv, pagcs_event pacs_start_event);
 #endif /* UAP_SUPPORT */
 
-#if defined(USB) && defined(USB_CUSTOMER_VIDPID)
+#if defined(USB)
 extern mlan_status check_device_name_info(char *device_name, t_u16 *card_type);
+extern mlan_status woal_get_c_vidpid(char **c_vidpid);
 #endif
 #endif /* _MOAL_MAIN_H */
