@@ -1832,6 +1832,8 @@ typedef struct _moal_priv_linkstats {
 struct _moal_private {
 	/** Handle structure */
 	moal_handle *phandle;
+	/* shadow APF state for CTS */
+	struct woal_apf_ctx *apf;
 	/** Tx timeout count */
 	t_u32 num_tx_timeout;
 	/** BSS index */
