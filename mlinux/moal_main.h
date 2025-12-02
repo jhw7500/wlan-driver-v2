@@ -3759,13 +3759,13 @@ extern t_u32 drvdbg;
 	do {                                                                   \
 		woal_print(MINFO, msg);                                        \
 		if (drvdbg & MINFO)                                            \
-			printk(KERN_DEBUG msg);                                \
+			printk(KERN_INFO msg);                                 \
 	} while (0)
 #define PRINTM_MWARN(msg...)                                                   \
 	do {                                                                   \
 		woal_print(MWARN, msg);                                        \
 		if (drvdbg & MWARN)                                            \
-			printk(KERN_DEBUG msg);                                \
+			printk(KERN_WARNING msg);                              \
 	} while (0)
 #define PRINTM_MENTRY(msg...)                                                  \
 	do {                                                                   \
@@ -3869,13 +3869,13 @@ extern t_u32 drvdbg;
 	do {                                                                   \
 		woal_print(MFATAL, msg);                                       \
 		if (drvdbg & MFATAL)                                           \
-			printk(KERN_ERR msg);                                  \
+			printk(KERN_CRIT msg);                                 \
 	} while (0)
 #define PRINTM_MMSG(msg...)                                                    \
 	do {                                                                   \
 		woal_print(MMSG, msg);                                         \
 		if (drvdbg & MMSG)                                             \
-			printk(KERN_ALERT msg);                                \
+			printk(KERN_NOTICE msg);                               \
 	} while (0)
 
 static inline void woal_print(t_u32 level, char *fmt, ...)
