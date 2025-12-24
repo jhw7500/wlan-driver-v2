@@ -38,6 +38,9 @@
 #include "mlan_11ax.h"
 #include "mlan_11h.h"
 #include "mlan_meas.h"
+#ifdef SECURE_HOST
+#include "mlan_shc.h"
+#endif
 
 /********************************************************
  *			Local Variables
@@ -3024,7 +3027,6 @@ mlan_status wlan_ret_mfg_debug_temperature(pmlan_private pmpriv,
 	mfg_CmdDebugTemperature_Cfg_t *cfg = MNULL;
 	t_u8 rfu = 0;
 	t_u8 rpath = 0;
-
 	ENTER();
 	if (!pioctl_buf) {
 		LEAVE();
@@ -3224,9 +3226,6 @@ mlan_status wlan_ret_mfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 		goto cmd_mfg_done;
 	case MFG_CMD_OTP_CAL_DATA:
 		ret = wlan_ret_mfg_otp_cal_data_rw(pmpriv, resp, pioctl_buf);
-		goto cmd_mfg_done;
-	case MFG_CMD_CONFIG_GENERIC_CMD:
-		ret = wlan_ret_mfg_generic_cmd(pmpriv, resp, pioctl_buf);
 		goto cmd_mfg_done;
 	case MFG_CMD_SET_DEBUG_TEMPERATURE:
 		ret = wlan_ret_mfg_debug_temperature(pmpriv, resp, pioctl_buf);
@@ -3518,6 +3517,10 @@ mlan_status wlan_ops_sta_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 	case HostCmd_CMD_FUNC_INIT:
 	case HostCmd_CMD_FUNC_SHUTDOWN:
 		break;
+#ifdef SECURE_HOST
+	case HostCmd_CMD_SECURE_HOST:
+		break;
+#endif
 	case HostCmd_CMD_802_11_KEY_MATERIAL:
 		ret = wlan_ret_802_11_key_material(pmpriv, resp, pioctl_buf);
 		break;
@@ -3526,6 +3529,7 @@ mlan_status wlan_ops_sta_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 	case HostCmd_CMD_DS_GET_FOUNDRY_TYPE:
 		ret = wlan_ret_foundry_type(pmpriv, resp, pioctl_buf);
 		break;
+
 	case HostCmd_CMD_SUPPLICANT_PMK:
 		ret = wlan_ret_802_11_supplicant_pmk(pmpriv, resp, pioctl_buf);
 		break;

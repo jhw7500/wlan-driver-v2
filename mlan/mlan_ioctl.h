@@ -401,11 +401,16 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_MISC_FOUNDRY_TYPE = 0X0020009B,
 
 	MLAN_OID_MISC_NAV_MITIGATION_HW = 0x0020009C,
+
 	MLAN_OID_MISC_PREAMBLE_PWR_BOOST = 0x0020009D,
 	MLAN_OID_MISC_PER_BAND_TXPWR_CAP = 0x0020009E,
+
 #ifdef UAP_SUPPORT
-	MLAN_OID_MISC_AGCS_CONFIG = 0x0020009F,
+	MLAN_OID_MISC_AGCS_CONFIG = 0x002000A0,
 #endif /* UAP_SUPPORT */
+	MLAN_OID_SEC_CFG_SSID_PROTECTION = 0x002000A1,
+	MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE = 0x002000A2
+
 };
 
 /** Sub command size */
@@ -3007,6 +3012,7 @@ typedef struct _mlan_ds_sec_cfg {
 #ifdef UAP_SUPPORT
 		t_u8 sta_mac[MLAN_MAC_ADDR_LENGTH];
 #endif
+		mlan_ds_passphrase roam_passphrase[MAX_SEC_SSID_NUM];
 		t_u32 ssid_protection;
 	} param;
 } mlan_ds_sec_cfg, *pmlan_ds_sec_cfg;
@@ -5506,8 +5512,7 @@ typedef struct _mlan_ds_misc_tdls_ies {
 } mlan_ds_misc_tdls_ies;
 
 /** Type definition of mlan_ds_misc_lte_coex_band_cfg
- * for MLAN_OID_MISC_LTE_COEX_CFG
- */
+ * for MLAN_OID_MISC_LTE_COEX_CFG */
 typedef struct _mlan_ds_misc_lte_coex_band_cfg {
 	/** LTE COEX BAND */
 	t_u8 band;
@@ -6331,24 +6336,6 @@ typedef MLAN_PACK_START struct _mfg_cmd_set_debug_temperature {
 	t_s32 rfu_temperature[MAX_RFUS][MAX_PATHS];
 } MLAN_PACK_END mfg_CmdDebugTemperature_Cfg_t;
 
-#define GENERIC_CMD_BUFFER 10
-typedef MLAN_PACK_START struct _mfg_Cmd_InternalTest_t {
-	/** MFG command code */
-	t_u32 mfg_cmd;
-	/** Action */
-	t_u16 action;
-	/** Device ID */
-	t_u16 device_id;
-	/** MFG Error code */
-	t_u32 error;
-	/** Generic cmd Opcode */
-	t_u32 opcode;
-	/** Input value */
-	t_u32 data_num;
-	/** Input values to perform tasks */
-	t_u32 data[GENERIC_CMD_BUFFER];
-} MLAN_PACK_END mfg_Cmd_InternalTest_t;
-
 typedef struct _mlan_ds_misc_chnrgpwr_cfg {
 	/** length */
 	t_u16 length;
@@ -6446,8 +6433,6 @@ typedef struct _mlan_ds_foundry_type {
 	t_u8 foundry_type;
 } mlan_ds_foundry_type;
 
-#define MAX_RFUS 2
-#define MAX_PATHS 2
 typedef struct _mlan_ds_tsp_cfg {
 	/** TSP config action 0-GET, 1-SET */
 	t_u16 action;
@@ -6740,7 +6725,6 @@ typedef struct _mlan_ds_misc_cfg {
 		mfg_cmd_otp_mac_addr_rd_wr_t mfg_otp_mac_addr_rd_wr;
 		mfg_cmd_otp_cal_data_rd_wr_t mfg_otp_cal_data_rd_wr;
 		mfg_CmdDebugTemperature_Cfg_t mfg_debug_temp;
-		mfg_Cmd_InternalTest_t mfg_InternalTest_t;
 		mlan_ds_misc_arb_cfg arb_cfg;
 		mlan_ds_misc_cfp_tbl cfp;
 		t_u8 range_ext_mode;
@@ -6762,7 +6746,9 @@ typedef struct _mlan_ds_misc_cfg {
 		mlan_ds_gpio_cfg_ops gpio_cfg_ops;
 		mlan_ds_auth_assoc_timeout_cfg auth_assoc_cfg;
 		mlan_ds_foundry_type soc_foundry_type;
+
 		mlan_ds_misc_per_band_txpwr_cap per_band_txpwr_cap;
+
 #ifdef UAP_SUPPORT
 		/** config AGCS for MLAN_OID_MISC_AGCS_CONFIG */
 		mlan_ds_agcs_cfg agcs_cfg;

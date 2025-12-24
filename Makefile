@@ -37,14 +37,9 @@ CONFIG_PCIE8897=n
 CONFIG_SD8977=n
 CONFIG_SD8978=y
 CONFIG_USB8978=n
-CONFIG_SD8997=n
-CONFIG_USB8997=n
-CONFIG_PCIE8997=n
 CONFIG_SD8987=y
 CONFIG_SD9097=n
 CONFIG_SD9177=y
-CONFIG_SD8801=n
-CONFIG_USB8801=n
 CONFIG_USB9097=n
 CONFIG_PCIE9097=n
 CONFIG_SD9098=y
@@ -187,7 +182,9 @@ APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 #############################################################################
 
 	ccflags-y += -I$(KERNELDIR)/include
-	ccflags-y += -DMLAN_RELEASE_VERSION='"540.p34"'
+	ccflags-y += -DMLAN_RELEASE_VERSION='"542.p2"'
+	ccflags-y += -DMLAN_EXT_RELEASE_VERSION='"542.p2"'
+	ccflags-y += -DREL_MILESTONE='""'
 
 	ccflags-y += -DFPNUM='"92"'
 
@@ -374,6 +371,10 @@ ifeq ($(CONFIG_PCIEAW693),y)
 ifeq ($(ANDROID_BUILD), 1)
 	CONFIG_XDP_SUPPORT=n
 endif
+	CONFIG_SECURE_HOST=n
+        ifeq ($(CONFIG_SECURE_HOST), y)
+            BINDIR = secure_hostif_wlan_bin
+        endif
 endif
 ifeq ($(CONFIG_SDIO),y)
 	ccflags-y += -DSDIO
@@ -524,6 +525,9 @@ endif
 
 # Default for out-of-tree builds
 CONFIG_NXP_WLAN_DRIVER ?= m
+ifeq ($(CONFIG_SECURE_HOST), y)
+       ccflags-y += -DSECURE_HOST
+endif
 
 MOALOBJS =	mlinux/moal_main.o \
 		mlinux/moal_ioctl.o \
@@ -609,6 +613,28 @@ ifeq ($(CONFIG_SECURE_HOST),y)
 ccflags-y += -I$(src)/nanotls/include
 ccflags-y += -I$(src)/nanotls/lib/include
 ccflags-y += -I$(src)/nanotls/lib/aes/include
+
+ccflags-y += -I$(src)/include
+ccflags-y += -I$(src)/lib/include
+ccflags-y += -I$(src)/lib/aes/include
+ccflags-y += -I$(KERNELDIR)/include/linux
+ccflags-y += -std=gnu99
+ccflags-y += -Wno-format-security -Wno-unused-but-set-variable -Wno-declaration-after-statement
+MLANOBJS += mlan/mlan_shc.o
+MOALOBJS += nanotls/lib/src/blockwise.o \
+            nanotls/lib/src/chash.o \
+            nanotls/lib/src/hmac.o \
+            nanotls/lib/src/p256-m.o \
+            nanotls/lib/src/sha256.o \
+            nanotls/lib/aes/src/aes.o \
+            nanotls/lib/aes/src/gcm.o \
+            nanotls/src/nanotls-common.o \
+            nanotls/src/nanotls-hooks.o \
+            nanotls/src/nanotls-host.o \
+            nanotls/src/nanotls-device.o \
+            nanotls/src/nanotls-data.o \
+            mlinux/moal_shc.o
+endif
 
 obj-$(CONFIG_NXP_WLAN_DRIVER) := mlan.o
 mlan-objs := $(MLANOBJS)

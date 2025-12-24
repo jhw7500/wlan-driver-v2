@@ -826,9 +826,6 @@ mlan_status wlan_cmd_mfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
 							 pdata_buf);
 		goto cmd_mfg_done;
 
-	case MFG_CMD_CONFIG_GENERIC_CMD:
-		ret = wlan_cmd_mfg_generic_cmd(pmpriv, cmd, action, pdata_buf);
-		goto cmd_mfg_done;
 	case MFG_CMD_SET_TEST_MODE:
 	case MFG_CMD_UNSET_TEST_MODE:
 	case MFG_CMD_TX_ANT:
@@ -4053,6 +4050,25 @@ static mlan_status wlan_cmd_auth_assoc_timeout_cfg(pmlan_private pmpriv,
 	return MLAN_STATUS_SUCCESS;
 }
 
+#ifdef SECURE_HOST
+mlan_status wlan_cmd_secure_host(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
+				 t_void *pdata_buf)
+{
+	HostCmd_DS_SECURE_HOST *shc = &cmd->params.shc;
+	SECURE_HOST_MSG_HEADER *tls_hdr = (SECURE_HOST_MSG_HEADER *)pdata_buf;
+	t_u16 tls_len = tls_hdr->len;
+	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_SECURE_HOST);
+	cmd->size = wlan_cpu_to_le16(S_DS_GEN + sizeof(shc->action) + tls_len);
+
+	shc->action = 0x0;
+	memcpy_ext(pmpriv->adapter, (void *)&shc->tls_data, (void *)pdata_buf,
+		   tls_len, tls_len);
+
+	LEAVE();
+	return MLAN_STATUS_SUCCESS;
+}
+#endif
+
 /**
  *  @brief This function prepare the command before sending to firmware.
  *
@@ -4676,6 +4692,11 @@ mlan_status wlan_ops_sta_prepare_cmd(t_void *priv, t_u16 cmd_no,
 	case HostCmd_CMD_DS_GET_FOUNDRY_TYPE:
 		ret = wlan_cmd_get_foundry_type(pmpriv, cmd_ptr, cmd_action);
 		break;
+#ifdef SECURE_HOST
+	case HostCmd_CMD_SECURE_HOST:
+		ret = wlan_cmd_secure_host(pmpriv, cmd_ptr, pdata_buf);
+		break;
+#endif
 	default:
 		PRINTM(MERROR, "PREP_CMD: unknown command- %#x\n", cmd_no);
 		ret = MLAN_STATUS_FAILURE;

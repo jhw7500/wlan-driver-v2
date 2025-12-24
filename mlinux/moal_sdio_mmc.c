@@ -648,20 +648,6 @@ static t_u16 woal_update_card_type(t_void *card)
 				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
 	}
 #endif
-#ifdef SD8997
-	if (cardp_sd->func->device == SD_DEVICE_ID_8997) {
-		card_type = CARD_TYPE_SD8997;
-		moal_memcpy_ext(NULL, driver_version, CARD_SD8997,
-				strlen(CARD_SD8997), strlen(driver_version));
-		moal_memcpy_ext(
-			NULL,
-			driver_version + strlen(INTF_CARDTYPE) +
-				strlen(KERN_VERSION),
-			V16, strlen(V16),
-			strnlen(driver_version, MLAN_MAX_VER_STR_LEN - 1) -
-				(strlen(INTF_CARDTYPE) + strlen(KERN_VERSION)));
-	}
-#endif
 #ifdef SD8987
 	if (cardp_sd->func->device == SD_DEVICE_ID_8987) {
 		card_type = CARD_TYPE_SD8987;
@@ -2978,6 +2964,7 @@ static void woal_sdiommc_dump_fw_info(moal_handle *phandle)
 	queue_work(phandle->workqueue, &phandle->main_work);
 
 	mlan_pm_wakeup_card(phandle->pmlan_adapter, MTRUE);
+
 	msleep(5);
 	phandle->fw_dump = MTRUE;
 	if (phandle->card_info->dump_fw_info == DUMP_FW_SDIO_V2) {

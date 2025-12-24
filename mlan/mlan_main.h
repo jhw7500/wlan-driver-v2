@@ -31,6 +31,10 @@ Change log:
 #ifndef _MLAN_MAIN_H_
 #define _MLAN_MAIN_H_
 
+#ifdef SECURE_HOST
+#include "nanotls-host.h"
+#endif
+
 #define PUBLIC_KEY_SIZE 64
 #define UUID_LEN 16
 
@@ -727,6 +731,9 @@ typedef enum _WLAN_HARDWARE_STATUS {
 	WlanHardwareStatusReady,
 	WlanHardwareStatusGetHwSpec,
 	WlanHardwareStatusGetHwSpecdone,
+#ifdef SECURE_HOST
+	WlanHardwareStatusSecHandshake,
+#endif
 	WlanHardwareStatusInitializing,
 	WlanHardwareStatusInitdone,
 	WlanHardwareStatusReset,
@@ -1672,6 +1679,10 @@ struct _sta_node {
 	IEEEtypes_HTInfo_t HTInfo;
 	/** peer BSSCO_20_40*/
 	IEEEtypes_2040BSSCo_t BSSCO_20_40;
+	/* Support operating class IE */
+	IEEEtypes_Generic_t OperClass;
+	/*Extended capability*/
+	IEEEtypes_ExtCap_t ExtCap;
 	/*RSN IE*/
 	IEEEtypes_Generic_t rsn_ie;
 	/**Link ID*/
@@ -1703,10 +1714,6 @@ struct _sta_node {
 	t_u8 vendor_oui[VENDOR_OUI_LEN * MAX_VENDOR_OUI_NUM];
 	/** vendor OUI count */
 	t_u8 vendor_oui_count;
-	/* Support operating class IE */
-	IEEEtypes_Generic_t OperClass;
-	/*Extended capability*/
-	IEEEtypes_ExtCap_t ExtCap;
 };
 
 /** 802.11h State information kept in the 'mlan_adapter' driver structure */
@@ -3164,7 +3171,7 @@ struct _mlan_adapter {
 	/** LLDE enable/disable */
 	t_u8 llde_enabled;
 	/** LLDE modes 0 - default; 1 - carplay; 2 - gameplay; 3 - sound bar, 4
-	 * - validation, 5- event driven */
+	 * - validation, 5 - event driven */
 	t_u8 llde_mode;
 	/** high priority data packet type. 0: All traffic, 1: ping, 2: TCP ACK,
 	 * 4: TCP Data, 8: UDP */
@@ -3184,6 +3191,10 @@ struct _mlan_adapter {
 	/** agiled channel switch info */
 	agcs_stats agcs_info;
 #endif /* UAP_SUPPORT */
+
+#ifdef SECURE_HOST
+	t_u32 shc_secure_host;
+#endif
 	t_u8 key[PUBLIC_KEY_SIZE];
 	t_u8 uuid[UUID_LEN];
 	t_u32 fw_meta_data_len;
@@ -5305,8 +5316,6 @@ static INLINE t_bool wlan_is_6ghz_op_class(t_u8 op_class)
 
 extern void print_chan_switch_block_event(t_u16 reason_code);
 
-mlan_status mlan_read_meta_data(mlan_adapter *pmadapter, pmlan_fw_image pmfw);
-
 static inline t_bool wlan_copy_on_tx_enabled(const mlan_adapter *adapter)
 {
 	return adapter->init_para.copy_on_tx;
@@ -5316,5 +5325,21 @@ static inline t_bool wlan_copy_on_rx_enabled(const mlan_adapter *adapter)
 {
 	return adapter->init_para.copy_on_rx;
 }
+
+#ifdef SECURE_HOST
+mlan_status wlan_adapter_func_init(pmlan_adapter pmadapter);
+mlan_status wlan_cmd_secure_host(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,
+				 t_pvoid pdata_buf);
+mlan_status wlan_process_secure_host_event(pmlan_private pmpriv, t_u8 *data,
+					   t_u32 len);
+#endif
+mlan_status mlan_read_meta_data(mlan_adapter *pmadapter, pmlan_fw_image pmfw);
+mlan_status wlan_cmd_mfg_set_debug_temperature(pmlan_private pmpriv,
+					       HostCmd_DS_COMMAND *cmd,
+					       t_u16 cmd_action,
+					       t_void *pdata_buf);
+mlan_status wlan_ret_mfg_debug_temperature(pmlan_private pmpriv,
+					   HostCmd_DS_COMMAND *resp,
+					   mlan_ioctl_req *pioctl_buf);
 
 #endif /* !_MLAN_MAIN_H_ */

@@ -4428,7 +4428,7 @@ done:
  */
 void woal_get_version(moal_handle *handle, char *version, int max_len)
 {
-	t_u16 hotfix_ver = 0, copied_len = 0;
+	t_u8 hotfix_ver = 0, copied_len = 0;
 	char fw_ver[100];
 
 	ENTER();
@@ -4436,21 +4436,53 @@ void woal_get_version(moal_handle *handle, char *version, int max_len)
 	memset(fw_ver, 0, sizeof(fw_ver));
 	hotfix_ver = handle->fw_hotfix_version;
 
-	if (hotfix_ver) {
-		if (snprintf(fw_ver, sizeof(fw_ver), "%u.%u.%u.p%u.%u",
-			     ver.c[2], ver.c[1], ver.c[0], ver.c[3],
-			     hotfix_ver) <= 0)
+	if (strlen(handle->fw_ver_milestone) != 0) {
+		if (snprintf(fw_ver, sizeof(fw_ver), "%s-",
+			     handle->fw_ver_milestone) <= 0)
 			PRINTM(MERROR,
-			       "Failed to print hotfix fw version in buffer\n");
-
-	} else {
-		if (snprintf(fw_ver, sizeof(fw_ver), "%u.%u.%u.p%u", ver.c[2],
-			     ver.c[1], ver.c[0], ver.c[3]) <= 0)
-			PRINTM(MERROR,
-			       "Failed to print fw version in buffer\n");
+			       "Failed to print fw version milestone in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
 	}
 
-	if (snprintf(version, max_len, handle->driver_version, fw_ver) <= 0)
+	if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+		     "%u.%u.%u.p%u", handle->fw_release_number.majorRevNum,
+		     handle->fw_release_number.minorRevNum,
+		     handle->fw_release_number.releaseNum,
+		     handle->fw_release_number.patchLevel) <= 0)
+		PRINTM(MERROR, "Failed to print fw version in buffer\n");
+	else
+		copied_len = strlen(fw_ver);
+
+	if (hotfix_ver) {
+		if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+			     ".%u", hotfix_ver) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print hotfix fw version in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
+	}
+
+	if (strlen(handle->fw_ver_data) != 0) {
+		if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+			     ", %s", handle->fw_ver_data) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print fw version data in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
+	}
+
+	if (strlen(handle->fw_ver_buildtype) != 0) {
+		if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+			     "-%s", handle->fw_ver_buildtype) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print fw version buildtype in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
+	}
+
+	if (snprintf(version, max_len, handle->driver_version, fw_ver,
+		     REL_MILESTONE) <= 0)
 		PRINTM(MERROR, "Failed to print driver version in buffer\n");
 
 	LEAVE();
@@ -7382,9 +7414,13 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 		if (priv->media_connected && !priv->cfg_disconnect) {
 			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
 			       MAC2STR(priv->cfg_bssid));
-			woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
-					priv->cfg_bssid,
-					DEF_DEAUTH_REASON_CODE);
+			if (MLAN_STATUS_SUCCESS !=
+			    woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+					    priv->cfg_bssid,
+					    DEF_DEAUTH_REASON_CODE)) {
+				PRINTM(MERROR, "%s: woal_disconnect failed \n",
+				       __func__);
+			}
 		}
 	} else if (bandctrl == BANDCTRL_SET_BANDCFG) {
 		priv->fake_scan_complete = MFALSE;
@@ -7394,9 +7430,13 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 		    (priv->channel > 14)) {
 			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
 			       MAC2STR(priv->cfg_bssid));
-			woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
-					priv->cfg_bssid,
-					DEF_DEAUTH_REASON_CODE);
+			if (MLAN_STATUS_SUCCESS !=
+			    woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+					    priv->cfg_bssid,
+					    DEF_DEAUTH_REASON_CODE)) {
+				PRINTM(MERROR, "%s: woal_disconnect failed \n",
+				       __func__);
+			}
 		}
 		woal_flush_scan_table(priv, BAND_SELECT_2G_ONLY);
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
@@ -8527,7 +8567,7 @@ void woal_ioctl_get_misc_conf(moal_private *priv, mlan_ds_misc_cfg *info)
 #define MAX_RADIO_MODE 21
 #define OTP_RDWR_LEN 50
 #define MAX_THERMAL_SIMULATION_LEN 100
-#define GENERIC_CMD 10
+
 /*
  *  @brief Parse mfg cmd radio mode string
  *
@@ -9493,63 +9533,6 @@ done:
 	return ret;
 }
 
-/*
- *  @brief Parse mfg cmd Generic cmd string
- *
- *  @param s        A pointer to user buffer
- *  @param len      Length of user buffer
- *  @param d        A pointer to mfg_Cmd_InternalTest_t struct
- *  @return         0 on success, -EINVAL otherwise
- */
-static int parse_generic_cmd_string(const char *s, size_t len,
-				    mfg_Cmd_InternalTest_t *d)
-{
-	int ret = MLAN_STATUS_SUCCESS;
-	char *string = NULL;
-	char *pos = NULL;
-	char *tmp = NULL;
-	gfp_t flag;
-	int i;
-	int irqs_are_disabled;
-
-	ENTER();
-	if (!s || !d) {
-		LEAVE();
-		return -EINVAL;
-	}
-	irqs_are_disabled = irqs_disabled();
-	flag = (in_atomic() || irqs_are_disabled) ? GFP_ATOMIC : GFP_KERNEL;
-	string = kzalloc(GENERIC_CMD, flag);
-	if (string == NULL) {
-		LEAVE();
-		return -ENOMEM;
-	}
-
-	moal_memcpy_ext(NULL, string, s + strlen("generic_cmd="),
-			len - strlen("generic_cmd="), GENERIC_CMD - 1);
-
-	tmp = string;
-	pos = strsep(&string, " \t");
-	d->action = (t_u16)woal_string_to_number(pos);
-	if (d->action == MFALSE)
-		goto done;
-	pos = strsep(&string, " \t");
-	if (pos)
-		d->opcode = (t_u32)woal_string_to_number(pos);
-
-	for (i = 0; i < GENERIC_CMD_BUFFER; i++) {
-		pos = strsep(&string, " \t"); // Get next token each iteration
-		if (pos) {
-			d->data[i] = (t_u32)woal_string_to_number(pos);
-		} else
-			break; // No more tokens
-	}
-done:
-	kfree(tmp);
-	LEAVE();
-	return ret;
-}
-
 /**
  *  @brief This function sends RF test mode command in firmware
  *
@@ -9654,13 +9637,6 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 		misc->sub_command = MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE;
 		if (parse_set_debug_temperature(buffer, len,
 						&misc->param.mfg_debug_temp)) {
-			err = MTRUE;
-		}
-		break;
-	case MFG_CMD_CONFIG_GENERIC_CMD:
-		misc->sub_command = MLAN_OID_MISC_GENERIC_CMD;
-		if (parse_generic_cmd_string(buffer, len,
-					     &misc->param.mfg_InternalTest_t)) {
 			err = MTRUE;
 		}
 		break;
@@ -9848,14 +9824,6 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 					.rfu_temperature[mac][rpath] =
 					misc->param.mfg_debug_temp
 						.rfu_temperature[mac][rpath];
-		}
-		break;
-	case MFG_CMD_CONFIG_GENERIC_CMD:
-		handle->rf_data->mfg_InternalTest_t.opcode =
-			misc->param.mfg_InternalTest_t.opcode;
-		for (i = 0; i < GENERIC_CMD_BUFFER; i++) {
-			handle->rf_data->mfg_InternalTest_t.data[i] =
-				misc->param.mfg_InternalTest_t.data[i];
 		}
 		break;
 	}

@@ -963,6 +963,7 @@ mlan_status wlan_usb_deaggr_rx_pkt(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 		 * handling completed, Coverity is not able to trace callbacks
 		 * registered for and process_rx_packet and moal_recv_complete
 		 */
+		// coverity[overwrite_var:SUPPRESS]
 		// coverity[RESOURCE_LEAK]: SUPPRESS
 		/* send new packet to processing */
 		ret = wlan_handle_rx_packet(pmadapter, pdeaggr_buf);

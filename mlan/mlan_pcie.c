@@ -1550,24 +1550,6 @@ static mlan_status wlan_pcie_create_rxbd_ring(mlan_adapter *pmadapter)
 						      &rx_coherent_vbase,
 						      &rx_coherent_pbase);
 
-#if defined(PCIE9098) || defined(PCIE9097) || defined(PCIEAW693) ||            \
-	defined(PCIEIW624)
-		if (wlan_copy_on_rx_enabled(pmadapter)) {
-			/* alloc rx buf */
-			pcbuf = wlan_alloc_mlan_buffer(pmadapter, 0, 0,
-						       MOAL_MALLOC_BUFFER);
-			if (!pcbuf) {
-				PRINTM(MERROR,
-				       "Rx buffer create : Unable to allocate mlan_buffer\n");
-				wlan_pcie_delete_rxbd_ring(pmadapter);
-				LEAVE();
-				return MLAN_STATUS_FAILURE;
-			}
-			ret = pcb->moal_malloc_cached(pmadapter->pmoal_handle,
-						      MLAN_RX_DATA_BUF_SIZE,
-						      &rx_coherent_vbase,
-						      &rx_coherent_pbase);
-
 			if (ret != MLAN_STATUS_SUCCESS) {
 				PRINTM(MERROR,
 				       "%s: No free moal_malloc_cached\n",
@@ -1588,7 +1570,7 @@ static mlan_status wlan_pcie_create_rxbd_ring(mlan_adapter *pmadapter)
 		}
 #endif
 
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 		if (!pmadapter->pcard_pcie->reg->use_adma) {
 			prxbd_buf =
 				(mlan_pcie_data_buf
@@ -1683,7 +1665,7 @@ static mlan_status wlan_pcie_delete_rxbd_ring(mlan_adapter *pmadapter)
 		}
 		pmadapter->pcard_pcie->rx_coherent_buf_list[i] = MNULL;
 
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 		if (!pmadapter->pcard_pcie->reg->use_adma) {
 			prxbd_buf = (mlan_pcie_data_buf *)
 					    pmadapter->pcard_pcie->rxbd_ring[i];
@@ -2143,7 +2125,7 @@ static mlan_status wlan_pcie_send_data_complete(mlan_adapter *pmadapter)
 	t_u32 unmap_count = 0;
 	const t_bool unmap_on_tx = !wlan_copy_on_tx_enabled(pmadapter);
 
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 	t_u32 txrx_rw_ptr_mask = pmadapter->pcard_pcie->reg->txrx_rw_ptr_mask;
 	t_u32 txrx_rw_ptr_rollover_ind =
 		pmadapter->pcard_pcie->reg->txrx_rw_ptr_rollover_ind;
@@ -2999,7 +2981,7 @@ static t_u8 wlan_is_rx_pending_full(mlan_adapter *pmadapter, t_u32 rdptr)
 static void wlan_pcie_rx_ring_attach_buf(mlan_adapter *pmadapter,
 					 t_u32 rd_index, mlan_buffer *pmbuf)
 {
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 	mlan_pcie_data_buf *prxbd_buf;
 #endif
 #if defined(PCIE9098) || defined(PCIE9097) || defined(PCIEAW693) ||            \
@@ -3007,7 +2989,7 @@ static void wlan_pcie_rx_ring_attach_buf(mlan_adapter *pmadapter,
 	adma_dual_desc_buf *padma_bd_buf;
 #endif
 
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 	if (!pmadapter->pcard_pcie->reg->use_adma) {
 		prxbd_buf = (mlan_pcie_data_buf *)
 				    pmadapter->pcard_pcie->rxbd_ring[rd_index];
@@ -3071,13 +3053,13 @@ mlan_status wlan_pcie_rx_ring_move_rdwrptr(mlan_adapter *pmadapter,
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 	pmlan_callbacks pcb = &pmadapter->callbacks;
 	t_u32 txbd_val = 0;
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 	t_u32 txrx_rw_ptr_mask = pmadapter->pcard_pcie->reg->txrx_rw_ptr_mask;
 	t_u32 txrx_rw_ptr_rollover_ind =
 		pmadapter->pcard_pcie->reg->txrx_rw_ptr_rollover_ind;
 #endif
 	PRINTM(MINFO, "wlan_pcie_rx_ring_move_rdwrptr %d", update_action);
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 	if (!pmadapter->pcard_pcie->reg->use_adma) {
 		if (update_action & RX_RD_UPDATE) {
 			/* update rxbd's rdptrs */
@@ -3130,7 +3112,7 @@ mlan_status wlan_pcie_rx_ring_move_rdwrptr(mlan_adapter *pmadapter,
 	ret = pcb->moal_write_reg(pmadapter->pmoal_handle,
 				  pmadapter->pcard_pcie->reg->reg_rxbd_wrptr,
 				  pmadapter->pcard_pcie->rxbd_wrptr | txbd_val);
-#if defined(PCIE8997) || defined(PCIE8897)
+#if defined(PCIE8897)
 	if (!pmadapter->pcard_pcie->reg->use_adma) {
 		pcb->moal_spin_unlock(pmadapter->pmoal_handle,
 				      pmadapter->pmlan_pcie_lock);

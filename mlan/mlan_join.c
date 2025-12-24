@@ -1225,7 +1225,6 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 	if (pbss_desc->prsnx_ie != MNULL && pbss_desc->prsnx_ie->ieee_hdr.len) {
 		IEEEtypes_rsnx_ie_t *rsnx_tlv;
 		t_u16 len = 0;
-
 		rsnx_tlv = (IEEEtypes_rsnx_ie_t *)pos;
 		rsnx_tlv->header.type = wlan_cpu_to_le16(TLV_TYPE_RSNX);
 		rsnx_tlv->data[0] = rsnx_tlv->data[1] = rsnx_tlv->data[2] = 0;

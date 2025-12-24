@@ -1212,6 +1212,11 @@ typedef enum _ENH_PS_MODES {
 	EN_AUTO_PS = 0xff,
 } ENH_PS_MODES;
 
+#ifdef SECURE_HOST
+/** Secure Host command, payload is encrypted*/
+#define HostCmd_Encrypted_BIT 0x4000
+#endif
+
 /** Command RET code, MSB is set to 1 */
 #define HostCmd_RET_BIT 0x8000
 
@@ -2404,6 +2409,22 @@ typedef MLAN_PACK_START struct _HostCmd_DS_GTK_REKEY_PARAMS {
 	/** Replay counter high 32 bit */
 	t_u32 replay_ctr_high;
 } MLAN_PACK_END HostCmd_DS_GTK_REKEY_PARAMS;
+
+#ifdef SECURE_HOST
+typedef MLAN_PACK_START struct _SECURE_HOST_MSG_HEADER {
+	t_u32 magic;
+	t_u16 len;
+	t_u8 id;
+	t_u8 version;
+} MLAN_PACK_END SECURE_HOST_MSG_HEADER;
+
+typedef MLAN_PACK_START struct _HostCmd_DS_SECURE_HOST {
+	/** Action */
+	t_u16 action;
+	/** TLS handshake message data */
+	t_u8 tls_data[1024];
+} MLAN_PACK_END HostCmd_DS_SECURE_HOST;
+#endif
 
 /** Data structure of WMM QoS information */
 typedef MLAN_PACK_START struct _WmmQosInfo_t {
@@ -4727,6 +4748,7 @@ typedef MLAN_PACK_START struct _hostcmd_twt_report {
 typedef MLAN_PACK_START struct _HostCmd_DS_GET_FOUNDRY_TYPE {
 	t_u8 foundry_type;
 } MLAN_PACK_END HostCmd_DS_GET_FOUNDRY_TYPE;
+
 /** Type definition of hostcmd_twt_information */
 typedef struct MLAN_PACK_START _hostcmd_twt_information {
 	/** TWT Flow Identifier. Range: [0-7] */
@@ -7895,7 +7917,6 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		mfg_cmd_otp_mac_addr_rd_wr_t mfg_otp_mac_addr_rd_wr;
 		mfg_cmd_otp_cal_data_rd_wr_t mfg_otp_cal_data_rd_wr;
 		mfg_CmdDebugTemperature_Cfg_t mfg_debug_temp;
-		mfg_Cmd_InternalTest_t mfg_InternalTest_t;
 		HostCmd_DS_CMD_ARB_CONFIG arb_cfg;
 		HostCmd_DS_CMD_DOT11MC_UNASSOC_FTM_CFG dot11mc_unassoc_ftm_cfg;
 		HostCmd_DS_HAL_PHY_CFG hal_phy_cfg_params;
@@ -7913,6 +7934,10 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		HostCmd_CMD_802_11_STA_TX_RATE sta_rx_rate;
 		HostCmd_MCLIENT_SCHEDULE_CFG mclient_cfg;
 
+#ifdef SECURE_HOST
+		HostCmd_DS_SECURE_HOST shc;
+#endif
+
 		/** WMM HOST ADDTS */
 		HostCmd_DS_WMM_HOST_ADDTS_REQ host_add_ts;
 		/** WMM HOST DELTS */
@@ -7921,6 +7946,7 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		HostCmd_DS_AUTH_ASSOC_TIMEOUT_CFG auth_assoc_cfg;
 		t_u8 assoc_rsp_buf[ASSOC_RSP_BUF_SIZE];
 		HostCmd_DS_GET_FOUNDRY_TYPE foundry_type;
+
 #ifdef UAP_SUPPORT
 		/** Agiled channel switch configuration */
 		HostCmd_DS_AGCS_CFG agcs_cfg;
@@ -8063,5 +8089,22 @@ typedef MLAN_PACK_START struct _Event_DPD_CAL_t {
 	t_u8 radio_id;
 	t_u8 sub_band;
 } MLAN_PACK_END Event_DPD_CAL_t;
+
+#ifdef SECURE_HOST
+typedef MLAN_PACK_START struct _SECURE_HOST_EVENT_HEADER {
+	/** Type ID */
+	t_u16 type_id;
+	t_u16 bbs;
+	/** Action */
+	t_u16 tls_action;
+} MLAN_PACK_END SECURE_HOST_EVENT_HEADER;
+
+typedef MLAN_PACK_START struct SECURE_HOST_EVENT {
+	/** TLS handshake message header */
+	SECURE_HOST_EVENT_HEADER tls_header;
+	/** TLS handshake message data */
+	t_u8 tls_data[];
+} MLAN_PACK_END SECURE_HOST_EVENT;
+#endif
 
 #endif /* !_MLAN_FW_H_ */

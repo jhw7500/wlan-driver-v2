@@ -5293,27 +5293,39 @@ static mlan_status wlan_process_agcs_event(pmlan_private priv,
 					pacs_start_event->stats.all_sta_ecs =
 						MFALSE;
 				}
-				if (sta_ptr->is_11ax_enabled == 0) {
-					pacs_start_event->stats.all_sta_6g =
-						MFALSE;
-				} else {
-					int i;
-					t_bool t_support_6g = MFALSE;
+				if (pacs_start_event->stats.all_sta_6g ==
+				    MTRUE) {
+					if (sta_ptr->is_11ax_enabled == 0) {
+						pacs_start_event->stats
+							.all_sta_6g = MFALSE;
+					} else {
+						int i;
+						t_bool t_support_6g = MFALSE;
 
-					for (i = 0;
-					     i <
-					     sta_ptr->OperClass.ieee_hdr.len;
-					     i++) {
-						if (is_6ghz_op_class(
-							    sta_ptr->OperClass
-								    .data[i]) ==
-						    MTRUE) {
-							t_support_6g = MTRUE;
-							break;
+						for (i = 0;
+						     i < sta_ptr->OperClass
+								 .ieee_hdr.len;
+						     i++) {
+							if (wlan_is_6ghz_op_class(
+								    sta_ptr->OperClass
+									    .data[i]) ==
+							    MTRUE) {
+								t_support_6g =
+									MTRUE;
+								break;
+							}
 						}
+						if (t_support_6g == MFALSE)
+							pacs_start_event->stats
+								.all_sta_6g =
+								MFALSE;
 					}
-					pacs_start_event->stats.all_sta_6g &=
-						t_support_6g;
+				}
+				if (pacs_start_event->stats.all_sta_ecs ==
+					    MFALSE &&
+				    pacs_start_event->stats.all_sta_6g ==
+					    MFALSE) {
+					break;
 				}
 				sta_ptr = sta_ptr->pnext;
 			}
@@ -6286,6 +6298,7 @@ mlan_status wlan_ops_uap_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 	case HostCmd_CMD_DS_GET_FOUNDRY_TYPE:
 		ret = wlan_ret_foundry_type(pmpriv, resp, pioctl_buf);
 		break;
+
 #ifdef STA_SUPPORT
 	case HostCmd_CMD_802_11_SCAN_EXT:
 		ret = wlan_ret_802_11_scan_ext(pmpriv, resp, pioctl_buf);

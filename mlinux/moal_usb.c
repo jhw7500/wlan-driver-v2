@@ -711,33 +711,6 @@ static t_u16 woal_update_card_type(t_void *card)
 				strlen(INTF_CARDTYPE) - strlen(KERN_VERSION));
 	}
 #endif
-#ifdef USB8997
-	if (woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997_PID_1 ||
-	    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997_PID_2 ||
-	    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997_PID_3 ||
-	    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997_PID_4 ||
-	    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997_PID_5 ||
-	    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997_PID_6 ||
-	    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
-		    (__force __le16)USB8997V2_PID_1) {
-		card_type = CARD_TYPE_USB8997;
-		moal_memcpy_ext(NULL, driver_version, CARD_USB8997,
-				strlen(CARD_USB8997), strlen(driver_version));
-		moal_memcpy_ext(
-			NULL,
-			driver_version + strlen(INTF_CARDTYPE) +
-				strlen(KERN_VERSION),
-			V16, strlen(V16),
-			strnlen(driver_version, MLAN_MAX_VER_STR_LEN - 1) -
-				strlen(INTF_CARDTYPE) - strlen(KERN_VERSION));
-	}
-#endif
 #ifdef USB8978
 	if (woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct) ==
 		    (__force __le16)USB8978_PID_1 ||
@@ -828,15 +801,17 @@ static t_u16 woal_update_card_type(t_void *card)
 		    device_name, &card_type,
 		    woal_cpu_to_le16(cardp_usb->udev->descriptor.idProduct)) ==
 	    MLAN_STATUS_SUCCESS) {
-		moal_memcpy_ext(NULL, driver_version, device_name,
-				strlen(device_name), strlen(driver_version));
+		moal_memcpy_ext(
+			NULL, driver_version, device_name, strlen(device_name),
+			strnlen(driver_version, MLAN_MAX_VER_STR_LEN - 1));
 
 		if (card_type == CARD_TYPE_USB8801) {
 			moal_memcpy_ext(NULL,
 					driver_version + strlen(INTF_CARDTYPE) +
 						strlen(KERN_VERSION),
 					V14, strlen(V14),
-					strlen(driver_version) -
+					strnlen(driver_version,
+						MLAN_MAX_VER_STR_LEN - 1) -
 						strlen(INTF_CARDTYPE) -
 						strlen(KERN_VERSION));
 		} else if (card_type == CARD_TYPE_USB8897) {
@@ -844,16 +819,17 @@ static t_u16 woal_update_card_type(t_void *card)
 					driver_version + strlen(INTF_CARDTYPE) +
 						strlen(KERN_VERSION),
 					V15, strlen(V15),
-					strlen(driver_version) -
+					strnlen(driver_version,
+						MLAN_MAX_VER_STR_LEN - 1) -
 						strlen(INTF_CARDTYPE) -
 						strlen(KERN_VERSION));
-		} else if (card_type == CARD_TYPE_USB8997 ||
-			   card_type == CARD_TYPE_USB8978) {
+		} else if (card_type == CARD_TYPE_USB8978) {
 			moal_memcpy_ext(NULL,
 					driver_version + strlen(INTF_CARDTYPE) +
 						strlen(KERN_VERSION),
 					V16, strlen(V16),
-					strlen(driver_version) -
+					strnlen(driver_version,
+						MLAN_MAX_VER_STR_LEN - 1) -
 						strlen(INTF_CARDTYPE) -
 						strlen(KERN_VERSION));
 		} else if (card_type == CARD_TYPE_USB9098 ||
@@ -862,7 +838,8 @@ static t_u16 woal_update_card_type(t_void *card)
 					driver_version + strlen(INTF_CARDTYPE) +
 						strlen(KERN_VERSION),
 					V17, strlen(V17),
-					strlen(driver_version) -
+					strnlen(driver_version,
+						MLAN_MAX_VER_STR_LEN - 1) -
 						strlen(INTF_CARDTYPE) -
 						strlen(KERN_VERSION));
 		} else if (card_type == CARD_TYPE_USBIW624 ||
@@ -871,11 +848,15 @@ static t_u16 woal_update_card_type(t_void *card)
 					driver_version + strlen(INTF_CARDTYPE) +
 						strlen(KERN_VERSION),
 					V18, strlen(V18),
-					strlen(driver_version) -
+					strnlen(driver_version,
+						MLAN_MAX_VER_STR_LEN - 1) -
 						strlen(INTF_CARDTYPE) -
 						strlen(KERN_VERSION));
 		}
 	}
+
+	driver_version[MLAN_MAX_VER_STR_LEN - 1] = '\0';
+
 	return card_type;
 }
 

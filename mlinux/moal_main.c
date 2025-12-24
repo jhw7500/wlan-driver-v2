@@ -85,6 +85,9 @@ Change log:
 #include <linux/rtc.h>
 #include <linux/utsname.h>
 #endif
+#ifdef SECURE_HOST
+#include "moal_shc.h"
+#endif
 
 /********************************************************
 		 Global Variables
@@ -936,6 +939,20 @@ static mlan_callbacks woal_callbacks = {
 	.moal_unaligned_access.moal_read_u32 = moal_read_unaligned_u32,
 	.moal_unaligned_access.moal_write_u16 = moal_write_unaligned_u16,
 	.moal_unaligned_access.moal_write_u32 = moal_write_unaligned_u32,
+#ifdef SECURE_HOST
+	.moal_secure_host_get_msg_id = moal_secure_host_get_msg_id,
+	.moal_secure_host_init = moal_secure_host_init,
+	.moal_secure_host_cleanup = moal_secure_host_cleanup,
+	.moal_secure_host_do_hello = moal_secure_host_do_hello,
+	.moal_secure_host_device_hello_rcvd =
+		moal_secure_host_device_hello_rcvd,
+	.moal_secure_host_do_finished = moal_secure_host_do_finished,
+	.moal_secure_host_derive_traffic_keys =
+		moal_secure_host_derive_traffic_keys,
+	.moal_secure_host_data_ctx_init = moal_secure_host_data_ctx_init,
+	.moal_secure_host_data_encrypt = moal_secure_host_data_encrypt,
+	.moal_secure_host_data_decrypt = moal_secure_host_data_decrypt,
+#endif
 	.moal_crc32_be = moal_crc32_be,
 };
 
@@ -2360,6 +2377,10 @@ mlan_status woal_init_sw(moal_handle *handle)
 	t_void *pmlan;
 	int cfg80211_wext = handle->params.cfg80211_wext;
 
+#if defined(SECURE_HOST)
+	moal_handle *ref_handle = NULL;
+#endif
+
 	ENTER();
 
 	if (!device) {
@@ -2740,6 +2761,26 @@ mlan_status woal_init_sw(moal_handle *handle)
 	memset(handle->mode_psd_ru_string, 0,
 	       sizeof(handle->mode_psd_ru_string));
 
+#ifdef SECURE_HOST
+	device->secure_host = (t_u32)handle->params.secure_host;
+
+	if (handle->second_mac && handle->params.secure_host &&
+	    handle->pref_mac) {
+		ref_handle = (moal_handle *)handle->pref_mac;
+		handle->secure = ref_handle->secure;
+	}
+
+	if (handle->second_mac && handle->params.secure_host &&
+	    !handle->secure) {
+		PRINTM(MERROR, "secure host handshake incomplete\n");
+		ret = MLAN_STATUS_FAILURE;
+		if (device)
+			kfree(device);
+		LEAVE();
+		return ret;
+	}
+#endif
+
 	moal_memcpy_ext(handle, &device->callbacks, &woal_callbacks,
 			sizeof(mlan_callbacks), sizeof(mlan_callbacks));
 	if (!handle->params.amsdu_deaggr)
@@ -2829,6 +2870,16 @@ void woal_free_moal_handle(moal_handle *handle)
 		fwdump_fname = NULL;
 	}
 
+#ifdef SECURE_HOST
+	if (handle->params.secure_host) {
+		moal_secure_host_cleanup(handle);
+		handle->secure = NULL;
+		if (handle->pref_mac) {
+			ref_handle = (moal_handle *)handle->pref_mac;
+			ref_handle->secure = NULL;
+		}
+	}
+#endif
 	/* Free module params */
 	woal_free_module_param(handle);
 	/** clear pref_mac to avoid later crash */
@@ -4811,11 +4862,7 @@ static mlan_status woal_init_fw_dpc(moal_handle *handle)
 			PRINTM(MERROR,
 			       "WLAN: Fail download FW with nowwait: %u\n",
 			       moal_extflg_isset(handle, EXT_REQ_FW_NOWAIT));
-			if (handle->ops.reg_dbg
-#ifdef PCIE
-			    && !IS_PCIEAW693(handle->card_type)
-#endif
-			)
+			if (handle->ops.reg_dbg)
 				handle->ops.reg_dbg(handle);
 			goto done;
 		}
@@ -4890,11 +4937,7 @@ static mlan_status woal_init_fw_dpc(moal_handle *handle)
 	if (handle->hardware_status != HardwareStatusReady) {
 		wifi_status = WIFI_STATUS_INIT_FW_FAIL;
 		handle->event_fw_dump = MFALSE;
-		if (handle->ops.reg_dbg
-#ifdef PCIE
-		    && !IS_PCIEAW693(handle->card_type)
-#endif
-		)
+		if (handle->ops.reg_dbg)
 			handle->ops.reg_dbg(handle);
 #ifdef DEBUG_LEVEL1
 		if (drvdbg & MFW_D) {
@@ -6569,10 +6612,14 @@ moal_private *woal_add_interface(moal_handle *handle, t_u8 bss_index,
 	    (bss_type == MLAN_BSS_TYPE_STA))
 		woal_start_bgscan(priv);
 #endif /* STA_SUPPORT */
-	if (handle->params.plinkstats)
+#ifdef STA_CFG80211
+#ifdef STA_SUPPORT
+	if (handle->params.plinkstats) {
 		/* Init plinkstats parameters*/
 		woal_priv_init_link_stats(priv);
-
+	}
+#endif
+#endif
 	LEAVE();
 	return priv;
 error:
@@ -10349,11 +10396,6 @@ static int woal_get_card_info(moal_handle *phandle)
 		phandle->event_fw_dump = MTRUE;
 		break;
 #endif
-#ifdef USB8997
-	case CARD_TYPE_USB8997:
-		phandle->card_info = &card_info_USB8997;
-		break;
-#endif
 #ifdef USB8978
 	case CARD_TYPE_USB8978:
 		phandle->card_info = &card_info_USB8978;
@@ -11429,7 +11471,7 @@ t_void woal_store_ssu_dump(moal_handle *phandle, mlan_event *pmevent)
 		PRINTM(MERROR, "event_len is invalid\n");
 	}
 
-	PRINTM(MINFO, "ssu dump event: evt_len=%d toal_len=%llu\n",
+	PRINTM(MINFO, "ssu dump event: evt_len=%u toal_len=%llu\n",
 	       pmevent->event_len, phandle->ssu_dump_len);
 	PRINTM(MMSG, "==== SSU DUMP END: %ld bytes ====\n",
 	       (long int)phandle->ssu_dump_len);
@@ -11974,11 +12016,7 @@ static int woal_dump_moal_drv_info(moal_handle *phandle, t_u8 *buf)
 	ptr += snprintf(ptr, MAX_BUF_LEN,
 			"------------moal_debug_info End-------------\n");
 
-	if (phandle->ops.dump_reg_info
-#ifdef PCIE
-	    && !IS_PCIEAW693(phandle->card_type)
-#endif
-	)
+	if (phandle->ops.dump_reg_info)
 		ptr += phandle->ops.dump_reg_info(phandle, ptr);
 
 	LEAVE();
@@ -12939,11 +12977,7 @@ void woal_moal_debug_info(moal_private *priv, moal_handle *handle, u8 flag)
 #ifdef PCIE
 	if (IS_PCIE(phandle->card_type)) {
 #ifdef DEBUG_LEVEL1
-		if (phandle->ops.reg_dbg
-#ifdef PCIE
-		    && !IS_PCIEAW693(phandle->card_type)
-#endif
-		) {
+		if (phandle->ops.reg_dbg) {
 			phandle->ops.reg_dbg(phandle);
 		}
 #endif
@@ -12954,11 +12988,8 @@ void woal_moal_debug_info(moal_private *priv, moal_handle *handle, u8 flag)
 		if (flag && ((phandle->main_state == MOAL_END_MAIN_PROCESS) ||
 			     (phandle->main_state == MOAL_STATE_IDLE))) {
 #ifdef DEBUG_LEVEL1
-			if (phandle->ops.reg_dbg && (drvdbg & (MREG_D | MFW_D))
-#ifdef PCIE
-			    && !IS_PCIEAW693(phandle->card_type)
-#endif
-			) {
+			if (phandle->ops.reg_dbg &&
+			    (drvdbg & (MREG_D | MFW_D))) {
 				phandle->ops.reg_dbg(phandle);
 			}
 #endif
@@ -13859,7 +13890,7 @@ done:
  * @return              N/A
  *
  */
-static void woal_survey_dump_reset(moal_private *priv)
+void woal_survey_dump_reset(moal_private *priv)
 {
 	mlan_ds_get_stats stats;
 
@@ -13873,6 +13904,39 @@ static void woal_survey_dump_reset(moal_private *priv)
 	moal_get_host_time_ns(&priv->bss_active_time);
 }
 
+#ifdef STA_CFG80211
+/**
+ * @brief               This function sends scan report to cfg80211
+ *
+ * @param priv          a pointer to moal_private structure
+ *
+ * @return              N/A
+ *
+ */
+static void woal_send_bss_scan_result(moal_private *priv)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&priv->phandle->scan_req_lock, flags);
+	if (priv->phandle->scan_request) {
+		PRINTM(MINFO, "Reporting scan results\n");
+		woal_inform_bss_from_scan_result(priv, NULL, MOAL_NO_WAIT);
+		if (!priv->phandle->first_scan_done) {
+			priv->phandle->first_scan_done = MTRUE;
+			if (!priv->phandle->user_scan_cfg)
+				woal_set_scan_time(priv, ACTIVE_SCAN_CHAN_TIME,
+						   PASSIVE_SCAN_CHAN_TIME,
+						   SPECIFIC_SCAN_CHAN_TIME);
+		}
+		if (priv->phandle->scan_request) {
+			cancel_delayed_work(&priv->phandle->scan_timeout_work);
+			woal_cfg80211_scan_done(priv->phandle->scan_request,
+						MFALSE);
+			priv->phandle->scan_request = NULL;
+		}
+	}
+	spin_unlock_irqrestore(&priv->phandle->scan_req_lock, flags);
+}
+#endif
 /**
  *  @brief This workqueue function handles woal event queue
  *
@@ -14050,6 +14114,9 @@ t_void woal_evt_work_queue(struct work_struct *work)
 			woal_print_linkstats_info((moal_private *)evt->priv,
 						  MFALSE);
 			break;
+		case WOAL_EVENT_SURVEY_DUMP_RESET:
+			woal_survey_dump_reset((moal_private *)evt->priv);
+			break;
 #ifdef UAP_SUPPORT
 		case WOAL_EVENT_AGCS:
 			if (evt->agcs_evt.type ==
@@ -14065,9 +14132,11 @@ t_void woal_evt_work_queue(struct work_struct *work)
 			}
 			break;
 #endif /* UAP_SUPPORT */
-		case WOAL_EVENT_SURVEY_DUMP_RESET:
-			woal_survey_dump_reset((moal_private *)evt->priv);
+#ifdef STA_CFG80211
+		case WOAL_EVENT_CFG80211_INFORM_BSS:
+			woal_send_bss_scan_result((moal_private *)evt->priv);
 			break;
+#endif
 		default:
 			break;
 		}
@@ -14430,11 +14499,7 @@ t_void woal_main_work_queue(struct work_struct *work)
 	}
 	if (handle->reg_dbg == MTRUE) {
 		handle->reg_dbg = MFALSE;
-		if (handle->ops.reg_dbg
-#ifdef PCIE
-		    && !IS_PCIEAW693(handle->card_type)
-#endif
-		)
+		if (handle->ops.reg_dbg)
 			handle->ops.reg_dbg(handle);
 	}
 	if (handle->fw_dbg == MTRUE) {
@@ -15139,9 +15204,6 @@ mlan_status woal_remove_card(void *card)
 		woal_process_rf_test_mode(handle, MFG_CMD_UNSET_TEST_MODE);
 	woal_clean_up(handle);
 	handle->surprise_removed = MTRUE;
-	woal_clean_up(handle);
-	mlan_ioctl(handle->pmlan_adapter, NULL);
-
 	woal_flush_workqueue(handle);
 	if (moal_extflg_isset(handle, EXT_NAPI)) {
 		napi_disable(&handle->napi_rx);
@@ -15781,7 +15843,6 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		LEAVE();
 		return -EINVAL;
 	}
-
 	if (phandle->fw_dump) {
 		PRINTM(MMSG, "Ignore fw reload req, fw dump is ongoing\n");
 		LEAVE();

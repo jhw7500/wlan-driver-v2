@@ -286,6 +286,9 @@
 		               this bit is only used with STA BSS
 		others      -- reserved
 
+	secure_host=0|1 <Disable secure host interface (default) | Enable secure host interface>
+	Note: For secure_host=1, Firmware image shall be secure host enabled.
+
 	bandctrl=0|1 <Disable bandctrl mode (default) | Enable bandctrl mode>
 
 	Note: On some platforms (e.g. PXA910/920) double quotation marks ("") need to used
@@ -472,7 +475,7 @@
        echo "fw_reload=4" > /proc/mwlan/adapterX/config   trigger PCIe FLR and reload firmware.
        echo "fw_reload=6" > /proc/mwlan/adapterX/config   trigger PCIe inband firmware reset and reload firmware.
 
-    (Note: This feature will be supported on IW416 and 8997.
+    (Note: This feature will be supported on IW416.
            For 8987, it only work with the board which supports parallel fw download)
 
 6) FOR RF test mode commands:

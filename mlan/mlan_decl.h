@@ -682,6 +682,9 @@ typedef enum {
 #define MFWDP_D MBIT(21)
 #endif /*FWDUMP_VIA_PRINT*/
 #define MSCH_D MBIT(22)
+#ifdef SECURE_HOST
+#define MSHC_D MBIT(23)
+#endif
 #define MENTRY MBIT(28)
 #define MWARN MBIT(29)
 #define MINFO MBIT(30)
@@ -2831,7 +2834,27 @@ typedef struct _mlan_callbacks {
 		void (*moal_write_u16)(void *dest, t_u16 val);
 		void (*moal_write_u32)(void *dest, t_u32 val);
 	} moal_unaligned_access;
-
+#ifdef SECURE_HOST
+	t_u8 (*moal_secure_host_get_msg_id)(t_void *msg);
+	mlan_status (*moal_secure_host_init)(t_void *pmoal, const t_u8 key[64],
+					     const t_u8 uuid[16]);
+	void (*moal_secure_host_cleanup)(t_void *pmoal);
+	mlan_status (*moal_secure_host_do_hello)(t_void *pmoal, t_void **msg);
+	mlan_status (*moal_secure_host_device_hello_rcvd)(t_void *pmoal,
+							  t_void *msg);
+	mlan_status (*moal_secure_host_do_finished)(t_void *pmoal,
+						    t_void **msg);
+	mlan_status (*moal_secure_host_derive_traffic_keys)(t_void *pmoal);
+	mlan_status (*moal_secure_host_data_ctx_init)(t_void *pmoal);
+	mlan_status (*moal_secure_host_data_encrypt)(t_void *pmoal,
+						     t_void **enc_data,
+						     t_void **payload,
+						     t_u32 len);
+	mlan_status (*moal_secure_host_data_decrypt)(t_void *pmoal,
+						     t_void **dec_data,
+						     t_void **payload,
+						     t_u32 len);
+#endif
 	t_u32 (*moal_crc32_be)(t_u32 initial_crc, t_u8 const *data,
 			       unsigned long len);
 } mlan_callbacks, *pmlan_callbacks;
@@ -3016,6 +3039,9 @@ typedef struct _mlan_device {
 	t_u8 disable_11h_tpc;
 	t_u8 tpe_ie_ignore;
 	t_u32 amsdu_disable;
+#ifdef SECURE_HOST
+	t_u32 secure_host;
+#endif
 } mlan_device, *pmlan_device;
 
 /** MLAN API function prototype */

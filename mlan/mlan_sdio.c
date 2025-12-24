@@ -3070,10 +3070,9 @@ void wlan_decode_spa_buffer(mlan_adapter *pmadapter, t_u8 *buf, t_u32 len)
 			break;
 		}
 		if (pkt_len > SDIO_INTF_HEADER_LEN) {
-			/* mbuf_deaggr is freed in moal_recv_complete(),
-			 * therefore Overwriting mbuf_deaggr is not harmful.
-			 */
-			// coverity[overwrite_var:SUPPRESS]
+			// mbuf_deaggr is already initialized as NULL
+			// coverity[RESOURCE_LEAK:SUPPRESS]
+			// coverity[misra_c_2012_rule_22_1_violation:SUPPRESS]
 			mbuf_deaggr = wlan_alloc_mlan_buffer(
 				pmadapter, pkt_len - SDIO_INTF_HEADER_LEN,
 				MLAN_RX_HEADER_LEN, MOAL_ALLOC_MLAN_BUFFER);
@@ -3102,10 +3101,8 @@ void wlan_decode_spa_buffer(mlan_adapter *pmadapter, t_u8 *buf, t_u32 len)
 	}
 done:
 	LEAVE();
-	/* mbuf_deaggr is freed in moal_recv_complete(), therefore
-	 * Overwriting mbuf_deaggr is not harmful.
-	 */
-	// coverity[overwrite_var:SUPPRESS]
+	// Buffer mbuf_deaggr will be free in Kernel API.
+	// coverity[misra_c_2012_rule_22_1_violation:SUPPRESS]
 	return;
 }
 

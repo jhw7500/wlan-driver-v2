@@ -7374,6 +7374,7 @@ mlan_status wlan_misc_ioctl_foundry_type(pmlan_adapter pmadapter,
 	LEAVE();
 	return ret;
 }
+
 /**
  *  @brief  Get CHAN_TPRC setting
  *
@@ -8274,20 +8275,6 @@ mlan_status wlan_misc_ioctl_rf_test_cfg(pmlan_adapter pmadapter,
 				       cmd_action, 0, (t_void *)pioctl_req,
 				       &(pmisc->param.mfg_otp_cal_data_rd_wr));
 		break;
-
-	case MLAN_OID_MISC_GENERIC_CMD:
-		if (pioctl_req->action == MLAN_ACT_SET)
-			cmd_action = HostCmd_ACT_GEN_SET;
-		else {
-			PRINTM(MERROR, "Unsupported cmd_action\n");
-			ret = MLAN_STATUS_FAILURE;
-			goto done;
-		}
-		ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_MFG_COMMAND,
-				       cmd_action, 0, (t_void *)pioctl_req,
-				       &(pmisc->param.mfg_InternalTest_t));
-		break;
-
 	case MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE:
 		if (pioctl_req->action == MLAN_ACT_SET)
 			cmd_action = HostCmd_ACT_GEN_SET;
@@ -8299,7 +8286,7 @@ mlan_status wlan_misc_ioctl_rf_test_cfg(pmlan_adapter pmadapter,
 			goto done;
 		}
 		/* Send request to firmware */
-		PRINTM(MERROR, " sending request to FW mlan_misc\n");
+		PRINTM(MERROR, " sending request to FW mlan_misc \n");
 		ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_MFG_COMMAND,
 				       cmd_action, 0, (t_void *)pioctl_req,
 				       (&(pmisc->param.mfg_debug_temp)));
