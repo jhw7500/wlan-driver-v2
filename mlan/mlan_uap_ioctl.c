@@ -2382,6 +2382,7 @@ mlan_status wlan_ops_uap_ioctl(t_void *adapter, pmlan_ioctl_req pioctl_req)
 		else if (misc->sub_command == MLAN_OID_MISC_FOUNDRY_TYPE)
 			status = wlan_misc_ioctl_foundry_type(pmadapter,
 							      pioctl_req);
+
 		else if (misc->sub_command == MLAN_OID_MISC_GET_TSF)
 			status = wlan_misc_ioctl_get_tsf(pmadapter, pioctl_req);
 		else if (misc->sub_command == MLAN_OID_MISC_CROSS_CHIP_SYNCH)

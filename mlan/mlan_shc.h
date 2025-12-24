@@ -26,6 +26,7 @@
 #include "mlan_join.h"
 #endif
 #include "mlan_main.h"
+
 mlan_status mlan_shc_handshake(pmlan_adapter pmadapter, t_u8 type, t_void *msg);
 mlan_status wlan_shc_process_secure_host_event(pmlan_private pmpriv, t_u8 *data,
 					       t_u32 len);

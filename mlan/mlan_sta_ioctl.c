@@ -1282,7 +1282,6 @@ static mlan_status wlan_sec_ioctl_ssid_protection(IN pmlan_adapter pmadapter,
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 	mlan_private *pmpriv = pmadapter->priv[pioctl_req->bss_index];
 	mlan_ds_sec_cfg *sec = MNULL;
-
 	ENTER();
 	sec = (mlan_ds_sec_cfg *)pioctl_req->pbuf;
 	if (pioctl_req->action == MLAN_ACT_GET) {
@@ -5367,10 +5366,12 @@ static mlan_status wlan_misc_cfg_ioctl(pmlan_adapter pmadapter,
 	case MLAN_OID_MISC_FOUNDRY_TYPE:
 		status = wlan_misc_ioctl_foundry_type(pmadapter, pioctl_req);
 		break;
+
 	case MLAN_OID_MISC_PER_BAND_TXPWR_CAP:
 		status = wlan_misc_ioctl_per_band_txpwr_cap(pmadapter,
 							    pioctl_req);
 		break;
+
 	default:
 		if (pioctl_req)
 			pioctl_req->status_code = MLAN_ERROR_IOCTL_INVALID;

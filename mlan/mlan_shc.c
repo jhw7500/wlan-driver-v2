@@ -20,14 +20,23 @@
  *
  */
 
-#include "mlan.h"
-#include "mlan_util.h"
-#include "mlan_fw.h"
-#include "mlan_shc.h"
-#include "mlan_shc_key.h"
 #include "nanotls-device.h"
 #include "nanotls-host.h"
 #include "nanotls-common.h"
+
+#ifdef INT_MAX
+#undef INT_MAX
+#endif
+
+#ifdef UINT_MAX
+#undef UINT_MAX
+#endif
+
+#include "mlan.h"
+#include "mlan_init.h"
+#include "mlan_util.h"
+#include "mlan_fw.h"
+#include "mlan_shc.h"
 
 /********************************************************
 			Local Variables
@@ -190,6 +199,7 @@ mlan_status wlan_shc_secure_hostcmd_process(pmlan_adapter pmadapter,
 	t_u32 cmd_size = 0;
 
 	if ((!(pcmd->command & HostCmd_Encrypted_BIT)) &&
+	    pcmd->size >= S_DS_GEN &&
 	    (mlan_shc_data_encrypt(pmadapter, ((t_u8 *)pcmd + S_DS_GEN),
 				   (pcmd->size - S_DS_GEN)) !=
 	     MLAN_STATUS_FAILURE)) {
@@ -216,10 +226,16 @@ mlan_status wlan_shc_secure_hostresp_process(pmlan_adapter pmadapter,
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 
-	if (wlan_le16_to_cpu(resp->command) & HostCmd_Encrypted_BIT) {
+	t_u16 cmd = wlan_le16_to_cpu(resp->command);
+	t_u16 cmd_size = wlan_le16_to_cpu(resp->size);
+
+	if ((cmd & HostCmd_Encrypted_BIT)) {
+		if (cmd_size <= S_DS_GEN)
+			return MLAN_STATUS_FAILURE;
+
 		ret = mlan_shc_data_decrypt(pmadapter,
 					    ((t_u8 *)resp + S_DS_GEN),
-					    (resp->size - S_DS_GEN));
+					    (cmd_size - S_DS_GEN));
 		if (ret != MLAN_STATUS_FAILURE) {
 			resp->command &= ~HostCmd_Encrypted_BIT;
 			resp->size = wlan_le16_to_cpu(resp->size -
@@ -300,7 +316,8 @@ mlan_status mlan_shc_handshake(pmlan_adapter pmadapter, t_u8 type, t_void *msg)
 	switch (type) {
 	case TLS_HOST_HELLO:
 		if (!pcb->moal_secure_host_init(pmadapter->pmoal_handle,
-						ecdsa_pub) &&
+						pmadapter->key,
+						pmadapter->uuid) &&
 		    !pcb->moal_secure_host_do_hello(pmadapter->pmoal_handle,
 						    &buf)) {
 			ret = mlan_shc_prepare_msg(pmadapter, buf);
@@ -311,7 +328,7 @@ mlan_status mlan_shc_handshake(pmlan_adapter pmadapter, t_u8 type, t_void *msg)
 		if (pcb->moal_secure_host_device_hello_rcvd(
 			    pmadapter->pmoal_handle, msg))
 			break;
-		/* fall through */
+		fallthrough;
 	case TLS_HOST_FINISHED:
 		if (!pcb->moal_secure_host_do_finished(pmadapter->pmoal_handle,
 						       &buf) &&

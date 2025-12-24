@@ -700,19 +700,31 @@ static int woal_cfg80211_subcmd_get_fw_version(struct wiphy *wiphy,
 	char end_c = '\0';
 	int ret = 0;
 	char fw_ver[100] = {0};
-	t_u16 hotfix_ver = 0;
+	t_u8 hotfix_ver = 0;
 
 	ENTER();
 
 	hotfix_ver = priv->phandle->fw_hotfix_version;
 	if (hotfix_ver) {
-		if (snprintf(fw_ver, sizeof(fw_ver), "%u.%u.%u.p%u.%u%c",
-			     ver.c[2], ver.c[1], ver.c[0], ver.c[3], hotfix_ver,
-			     end_c) <= 0)
+		if (snprintf(fw_ver, sizeof(fw_ver),
+			     "%s-%u.%u.%u.p%u.%u, %s-%s%c",
+			     priv->phandle->fw_ver_milestone,
+			     priv->phandle->fw_release_number.majorRevNum,
+			     priv->phandle->fw_release_number.minorRevNum,
+			     priv->phandle->fw_release_number.releaseNum,
+			     priv->phandle->fw_release_number.patchLevel,
+			     hotfix_ver, priv->phandle->fw_ver_buildtype,
+			     priv->phandle->fw_ver_data, end_c) <= 0)
 			PRINTM(MERROR, "Failed to write fw hotfix version\n");
 	} else {
-		if (snprintf(fw_ver, sizeof(fw_ver), "%u.%u.%u.p%u%c", ver.c[2],
-			     ver.c[1], ver.c[0], ver.c[3], end_c) <= 0)
+		if (snprintf(fw_ver, sizeof(fw_ver), "%s-%u.%u.%u.p%u, %s-%s%c",
+			     priv->phandle->fw_ver_milestone,
+			     priv->phandle->fw_release_number.majorRevNum,
+			     priv->phandle->fw_release_number.minorRevNum,
+			     priv->phandle->fw_release_number.releaseNum,
+			     priv->phandle->fw_release_number.patchLevel,
+			     priv->phandle->fw_ver_buildtype,
+			     priv->phandle->fw_ver_data, end_c) <= 0)
 			PRINTM(MERROR, "Failed to write fw version\n");
 	}
 	reply_len = strlen(fw_ver) + 1;
@@ -9987,16 +9999,16 @@ static const struct wiphy_vendor_command vendor_commands[] = {
 #endif
     },
 	{
-	.info = {
-		.vendor_id = MRVL_VENDOR_ID,
-		.subcmd = subcmd_get_usable_channels,
-	},
-	.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-		WIPHY_VENDOR_CMD_NEED_NETDEV,
-	.doit = woal_cfg80211_subcmd_get_usable_channels,
+		.info = {
+				.vendor_id = MRVL_VENDOR_ID,
+				.subcmd = subcmd_get_usable_channels,
+			},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.doit = woal_cfg80211_subcmd_get_usable_channels,
 #if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
-	.policy = woal_usable_channel_policy,
-	.maxattr = ATTR_USABLE_CHANNEL_MAX,
+		.policy = woal_usable_channel_policy,
+		.maxattr = ATTR_USABLE_CHANNEL_MAX,
 #endif
 	},
 };

@@ -1154,9 +1154,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		     strlen("set_debug_temperature=")) &&
 	    count > strlen("set_debug_temperature="))
 		cmd = MFG_CMD_SET_DEBUG_TEMPERATURE;
-	if (!strncmp(databuf, "generic_cmd=", strlen("generic_cmd=")) &&
-	    count > strlen("generic_cmd="))
-		cmd = MFG_CMD_CONFIG_GENERIC_CMD;
+
 	if (cmd && handle->rf_test_mode &&
 	    (woal_process_rf_test_mode_cmd(
 		     handle, cmd, (const char *)databuf, (size_t)count,
@@ -1410,7 +1408,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[4],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[5]);
 
-		seq_puts(sfp, "\n");
+		seq_printf(sfp, "\n");
 		seq_printf(sfp, "set_debug_temperature=%u,",
 			   handle->rf_data->mfg_debug_temp.simulation_enable);
 		seq_printf(sfp, "%d,",
@@ -1422,15 +1420,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			handle->rf_data->mfg_debug_temp.rfu_temperature[1][0],
 			handle->rf_data->mfg_debug_temp.rfu_temperature[1][1]);
 
-		seq_puts(sfp, "\n");
-
-		seq_puts(sfp, "\n");
-		seq_puts(sfp, "generic_cmd=");
-		seq_printf(sfp, " %u",
-			   handle->rf_data->mfg_InternalTest_t.opcode);
-		for (i = 0; i < 10; i++)
-			seq_printf(sfp, " %u",
-				   handle->rf_data->mfg_InternalTest_t.data[i]);
+		seq_printf(sfp, "\n");
 	}
 
 	// Read current antcfg configuration
@@ -1631,6 +1621,7 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 {
 	moal_handle *handle = (moal_handle *)sfp->private;
 	int ret = 0;
+	int format_result = 0;
 	t_u32 i;
 	t_u32 *tmpbuf;
 	unsigned char *sfpbuf;
@@ -1656,9 +1647,9 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 
 	if (sfp->size < ((handle->ssu_dump_len * 9) / 4)) {
 		PRINTM(MCMND,
-		       "ssu dump size too big, size=%d, ssu_dump_len=%ld\n",
-		       (int)sfp->size,
-		       (long int)((handle->ssu_dump_len * 9) / 4));
+		       "ssu dump size too big, size=%lu, ssu_dump_len=%lu\n",
+		       sfp->size,
+		       (unsigned long)((handle->ssu_dump_len * 9) / 4));
 		sfp->count = sfp->size;
 		ret = 0;
 		MODULE_PUT;
@@ -1668,15 +1659,23 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 	tmpbuf = (t_u32 *)handle->ssu_dump_buf;
 	sfpbuf = sfp->buf;
 	for (i = 0; i < handle->ssu_dump_len / 4; i++) {
-		if ((i + 1) % 8 == 0)
-			snprintf(dw_string, sizeof(dw_string), "%08x\n",
-				 *tmpbuf);
-		else
-			snprintf(dw_string, sizeof(dw_string), "%08x ",
-				 *tmpbuf);
+		// Use array indexing instead of pointer arithmetic to avoid
+		// overflow
+		t_u32 current_word = tmpbuf[i];
+
+		if ((i + 1) % 8 == 0) {
+			format_result = snprintf(dw_string, sizeof(dw_string),
+						 "%08x\n", current_word);
+		} else {
+			format_result = snprintf(dw_string, sizeof(dw_string),
+						 "%08x ", current_word);
+		}
+		if (format_result <= 0 || format_result >= sizeof(dw_string)) {
+			PRINTM(MERROR, "String formatting failed at word %u\n",
+			       i);
+		}
 
 		moal_memcpy_ext(handle, sfpbuf, dw_string, 9, 9);
-		tmpbuf++;
 		sfpbuf += 9;
 	}
 

@@ -22,6 +22,9 @@
 
 #include "moal_shc.h"
 
+t_u8 public_key[NANOTLS_ECDSA_PUBLIC_KEY_SIZE];
+t_u8 fw_uuid[NANOTLS_UUID_LEN];
+
 /**
  *  @brief This function determines secure host message id
  *
@@ -36,14 +39,35 @@ t_u8 moal_secure_host_get_msg_id(t_void *msg)
 }
 
 /**
+ *  @brief This function reads publick key extracted from fw to nanotls library
+ *
+ *  @param ctx               A pointer to nanotls host context
+ *  @param device_info       A pointer to nanotls device info
+ *  @ecdsa_pub_key           Public key
+ *
+ *  @return                  E_OK
+ */
+static enum ecode
+moal_get_pub_key(const struct nanotls_host_ctx *ctx,
+		 const struct nanotls_device_info *device_info,
+		 uint8_t ecdsa_pub_key[NANOTLS_ECDSA_PUBLIC_KEY_SIZE])
+{
+	memcpy(ecdsa_pub_key, public_key, NANOTLS_ECDSA_PUBLIC_KEY_SIZE);
+	return E_OK;
+}
+
+/**
  *  @brief This function initialized host context
  *
  *  @param pmoal     A pointer to moal_handle structure
- *  @param enc_data  A pointer to public key
+ *  @param key       A pointer to public key
+ *  @uuid            Device uuid
  *
  *  @return          sucess:MLAN_STATUS_SUCCESS, MLAN_STATUS_FAILURE otherwise
  */
-mlan_status moal_secure_host_init(t_void *pmoal, const t_u8 esdca_pub[64])
+mlan_status moal_secure_host_init(t_void *pmoal,
+				  const t_u8 key[NANOTLS_ECDSA_PUBLIC_KEY_SIZE],
+				  const t_u8 uuid[NANOTLS_UUID_LEN])
 {
 	int ret = 0;
 	moal_handle *handle = (moal_handle *)pmoal;
@@ -61,7 +85,10 @@ mlan_status moal_secure_host_init(t_void *pmoal, const t_u8 esdca_pub[64])
 		return MLAN_STATUS_FAILURE;
 	}
 
-	ret = nanotls_host_init(secure->host_ctx, esdca_pub);
+	memcpy(public_key, key, NANOTLS_ECDSA_PUBLIC_KEY_SIZE);
+	memcpy(fw_uuid, uuid, NANOTLS_UUID_LEN);
+
+	ret = nanotls_host_init_pubkey_cb(secure->host_ctx, moal_get_pub_key);
 	if (ret)
 		PRINTM(MERROR, "Failed to init shc context\n");
 
@@ -85,7 +112,9 @@ void moal_secure_host_cleanup(t_void *pmoal)
 		return;
 
 	PRINTM(MMSG, "Free secure host context\n");
-	nanotls_host_cleanup(secure->host_ctx);
+
+	if (secure->host_ctx)
+		nanotls_host_cleanup(secure->host_ctx);
 
 	for (idx = 0; idx < MAX_CTX_AND_KEY; idx++) {
 		if (secure->data_ctx[idx])

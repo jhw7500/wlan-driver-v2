@@ -1583,7 +1583,15 @@ mlan_status wlan_init_fw(pmlan_adapter pmadapter)
 #ifdef MFG_CMD_SUPPORT
 	if (pmadapter->mfg_mode != MTRUE) {
 #endif
+#ifdef SECURE_HOST
+		if (pmadapter->shc_secure_host) {
+			wlan_adapter_func_init(pmadapter);
+		} else {
+#endif
 			wlan_adapter_get_hw_spec(pmadapter);
+#ifdef SECURE_HOST
+		}
+#endif
 #ifdef MFG_CMD_SUPPORT
 	}
 #ifdef PCIE
@@ -1595,6 +1603,9 @@ mlan_status wlan_init_fw(pmlan_adapter pmadapter)
 	}
 
 	if (((pmadapter->card_type) & 0xff) == CARD_TYPE_AW693
+#ifdef SECURE_HOST
+	    && (!pmadapter->shc_secure_host)
+#endif
 	) {
 		ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
 				       HostCmd_ACT_GEN_SET, 0, MNULL, MNULL);

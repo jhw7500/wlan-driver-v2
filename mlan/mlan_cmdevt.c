@@ -48,6 +48,10 @@
 #endif /* PCIE */
 #include "mlan_init.h"
 
+#ifdef SECURE_HOST
+#include "mlan_shc.h"
+#endif
+
 /********************************************************
  * Local Variables
  * ******************************************************
@@ -1556,13 +1560,38 @@ static mlan_status wlan_dnld_cmd_to_fw(mlan_private *pmpriv,
 						   (t_u8 *)pcmd + S_DS_GEN)),
 	       cmd_size, wlan_le16_to_cpu(pcmd->seq_num), timeout);
 
+#ifdef SECURE_HOST
+	if (!pmadapter->shc_secure_host)
+#endif
 		DBG_HEXDUMP(MCMD_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
+
+#ifdef SECURE_HOST
+	if (pmadapter->shc_secure_host)
+		DBG_HEXDUMP(MSHC_D, "DNLD_CMD", (t_u8 *)pcmd, cmd_size);
+#endif
 
 #if defined(SDIO) || defined(PCIE)
 	if (!IS_USB(pmadapter->card_type)) {
 		pcmd_node->cmdbuf->data_offset -=
 			pmadapter->ops.intf_header_len;
 		pcmd_node->cmdbuf->data_len += pmadapter->ops.intf_header_len;
+	}
+#endif
+
+#ifdef SECURE_HOST
+	if (pmadapter->shc_secure_host &&
+	    wlan_is_secure_host_cmd(pcmd->command) == MTRUE) {
+		if (wlan_shc_secure_hostcmd_process(pmadapter, pcmd) !=
+		    MLAN_STATUS_FAILURE) {
+			pcmd_node->cmdbuf->data_len += 16;
+			PRINTM(MCMND, "%s is encrypted",
+			       wlan_hostcmd_get_name(cmd_code));
+			DBG_HEXDUMP(MCMD_D, "Encrypted DNLD_CMD", (t_u8 *)pcmd,
+				    pcmd->size);
+		} else {
+			ret = MLAN_STATUS_FAILURE;
+			goto done;
+		}
 	}
 #endif
 
@@ -2476,6 +2505,15 @@ static void wlan_handle_cmd_error_in_pre_aleep(mlan_adapter *pmadapter,
 						       MLAN_STATUS_SUCCESS);
 			pcmd_node->respbuf = MNULL;
 		}
+#ifdef SECURE_HOST
+		if (pmadapter->shc_secure_host) {
+			memcpy_ext(pmadapter,
+				   pcmd_node->cmdbuf->pbuf +
+					   pcmd_node->cmdbuf->data_offset,
+				   rsp, rsp->size, rsp->size);
+			pcmd_node->cmdbuf->data_len = rsp->size;
+		}
+#endif
 		wlan_insert_cmd_to_pending_q(pmadapter, pcmd_node, MFALSE);
 	}
 
@@ -2539,6 +2577,15 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 
 	resp = (HostCmd_DS_COMMAND *)(pmadapter->curr_cmd->respbuf->pbuf +
 				      pmadapter->curr_cmd->respbuf->data_offset);
+
+#ifdef SECURE_HOST
+	if (pmadapter->shc_secure_host) {
+		if (wlan_shc_secure_hostresp_process(pmadapter, resp) !=
+		    MLAN_STATUS_SUCCESS) {
+			goto done;
+		}
+	}
+#endif
 
 	orig_cmdresp_no = wlan_le16_to_cpu(resp->command);
 	cmdresp_no = (orig_cmdresp_no & HostCmd_CMD_ID_MASK);
@@ -2677,6 +2724,9 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 	/* Check init command response */
 	if (pmadapter->hw_status == WlanHardwareStatusInitializing ||
 	    pmadapter->hw_status == WlanHardwareStatusGetHwSpec
+#ifdef SECURE_HOST
+	    || pmadapter->hw_status == WlanHardwareStatusSecHandshake
+#endif
 	) {
 		if (ret == MLAN_STATUS_FAILURE) {
 #if 0
@@ -2696,6 +2746,13 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 			PRINTM(MERROR,
 			       "cmd 0x%02x failed during initialization\n",
 			       cmdresp_no);
+#ifdef SECURE_HOST
+			if (pmadapter->hw_status ==
+			    WlanHardwareStatusSecHandshake) {
+				PRINTM(MERROR,
+				       "secure host handshake incomplete\n");
+			}
+#endif
 			wlan_init_fw_complete(pmadapter);
 			goto done;
 		}
@@ -2772,6 +2829,26 @@ mlan_status wlan_process_cmdresp(mlan_adapter *pmadapter)
 		   (HostCmd_CMD_GET_HW_SPEC == cmdresp_no)) {
 		pmadapter->hw_status = WlanHardwareStatusGetHwSpecdone;
 	}
+#ifdef SECURE_HOST
+	else if (IS_CARDAW693(pmadapter->card_type) &&
+		 pmadapter->shc_secure_host &&
+		 (pmadapter->hw_status == WlanHardwareStatusGetHwSpec) &&
+		 (HostCmd_CMD_FUNC_INIT == cmdresp_no)) {
+		if (!pmadapter->second_mac) {
+			pmadapter->hw_status = WlanHardwareStatusSecHandshake;
+			PRINTM(MMSG, "secure host handshake start\n");
+			ret = mlan_shc_handshake(pmadapter, TLS_HOST_HELLO,
+						 MNULL);
+			if (ret != MLAN_STATUS_SUCCESS) {
+				pmadapter->hw_status =
+					WlanHardwareStatusNotReady;
+				wlan_init_fw_complete(pmadapter);
+			}
+		} else {
+			wlan_adapter_get_hw_spec(pmadapter);
+		}
+	}
+#endif
 
 done:
 	LEAVE();
@@ -5479,6 +5556,48 @@ mlan_status wlan_cmd_func_init(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd)
 	return MLAN_STATUS_SUCCESS;
 }
 
+#ifdef SECURE_HOST
+mlan_status wlan_adapter_func_init(pmlan_adapter pmadapter)
+{
+	mlan_status ret;
+	pmlan_private priv = wlan_get_priv(pmadapter, MLAN_BSS_ROLE_ANY);
+
+	ENTER();
+#if defined(SDIO)
+	/*
+	 * This should be issued in the very first to config
+	 *   SDIO_GPIO interrupt mode.
+	 */
+	if (IS_SD(pmadapter->card_type) &&
+	    (wlan_set_sdio_gpio_int(priv) != MLAN_STATUS_SUCCESS)) {
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+#endif
+
+#ifdef PCIE
+	if (IS_PCIE(pmadapter->card_type) &&
+	    (MLAN_STATUS_SUCCESS != wlan_set_pcie_buf_config(priv))) {
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+#endif
+
+	ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT, HostCmd_ACT_GEN_SET,
+			       0, MNULL, MNULL);
+	if (ret) {
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	ret = MLAN_STATUS_PENDING;
+
+done:
+	LEAVE();
+	return ret;
+}
+#endif
+
 /**
  *  @brief  This function issues adapter specific commands
  *          to initialize firmware
@@ -5511,18 +5630,27 @@ mlan_status wlan_adapter_get_hw_spec(pmlan_adapter pmadapter)
 
 #ifdef PCIE
 	if (IS_PCIE(pmadapter->card_type) &&
+#ifdef SECURE_HOST
+	    !pmadapter->shc_secure_host &&
+#endif
 	    (MLAN_STATUS_SUCCESS != wlan_set_pcie_buf_config(priv))) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
 #endif
 
+#ifdef SECURE_HOST
+	if (!pmadapter->shc_secure_host) {
+#endif
 		ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
 				       HostCmd_ACT_GEN_SET, 0, MNULL, MNULL);
 		if (ret) {
 			ret = MLAN_STATUS_FAILURE;
 			goto done;
 		}
+#ifdef SECURE_HOST
+	}
+#endif
 
 	/** DPD data dnld cmd prepare */
 	if ((pmadapter->pdpd_data) && (pmadapter->dpd_data_len > 0)) {
@@ -7267,6 +7395,49 @@ mlan_status wlan_ret_get_hw_spec(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 					api_hotfix_rev->hotfix_ver;
 				PRINTM(MCMND, "fw hotfix ver=%d\n",
 				       api_hotfix_rev->hotfix_ver);
+				break;
+			case FW_PL_VER_ID:
+				fw_pl_ver = ((api_rev->minor_ver << 8) |
+					     (api_rev->major_ver));
+				pmadapter->fw_release_number.patchLevel =
+					fw_pl_ver;
+				PRINTM(MCMND,
+				       "GET_HW_SPEC: fw_release_number received from FW: v%d.%d.%d.%d\n",
+				       pmadapter->fw_release_number.majorRevNum,
+				       pmadapter->fw_release_number.minorRevNum,
+				       pmadapter->fw_release_number.releaseNum,
+				       pmadapter->fw_release_number.patchLevel);
+				break;
+			default:
+				break;
+			}
+			break;
+		case NXP_VERSION_COMPONENTS_TLV_ID:
+			fw_ver_ie = (MrvlIEtypes_fw_ver_ie_t *)tlv;
+			api_id = wlan_le16_to_cpu(fw_ver_ie->api_id);
+			switch (api_id) {
+			case FW_MILESTONE_VER_ID:
+				memcpy(pmadapter, pmadapter->fw_ver_milestone,
+				       fw_ver_ie->ver_ie_ptr,
+				       tlv_len - sizeof(fw_ver_ie->api_id));
+				PRINTM(MCMND,
+				       "GET_HW_SPEC: FW build milestone: %s\n",
+				       pmadapter->fw_ver_milestone);
+				break;
+			case FW_BUILDTYPE_VER_ID:
+				memcpy(pmadapter, pmadapter->fw_ver_buildtype,
+				       fw_ver_ie->ver_ie_ptr,
+				       tlv_len - sizeof(fw_ver_ie->api_id));
+				PRINTM(MCMND, "GET_HW_SPEC: FW buildtype: %s\n",
+				       pmadapter->fw_ver_buildtype);
+				break;
+			case FW_COMMIT_INFO_VER_ID:
+				memcpy(pmadapter, pmadapter->fw_ver_data,
+				       fw_ver_ie->ver_ie_ptr,
+				       tlv_len - sizeof(fw_ver_ie->api_id));
+				PRINTM(MCMND,
+				       "GET_HW_SPEC: FW version data: %s\n",
+				       pmadapter->fw_ver_data);
 				break;
 			case FW_PL_VER_ID:
 				fw_pl_ver = ((api_rev->minor_ver << 8) |
@@ -11881,6 +12052,7 @@ mlan_status wlan_ret_foundry_type(pmlan_private pmpriv,
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
 }
+
 /**
  *  @brief This function prepares command of RANGE_EXT
  *
@@ -12204,6 +12376,14 @@ mlan_status wlan_ret_get_sensor_temp(pmlan_private pmpriv,
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
 }
+
+#ifdef SECURE_HOST
+mlan_status wlan_process_secure_host_event(pmlan_private pmpriv, t_u8 *data,
+					   t_u32 len)
+{
+	return wlan_shc_process_secure_host_event(pmpriv, data, len);
+}
+#endif
 
 /**
  *  @brief This function prepares command to configure edmac

@@ -37,14 +37,9 @@ CONFIG_PCIE8897=n
 CONFIG_SD8977=n
 CONFIG_SD8978=y
 CONFIG_USB8978=n
-CONFIG_SD8997=y
-CONFIG_USB8997=n
-CONFIG_PCIE8997=y
 CONFIG_SD8987=y
 CONFIG_SD9097=n
 CONFIG_SD9177=y
-CONFIG_SD8801=n
-CONFIG_USB8801=n
 CONFIG_USB9097=n
 CONFIG_PCIE9097=n
 CONFIG_SD9098=y
@@ -143,6 +138,7 @@ ifeq ($(ANDROID_BUILD), 1)
     PWD := $(shell pwd)
     KERNELDIR ?= $(KERNEL_SRC)
     ccflags-y += -DANDROID_SDK_VERSION=$(ANDROID_SDK_VERSION)
+    CONFIG_SD8978=n
 endif
 
 MODEXT = ko
@@ -175,7 +171,9 @@ APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 #############################################################################
 
 	ccflags-y += -I$(KERNELDIR)/include
-	ccflags-y += -DMLAN_RELEASE_VERSION='"540.p33"'
+	ccflags-y += -DMLAN_RELEASE_VERSION='"542.p2"'
+	ccflags-y += -DMLAN_EXT_RELEASE_VERSION='"542.p2"'
+	ccflags-y += -DREL_MILESTONE='""'
 
 	ccflags-y += -DFPNUM='"92"'
 
@@ -280,10 +278,6 @@ ifeq ($(CONFIG_SD8978),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSD8978
 endif
-ifeq ($(CONFIG_SD8997),y)
-	CONFIG_SDIO=y
-	ccflags-y += -DSD8997
-endif
 ifeq ($(CONFIG_SD8987),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSD8987
@@ -303,6 +297,10 @@ endif
 ifeq ($(CONFIG_SDAW693),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSDAW693
+	CONFIG_SECURE_HOST=n
+        ifeq ($(CONFIG_SECURE_HOST), y)
+            BINDIR = secure_hostif_wlan_bin
+        endif
 endif
 ifeq ($(CONFIG_SD9177),y)
 	CONFIG_SDIO=y
@@ -323,10 +321,6 @@ endif
 ifeq ($(CONFIG_USB8897),y)
 	CONFIG_MUSB=y
 	ccflags-y += -DUSB8897
-endif
-ifeq ($(CONFIG_USB8997),y)
-	CONFIG_MUSB=y
-	ccflags-y += -DUSB8997
 endif
 ifeq ($(CONFIG_USB8978),y)
 	CONFIG_MUSB=y
@@ -352,10 +346,6 @@ ifeq ($(CONFIG_PCIE8897),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIE8897
 endif
-ifeq ($(CONFIG_PCIE8997),y)
-	CONFIG_PCIE=y
-	ccflags-y += -DPCIE8997
-endif
 ifeq ($(CONFIG_PCIE9097),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIE9097
@@ -371,6 +361,14 @@ endif
 ifeq ($(CONFIG_PCIEAW693),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIEAW693
+	CONFIG_XDP_SUPPORT=y
+ifeq ($(ANDROID_BUILD), 1)
+	CONFIG_XDP_SUPPORT=n
+endif
+	CONFIG_SECURE_HOST=n
+        ifeq ($(CONFIG_SECURE_HOST), y)
+            BINDIR = secure_hostif_wlan_bin
+        endif
 endif
 ifeq ($(CONFIG_SDIO),y)
 	ccflags-y += -DSDIO
@@ -513,6 +511,9 @@ endif
 
 # Default for out-of-tree builds
 CONFIG_NXP_WLAN_DRIVER ?= m
+ifeq ($(CONFIG_SECURE_HOST), y)
+       ccflags-y += -DSECURE_HOST
+endif
 
 MOALOBJS =	mlinux/moal_main.o \
 		mlinux/moal_ioctl.o \
@@ -591,6 +592,32 @@ endif
 
 
 
+ifeq ($(CONFIG_SECURE_HOST),y)
+ccflags-y += -I$(src)/nanotls/include
+ccflags-y += -I$(src)/nanotls/lib/include
+ccflags-y += -I$(src)/nanotls/lib/aes/include
+
+ccflags-y += -I$(src)/include
+ccflags-y += -I$(src)/lib/include
+ccflags-y += -I$(src)/lib/aes/include
+ccflags-y += -I$(KERNELDIR)/include/linux
+ccflags-y += -std=gnu99
+ccflags-y += -Wno-format-security -Wno-unused-but-set-variable -Wno-declaration-after-statement
+MLANOBJS += mlan/mlan_shc.o
+MOALOBJS += nanotls/lib/src/blockwise.o \
+            nanotls/lib/src/chash.o \
+            nanotls/lib/src/hmac.o \
+            nanotls/lib/src/p256-m.o \
+            nanotls/lib/src/sha256.o \
+            nanotls/lib/aes/src/aes.o \
+            nanotls/lib/aes/src/gcm.o \
+            nanotls/src/nanotls-common.o \
+            nanotls/src/nanotls-hooks.o \
+            nanotls/src/nanotls-host.o \
+            nanotls/src/nanotls-device.o \
+            nanotls/src/nanotls-data.o \
+            mlinux/moal_shc.o
+endif
 
 obj-$(CONFIG_NXP_WLAN_DRIVER) := mlan.o
 mlan-objs := $(MLANOBJS)
