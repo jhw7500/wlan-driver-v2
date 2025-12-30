@@ -1645,7 +1645,7 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 	if (sfp->size < ((handle->ssu_dump_len * 9) / 4)) {
 		PRINTM(MCMND,
 		       "ssu dump size too big, size=%lu, ssu_dump_len=%lu\n",
-		       sfp->size,
+		       (unsigned long)sfp->size,
 		       (unsigned long)((handle->ssu_dump_len * 9) / 4));
 		sfp->count = sfp->size;
 		ret = 0;
