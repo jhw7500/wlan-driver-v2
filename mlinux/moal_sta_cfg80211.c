@@ -4686,18 +4686,22 @@ static mlan_status woal_cfg80211_dump_station_info(moal_private *priv,
 
 	if (priv->phandle->scan_pending_on_block) {
 		if (priv->sinfo) {
-			t_u32 fixed_size = 0;
-#if ((CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)) ||                    \
-     (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 36))
-			struct link_station_info
-				*links[IEEE80211_MLD_MAX_NUM_LINKS];
-			fixed_size =
-				sizeof(struct station_info) - sizeof(links);
-#else
-			fixed_size = sizeof(struct station_info);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+			struct link_station_info *saved_links[IEEE80211_MLD_MAX_NUM_LINKS];
+
+			for (int i = 0; i < IEEE80211_MLD_MAX_NUM_LINKS; i++) {
+				saved_links[i] = sinfo->links[i];
+			}
 #endif
 			moal_memcpy_ext(priv->phandle, sinfo, priv->sinfo,
-					fixed_size, fixed_size);
+					sizeof(struct station_info),
+					sizeof(struct station_info));
+
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+			for (int i = 0; i < IEEE80211_MLD_MAX_NUM_LINKS; i++) {
+				sinfo->links[i] = saved_links[i];
+			}
+#endif
 		}
 		LEAVE();
 		return ret;
