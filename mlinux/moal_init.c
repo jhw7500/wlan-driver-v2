@@ -5,7 +5,7 @@
  * driver.
  *
  *
- * Copyright 2018-2022, 2024-2025 NXP
+ * Copyright 2018-2022, 2024-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -373,6 +373,8 @@ static int amsdu_8k_rx;
 
 /** ignore TPE IE configuration from ex-AP*/
 static int tpe_ie_ignore = 0;
+
+static int amsdu_8k_rx = 0;
 
 #ifdef DEBUG_LEVEL1
 #ifdef DEBUG_LEVEL2
@@ -2490,6 +2492,8 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		handle->params.tpe_ie_ignore = params->tpe_ie_ignore;
 	handle->params.make_before_break = make_before_break;
+	handle->params.amsdu_rx_size = amsdu_8k_rx ? MLAN_RX_DATA_BUF_SIZE_8K :
+						     MLAN_RX_DATA_BUF_SIZE_4K;
 
 #ifdef SECURE_HOST
 	handle->params.secure_host = secure_host;
@@ -3962,3 +3966,7 @@ MODULE_PARM_DESC(
 module_param(bandctrl, int, 0);
 MODULE_PARM_DESC(bandctrl,
 		 "0: Disable bandctrl mode(default); 1: Enable bandctrl mode");
+
+module_param(amsdu_8k_rx, int, 0);
+MODULE_PARM_DESC(amsdu_8k_rx,
+		 "1: support AMPDU 8K RX; 0: just support AMPDU 4K RX");

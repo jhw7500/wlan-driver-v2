@@ -2942,6 +2942,8 @@ typedef struct _moal_mod_para {
 #endif
 	int bandctrl;
 
+	t_u16 amsdu_rx_size;
+
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);

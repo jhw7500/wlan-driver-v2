@@ -4,7 +4,7 @@
  *  @brief This file contains functions for 11n Aggregation.
  *
  *
- *  Copyright 2008-2021, 2025 NXP
+ *  Copyright 2008-2021, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -516,7 +516,7 @@ mlan_status wlan_11n_deaggregate_pkt(mlan_private *priv, pmlan_buffer pmbuf)
 			goto done;
 		}
 	}
-	/* total_pkt_len is limited up to MLAN_RX_DATA_BUF_SIZE */
+	/* total_pkt_len is limited up to rx_buf_size */
 	// coverity[misra_c_2012_directive_4_14_violation:SUPPRESS]
 	while (total_pkt_len >= hdr_len) {
 		prx_pkt = (RxPacketHdr_t *)data;
