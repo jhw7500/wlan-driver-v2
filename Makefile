@@ -136,7 +136,7 @@ endif
 #############################################################################
 # Select Platform Tools
 #############################################################################
-ifeq ($(ANDROID_BUILD), 1)
+ifeq ($(ANDROID_BUILD), yes)
 # Set target Android SDK version.
 # ANDROID_SDK_VERSION 29 corresponds to Android 10 Android 10
 # ANDROID_SDK_VERSION 30 corresponds to Android 11 (Red Velvet Cake)
@@ -182,8 +182,8 @@ APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 #############################################################################
 
 	ccflags-y += -I$(KERNELDIR)/include
-	ccflags-y += -DMLAN_RELEASE_VERSION='"542.p8"'
-	ccflags-y += -DMLAN_EXT_RELEASE_VERSION='"542.p8"'
+	ccflags-y += -DMLAN_RELEASE_VERSION='"542.p12"'
+	ccflags-y += -DMLAN_EXT_RELEASE_VERSION='"542.p12"'
 	ccflags-y += -DREL_MILESTONE='""'
 
 	ccflags-y += -DFPNUM='"92"'
