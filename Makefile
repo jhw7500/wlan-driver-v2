@@ -22,6 +22,10 @@ COMPATDIR=/lib/modules/$(KERNELVERSION_X86)/build/compat-wireless-3.2-rc1-1/incl
 CC ?=		$(CROSS_COMPILE)gcc -I$(COMPATDIR)
 endif
 
+KERNELDIR ?= /opt/sda/mini-6.6.3/imx-6.6.3-1.0.0-build/build-wayland/tmp/work/imx8mmevk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
+CROSS_COMPILE?=/shared/fsl-imx-xwayland/6.6-nanbield/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
+CC =            $(CROSS_COMPILE)gcc
+
 LD ?=		$(CROSS_COMPILE)ld
 BACKUP=		/root/backup
 YMD=		`date +%Y%m%d%H%M`
@@ -35,22 +39,22 @@ CONFIG_SD8897=n
 CONFIG_USB8897=n
 CONFIG_PCIE8897=n
 CONFIG_SD8977=n
-CONFIG_SD8978=y
+CONFIG_SD8978=n
 CONFIG_USB8978=n
-CONFIG_SD8997=y
+CONFIG_SD8997=n
 CONFIG_USB8997=n
-CONFIG_PCIE8997=y
-CONFIG_SD8987=y
+CONFIG_PCIE8997=n
+CONFIG_SD8987=n
 CONFIG_SD9097=n
-CONFIG_SD9177=y
-CONFIG_SD8801=y
+CONFIG_SD9177=n
+CONFIG_SD8801=n
 CONFIG_USB8801=n
 CONFIG_USB9097=n
 CONFIG_PCIE9097=n
 CONFIG_SD9098=y
 CONFIG_USB9098=n
 CONFIG_PCIE9098=y
-CONFIG_SDIW610=y
+CONFIG_SDIW610=n
 CONFIG_USBIW610=n
 CONFIG_SDIW624=n
 CONFIG_SDAW693=n
@@ -107,7 +111,7 @@ CONFIG_DUMP_TO_PROC=y
 
 CONFIG_TASKLET_SUPPORT=n
 
-
+CONFIG_JHW_TEST=n
 
 #32bit app over 64bit kernel support
 CONFIG_USERSPACE_32BIT_OVER_KERNEL_64BIT=n
@@ -150,8 +154,9 @@ ccflags-y += -I$(PWD)/mlan
 ccflags-y += -DLINUX
 
 
-
-
+ifeq ($(CONFIG_JHW_TEST),y)
+ccflags-y += -DJHW_TEST
+endif
 
 
 ARCH ?= arm64
