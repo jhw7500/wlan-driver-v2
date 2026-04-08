@@ -1,0 +1,15 @@
+# Build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+Module.symvers
+modules.order
+.*.cmd
+.tmp_versions/
+
+# Editor/IDE
+.omc/
+*.swp
+*~
