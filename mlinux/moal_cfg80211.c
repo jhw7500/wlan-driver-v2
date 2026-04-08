@@ -1020,7 +1020,7 @@ int woal_cfg80211_deinit_p2p(moal_private *priv)
 	t_u8 channel_status;
 	moal_private *remain_priv = NULL;
 	mlan_ds_ps_mgmt ps_mgmt;
-
+	printk("JHW_TEST %s\n", __FUNCTION__);
 	ENTER();
 
 	/* bss type check */
@@ -2590,8 +2590,25 @@ void woal_mgmt_frame_register(moal_private *priv, u16 frame_type, bool reg)
 {
 	t_u32 mgmt_subtype_mask = 0x0;
 	t_u32 last_mgmt_subtype_mask = priv->mgmt_subtype_mask;
-
 	ENTER();
+
+	/* net_rx>=2: mask is locked, ignore frame registration */
+	if (priv->phandle->params.net_rx >= 2) {
+		t_u32 target_mask = ((priv->phandle->params.net_rx & 0x3) == 3)
+				   ? MGMT_LOG_MASK_ALL
+				   : MGMT_LOG_MASK_ROAMING;
+		if (last_mgmt_subtype_mask != target_mask) {
+			PRINTM(MIOCTL,
+			       "%s: net_rx override: mask 0x%x -> 0x%x\n",
+			       priv->netdev->name, last_mgmt_subtype_mask,
+			       target_mask);
+			woal_reg_rx_mgmt_ind(priv, MLAN_ACT_SET, &target_mask,
+					     MOAL_NO_WAIT);
+			priv->mgmt_subtype_mask = target_mask;
+		}
+		LEAVE();
+		return;
+	}
 
 #ifdef SDIO_SUSPEND_RESUME
 	if (priv->phandle->shutdown_hs_in_process) {
@@ -2670,6 +2687,21 @@ void woal_cfg80211_mgmt_frame_register(struct wiphy *wiphy,
 	ENTER();
 
 #if KERNEL_VERSION(5, 8, 0) <= CFG80211_VERSION_CODE
+	/* net_rx>=2: lock mask for mgmt frame logging,
+	 * ignore wpa_supplicant changes */
+	if (priv->phandle->params.net_rx >= 2) {
+		t_u32 mgmt_mask = ((priv->phandle->params.net_rx & 0x3) == 3)
+				  ? MGMT_LOG_MASK_ALL
+				  : MGMT_LOG_MASK_ROAMING;
+		if (priv->mgmt_subtype_mask != mgmt_mask) {
+			priv->mgmt_subtype_mask = mgmt_mask;
+			woal_reg_rx_mgmt_ind(priv, MLAN_ACT_SET,
+					     &mgmt_mask, MOAL_NO_WAIT);
+		}
+		LEAVE();
+		return;
+	}
+
 	if ((upd->interface_stypes & BIT(IEEE80211_STYPE_AUTH >> 4))
 	    /** Supplicant 2.8 always register auth, FW will handle auth when
 	     *  host_mlme=0
@@ -3203,6 +3235,46 @@ int woal_cfg80211_mgmt_tx(struct wiphy *wiphy,
 		PRINTM(MERROR, "%s: corrupt data\n", __func__);
 		LEAVE();
 		return -EFAULT;
+	}
+
+	/* net_rx bit2 (0x4): log TX management frames */
+	if ((priv->phandle->params.net_rx & 0x4) && len >= 2) {
+		t_u16 _fc = le16_to_cpu(
+			((const struct ieee80211_mgmt *)buf)->frame_control);
+		t_u8 _type = (_fc >> 2) & 0x3;
+		t_u8 _sub = (_fc >> 4) & 0xF;
+		t_u8 _do_log = MTRUE;
+
+		if (_type == 0) { /* management */
+			const char *_ts = "?";
+			switch (_sub) {
+			case 0:  _ts = "Assoc Request "; break;
+			case 1:  _ts = "Assoc Response"; break;
+			case 2:  _ts = "Reassoc Req   "; break;
+			case 3:  _ts = "Reassoc Resp  "; break;
+			case 4:  _ts = "Probe Request "; break;
+			case 5:  _ts = "Probe Response"; break;
+			case 8:  _ts = "Beacon        "; break;
+			case 10: _ts = "Disassoc      "; break;
+			case 11: _ts = "Auth          "; break;
+			case 12: _ts = "Deauth        "; break;
+			case 13: _ts = "Action        "; break;
+			default: _ts = "Mgmt Other    "; break;
+			}
+
+			if ((priv->phandle->params.net_rx & 0x3) == 2 &&
+			    (_sub == 4 || _sub == 5 || _sub == 8))
+				_do_log = MFALSE;
+
+			if (_do_log && len >= 24)
+				mgmt_log_printf(
+				       &priv->phandle->mgmt_log,
+				       "[%s] MGMT[TX] %s(%2d) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
+				       dev->name,
+				       _ts, _sub,
+				       ((const struct ieee80211_mgmt *)buf)->sa,
+				       ((const struct ieee80211_mgmt *)buf)->da);
+		}
 	}
 
 	/* If the packet is probe response, that means we are in listen phase,

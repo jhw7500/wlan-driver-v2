@@ -2145,7 +2145,7 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			    MAX_RX_PENDING_THRHLD)
 				netif_rx(frame);
 			else {
-				if (handle->params.net_rx == MTRUE) {
+				if (handle->params.net_rx >= 1) {
 					local_bh_disable();
 					netif_receive_skb(frame);
 					local_bh_enable();
@@ -2511,7 +2511,7 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				    MAX_RX_PENDING_THRHLD)
 					netif_rx(skb);
 				else {
-					if (handle->params.net_rx == MTRUE) {
+					if (handle->params.net_rx >= 1) {
 						local_bh_disable();
 						netif_receive_skb(skb);
 						local_bh_enable();
@@ -3098,6 +3098,25 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			netif_carrier_on(priv->netdev);
 		woal_wake_queue(priv->netdev);
 		moal_connection_status_check_pmqos(pmoal);
+
+		/* Register mgmt frame subtypes for logging:
+		 * net_rx=2: roaming frames only
+		 * net_rx=3: all management frames */
+		if (handle->params.net_rx >= 2) {
+			t_u32 mgmt_mask = ((handle->params.net_rx & 0x3) == 3)
+					  ? MGMT_LOG_MASK_ALL
+					  : MGMT_LOG_MASK_ROAMING;
+			if (priv->mgmt_subtype_mask != mgmt_mask) {
+				PRINTM(MINFO,
+				       "[%s] MGMT[--] mask change: 0x%x -> 0x%x\n",
+				       priv->netdev->name,
+				       priv->mgmt_subtype_mask, mgmt_mask);
+				woal_reg_rx_mgmt_ind(priv, MLAN_ACT_SET,
+						     &mgmt_mask, MOAL_NO_WAIT);
+				priv->mgmt_subtype_mask = mgmt_mask;
+			}
+		}
+
 		break;
 	case MLAN_EVENT_ID_DRV_ASSOC_FAILURE:
 		PRINTM(MERROR, "wlan:MLAN_EVENT_ASSOC_FAILURE\n");
@@ -4394,7 +4413,66 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		}
 #endif /* UAP_WEXT */
 		break;
-	case MLAN_EVENT_ID_DRV_MGMT_FRAME:
+	case MLAN_EVENT_ID_DRV_MGMT_FRAME: {
+		t_u8 rx_snr = pmevent->event_buf[2];
+		t_u8 rx_nf = pmevent->event_buf[3];
+		bool ret = 0;
+
+		/* RX management frame logging */
+		if (priv->phandle->params.net_rx >= 2) {
+			int _buf_len = pmevent->event_len -
+				       sizeof(pmevent->event_id);
+			t_u8 *_pkt = ((t_u8 *)pmevent->event_buf +
+				      sizeof(pmevent->event_id));
+
+			if (_buf_len >= 24) {
+				const struct ieee80211_mgmt *_mgmt =
+					(const struct ieee80211_mgmt *)_pkt;
+				t_u16 _fc = le16_to_cpu(
+					_mgmt->frame_control);
+				t_u8 _type = (_fc >> 2) & 0x3;
+				t_u8 _sub = (_fc >> 4) & 0xF;
+				t_u16 _seq = le16_to_cpu(
+					_mgmt->seq_ctrl) >> 4;
+				t_u16 _retry = !!(_fc & 0x0800);
+				const char *_ts = "?";
+				t_u8 _do_log = MTRUE;
+
+				if (_type == 0) { /* management */
+					switch (_sub) {
+					case 0:  _ts = "Assoc Request "; break;
+					case 1:  _ts = "Assoc Response"; break;
+					case 2:  _ts = "Reassoc Req   "; break;
+					case 3:  _ts = "Reassoc Resp  "; break;
+					case 4:  _ts = "Probe Request "; break;
+					case 5:  _ts = "Probe Response"; break;
+					case 8:  _ts = "Beacon        "; break;
+					case 10: _ts = "Disassoc      "; break;
+					case 11: _ts = "Auth          "; break;
+					case 12: _ts = "Deauth        "; break;
+					case 13: _ts = "Action        "; break;
+					default: _ts = "Mgmt Other    "; break;
+					}
+
+					/* net_rx=2: skip noisy frames */
+					if ((priv->phandle->params.net_rx &
+					     0x3) == 2 &&
+					    (_sub == 4 || _sub == 5 ||
+					     _sub == 8))
+						_do_log = MFALSE;
+				}
+				if (_do_log)
+					mgmt_log_printf(
+					       &priv->phandle->mgmt_log,
+					       "[%s] MGMT[RX] %s(%2d) : SA=%pM DA=%pM RSSI=%4d NF=%4d SNR=%4d Retry=%d Seq=%4u\n",
+					       priv->netdev->name, _ts, _sub,
+					       _mgmt->sa, _mgmt->da,
+					       (int)((int)rx_snr - (int)rx_nf),
+					       -(int)rx_nf, (int)rx_snr,
+					       _retry, _seq);
+			}
+		}
+
 #ifdef UAP_WEXT
 		if (IS_UAP_WEXT(cfg80211_wext)) {
 			woal_broadcast_event(priv, pmevent->event_buf,
@@ -4434,6 +4512,22 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					pmevent->event_len -
 						sizeof(pmevent->event_id) -
 						PACKET_ADDR4_POS - ETH_ALEN);
+
+#if 0 //JHW_TEST
+				if (pmevent->event_len - sizeof(pmevent->event_id) >= 24) {
+					struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)pkt;
+					u16 fc = le16_to_cpu(mgmt->frame_control);
+					u8 subtype = (fc >> 4) & 0x0F;
+					u8 *sa = mgmt->sa;
+					u8 *da = mgmt->da;
+					u16 seq_ctrl = le16_to_cpu(mgmt->seq_ctrl);
+					u16 seq = seq_ctrl >> 4;
+
+					printk("MGMT subtype=%d SA=%pM DA=%pM SEQ=%u\n",
+						subtype, sa, da, seq);
+				}
+#endif
+
 #ifdef WIFI_DIRECT_SUPPORT
 				if (ieee80211_is_action(
 					    ((struct ieee80211_mgmt *)pkt)
@@ -4467,6 +4561,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 							     pkt)
 							    ->frame_control)) {
 						priv->auth_tx_cnt = 0;
+						//printk("JHW_TEST %s: Received auth frame type = 0x%x\n",priv->netdev->name,priv->auth_alg);
 						PRINTM(MEVENT,
 						       "HostMlme %s: Received auth frame type = 0x%x\n",
 						       priv->netdev->name,
@@ -4499,6 +4594,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 							break;
 						}
 					} else {
+						//printk("JHW_TEST %s: Receive deauth/disassociate\n",priv->netdev->name);
 						PRINTM(MEVENT,
 						       "HostMlme %s: Receive deauth/disassociate\n",
 						       priv->netdev->name);
@@ -4585,7 +4681,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				} else
 #endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 4, 0)
-					cfg80211_rx_mgmt(
+					ret = cfg80211_rx_mgmt(
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
 						priv->wdev,
 #else
@@ -4639,7 +4735,41 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 #endif /* KERNEL_VERSION */
 		}
 #endif /* STA_CFG80211 || UAP_CFG80211 */
+#ifdef JHW_TEST
+					frame = ((const u8 *)pmevent->event_buf) + sizeof(pmevent->event_id);
+					frame_len = pmevent->event_len - sizeof(pmevent->event_id) - MLAN_MAC_ADDR_LENGTH;
+					if (frame_len >= 24) {
+						u16 fc = frame[0] | (frame[1] << 8);
+						u8 type = (fc >> 2) & 0x3;
+						u8 subtype = (fc >> 4) & 0xf;
+
+						type_str = "Unknown";
+						if (type == 0) {
+							switch (subtype) {
+							case 0: type_str = "Assoc Req"; break;
+							case 1: type_str = "Assoc Resp"; break;
+							case 4: type_str = "Probe Req"; break;
+							case 5: type_str = "Probe Resp"; break;
+							case 8: type_str = "Beacon"; break;
+							case 10: type_str = "Disassoc"; break;
+							case 11: type_str = "Auth"; break;
+							case 12: type_str = "Deauth"; break;
+							case 13: type_str = "Action"; break;
+							default: type_str = "Mgmt Other"; break;
+							}
+						}
+
+						da = &frame[4];
+						sa = &frame[10];
+						u16 seq_ctrl = frame[22] | (frame[23] << 8);
+						u16 seq_num = (seq_ctrl >> 4);
+
+						printk(KERN_INFO "JHW_TEST : ret %d, %s frame, SA %pM → DA %pM, len %d, seq %u\n",
+							ret, type_str, sa, da, frame_len, seq_num);
+					}
+#endif
 		break;
+	} /* MLAN_EVENT_ID_DRV_MGMT_FRAME */
 #endif /* UAP_SUPPORT */
 	case MLAN_EVENT_ID_DRV_PASSTHRU:
 		woal_broadcast_event(priv, pmevent->event_buf,
