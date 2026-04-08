@@ -8710,6 +8710,26 @@ static void woal_start_xmit(moal_private *priv, struct sk_buff *skb)
 	pmbuf->bss_index = priv->bss_index;
 	woal_fill_mlan_buffer(priv, pmbuf, skb);
 
+#if 0 //JHW_TEST
+	//struct sk_buff *skb = (struct sk_buff *)pmbuf->pdesc;
+	u8 *data = skb->data;
+
+	u8 type = (data[0] >> 2) & 0x3;
+	u8 subtype = (data[0] >> 4) & 0xF;
+
+	if (type == 0) {  // 관리 프레임
+		u8 *sa = &data[10];
+		u8 *da = &data[4];
+		u16 seq_ctrl = data[22] | (data[23] << 8);
+		u16 seq = seq_ctrl >> 4;
+
+		pkt_rxinfo *rx = &pmbuf->u.rx_info;
+
+		printk(KERN_INFO "Mgmt Frame: subtype=0x%x, SA=%pM, DA=%pM, seq=%u\n", subtype, sa, da, seq);
+		printk(KERN_INFO "   RX info: RSSI=%d dBm, ch=%u\n", rx->rssi, rx->channel);
+	}
+#endif
+
 #ifdef UAP_SUPPORT
 #if defined(UAP_CFG80211) || defined(STA_CFG80211)
 	if (priv->wdev->use_4addr) {
@@ -8778,6 +8798,7 @@ static void woal_start_xmit(moal_private *priv, struct sk_buff *skb)
 	status = mlan_send_packet(priv->phandle->pmlan_adapter, pmbuf);
 	switch (status) {
 	case MLAN_STATUS_PENDING:
+		//printk("tx pending\n");	//JHW_TEST
 		atomic_inc(&priv->phandle->tx_pending);
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 29)
@@ -8809,6 +8830,7 @@ static void woal_start_xmit(moal_private *priv, struct sk_buff *skb)
 	default:
 		priv->stats.tx_dropped++;
 		dev_kfree_skb_any(skb);
+		printk("tx dropped : %lu\n", priv->stats.tx_dropped);	//JHW_TEST
 		break;
 	}
 done:

@@ -6281,7 +6281,7 @@ static int woal_mgmt_frame_passthru_ctrl(moal_private *priv, struct iwreq *wrq)
 	mlan_ds_misc_cfg *mgmt_cfg = NULL;
 	int mask = 0;
 	mlan_status status = MLAN_STATUS_SUCCESS;
-
+	printk("JHW_TEST %s\n", __FUNCTION__);
 	ENTER();
 
 	if (data_length > 1) {

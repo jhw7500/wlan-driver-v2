@@ -8331,7 +8331,7 @@ static int woal_priv_mgmt_frame_passthru_ctrl(moal_private *priv, t_u8 *respbuf,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_misc_cfg *mgmt_cfg = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
-
+	printk("JHW_TEST %s\n", __FUNCTION__);
 	ENTER();
 	header_len = strlen(CMD_NXP) + strlen(PRIV_CMD_MGMT_FRAME_CTRL);
 	if ((int)strlen(respbuf) == header_len) {

@@ -4522,6 +4522,7 @@ int woal_reg_rx_mgmt_ind(moal_private *priv, t_u16 action,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_misc_cfg *misc = NULL;
 	int ret = 0;
+	printk("JHW_TEST %s\n", __FUNCTION__);
 
 	ENTER();
 
