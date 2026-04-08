@@ -3086,7 +3086,7 @@ MODULE_PARM_DESC(dev_cap_mask, "Device capability mask");
 module_param(net_rx, int, 0);
 MODULE_PARM_DESC(
 	net_rx,
-	"0: use netif_rx/netif_rx_ni in rx; 1: use netif_receive_skb in rx (default)");
+	"0: netif_rx_ni; 1: netif_receive_skb; 2: 1+roaming RX log; 3: 1+all RX log; +4: TX log (e.g. 6=roaming RX+TX, 7=all RX+TX)");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,

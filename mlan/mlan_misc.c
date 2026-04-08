@@ -3647,6 +3647,8 @@ mlan_status wlan_process_802dot11_mgmt_pkt(mlan_private *priv, t_u8 *payload,
 		memcpy_ext(pmadapter, (t_u8 *)pevent->event_buf,
 			   (t_u8 *)&pevent->event_id, sizeof(pevent->event_id),
 			   pevent->event_len);
+		pevent->event_buf[2] = (t_u8)prx_pd->snr;
+		pevent->event_buf[3] = (t_u8)prx_pd->nf;
 		memcpy_ext(
 			pmadapter,
 			(t_u8 *)(pevent->event_buf + sizeof(pevent->event_id)),

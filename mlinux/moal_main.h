@@ -2808,6 +2808,21 @@ typedef struct _moal_tp_acnt_t {
 	moal_drv_timer timer;
 } moal_tp_acnt_t;
 
+/** net_rx mgmt frame log ring buffer */
+#define MGMT_LOG_BUF_SIZE   (64 * 1024) /* 64KB ring buffer */
+#define MGMT_LOG_LINE_MAX   256
+
+struct mgmt_log_ring {
+	char *buf;
+	unsigned int head;  /* next write position */
+	unsigned int count; /* bytes stored */
+	spinlock_t lock;
+};
+
+void mgmt_log_ring_init(struct mgmt_log_ring *ring);
+void mgmt_log_ring_free(struct mgmt_log_ring *ring);
+void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...);
+
 /** Handle data structure for MOAL */
 struct _moal_handle {
 	/** MLAN adapter structure */
@@ -2828,6 +2843,8 @@ struct _moal_handle {
 	t_u8 set_mac_addr;
 	/** MAC address */
 	t_u8 mac_addr[ETH_ALEN];
+	/** net_rx mgmt frame log ring buffer */
+	struct mgmt_log_ring mgmt_log;
 #ifdef CONFIG_PROC_FS
 	/** Proc top level directory entry */
 	struct proc_dir_entry *proc_wlan;
@@ -4216,6 +4233,12 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf);
 #define MGMT_MASK_PROBE_RESP 0x20
 #define MGMT_MASK_BEACON 0x100
 #define MGMT_MASK_ASSOC_RESP_QOS_MAP 0x4000
+
+/** net_rx mgmt frame logging masks (bit = subtype number) */
+/* Roaming: Assoc(0,1) + Reassoc(2,3) + Disassoc(10) + Auth(11) + Deauth(12) + Action(13) */
+#define MGMT_LOG_MASK_ROAMING 0x3C0F
+/* All management frame subtypes */
+#define MGMT_LOG_MASK_ALL     0xFFFF
 #define MGMT_MASK_BEACON_WPS_P2P 0x8000
 #define MLAN_CUSTOM_IE_DELETE_MASK 0x0
 #define MLAN_CUSTOM_IE_NEW_MASK 0x8000

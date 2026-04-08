@@ -45,6 +45,227 @@ Change log:
 #define STATUS_PROC "wifi_status"
 #define MWLAN_PROC "mwlan"
 #define WLAN_PROC "adapter%d"
+#define MGMT_LOG_PROC "mgmt_log"
+
+/********************************************************
+		net_rx mgmt frame log ring buffer
+********************************************************/
+void mgmt_log_ring_init(struct mgmt_log_ring *ring)
+{
+	ring->buf = vmalloc(MGMT_LOG_BUF_SIZE);
+	ring->head = 0;
+	ring->count = 0;
+	spin_lock_init(&ring->lock);
+}
+
+void mgmt_log_ring_free(struct mgmt_log_ring *ring)
+{
+	if (ring->buf) {
+		vfree(ring->buf);
+		ring->buf = NULL;
+	}
+}
+
+void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...)
+{
+	char line[MGMT_LOG_LINE_MAX];
+	struct timespec64 ts;
+	unsigned long flags;
+	int prefix_len, msg_len, total;
+	va_list args;
+
+	if (!ring->buf)
+		return;
+
+	ktime_get_real_ts64(&ts);
+	{
+		struct tm tm;
+		time64_to_tm(ts.tv_sec, 0, &tm);
+		prefix_len = snprintf(line, sizeof(line),
+				      "[%04ld-%02d-%02d %02d:%02d:%02d.%03ld] ",
+				      tm.tm_year + 1900, tm.tm_mon + 1,
+				      tm.tm_mday, tm.tm_hour, tm.tm_min,
+				      tm.tm_sec, ts.tv_nsec / 1000000);
+	}
+
+	va_start(args, fmt);
+	msg_len = vsnprintf(line + prefix_len, sizeof(line) - prefix_len,
+			    fmt, args);
+	va_end(args);
+
+	total = prefix_len + msg_len;
+	if (total >= (int)sizeof(line))
+		total = sizeof(line) - 1;
+
+	spin_lock_irqsave(&ring->lock, flags);
+	{
+		int i;
+		for (i = 0; i < total; i++) {
+			ring->buf[ring->head] = line[i];
+			ring->head = (ring->head + 1) % MGMT_LOG_BUF_SIZE;
+		}
+		if (ring->count + total > MGMT_LOG_BUF_SIZE)
+			ring->count = MGMT_LOG_BUF_SIZE;
+		else
+			ring->count += total;
+	}
+	spin_unlock_irqrestore(&ring->lock, flags);
+}
+
+/** Snapshot taken on proc open for consistent multi-read access */
+struct mgmt_log_snapshot {
+	char *buf;
+	unsigned int len;
+};
+
+static int mgmt_log_proc_open(struct inode *inode, struct file *file)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+	struct mgmt_log_ring *ring = pde_data(inode);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	struct mgmt_log_ring *ring = PDE_DATA(inode);
+#else
+	struct mgmt_log_ring *ring = PDE(inode)->data;
+#endif
+	struct mgmt_log_snapshot *snap;
+	unsigned long flags;
+	unsigned int start, first_chunk;
+	int was_full = 0;
+
+	if (!ring || !ring->buf) {
+		file->private_data = NULL;
+		return 0;
+	}
+
+	if (!(file->f_mode & FMODE_READ)) {
+		file->private_data = NULL;
+		return 0;
+	}
+
+	snap = kmalloc(sizeof(*snap), GFP_KERNEL);
+	if (!snap)
+		return -ENOMEM;
+
+	snap->buf = vmalloc(MGMT_LOG_BUF_SIZE);
+	if (!snap->buf) {
+		kfree(snap);
+		return -ENOMEM;
+	}
+
+	spin_lock_irqsave(&ring->lock, flags);
+	snap->len = ring->count;
+	if (snap->len > 0) {
+		if (snap->len == MGMT_LOG_BUF_SIZE)
+			start = ring->head;
+		else
+			start = (ring->head + MGMT_LOG_BUF_SIZE - snap->len) %
+				MGMT_LOG_BUF_SIZE;
+
+		first_chunk = MGMT_LOG_BUF_SIZE - start;
+		if (first_chunk >= snap->len) {
+			memcpy(snap->buf, ring->buf + start, snap->len);
+		} else {
+			memcpy(snap->buf, ring->buf + start, first_chunk);
+			memcpy(snap->buf + first_chunk, ring->buf,
+			       snap->len - first_chunk);
+		}
+
+		was_full = (ring->count == MGMT_LOG_BUF_SIZE);
+	}
+	spin_unlock_irqrestore(&ring->lock, flags);
+
+	if (was_full && snap->len > 0) {
+		unsigned int skip = 0;
+
+		while (skip < snap->len && snap->buf[skip] != '\n')
+			skip++;
+		if (skip < snap->len)
+			skip++;
+		if (skip < snap->len) {
+			snap->len -= skip;
+			memmove(snap->buf, snap->buf + skip, snap->len);
+		} else {
+			snap->len = 0;
+		}
+	}
+
+	file->private_data = snap;
+	return 0;
+}
+
+static int mgmt_log_proc_release(struct inode *inode, struct file *file)
+{
+	struct mgmt_log_snapshot *snap = file->private_data;
+
+	if (snap) {
+		vfree(snap->buf);
+		kfree(snap);
+	}
+	return 0;
+}
+
+static ssize_t mgmt_log_proc_read(struct file *file, char __user *ubuf,
+				   size_t count, loff_t *ppos)
+{
+	struct mgmt_log_snapshot *snap = file->private_data;
+	unsigned int to_copy;
+
+	if (!snap || !snap->buf || *ppos >= snap->len)
+		return 0;
+
+	to_copy = snap->len - (unsigned int)*ppos;
+	if (to_copy > count)
+		to_copy = count;
+
+	if (copy_to_user(ubuf, snap->buf + *ppos, to_copy))
+		return -EFAULT;
+
+	*ppos += to_copy;
+	return to_copy;
+}
+
+static ssize_t mgmt_log_proc_write(struct file *file,
+				    const char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+	struct mgmt_log_ring *ring = pde_data(file_inode(file));
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	struct mgmt_log_ring *ring = PDE_DATA(file_inode(file));
+#else
+	struct mgmt_log_ring *ring = PDE(file_inode(file))->data;
+#endif
+	unsigned long flags;
+
+	if (!ring)
+		return count;
+
+	spin_lock_irqsave(&ring->lock, flags);
+	ring->head = 0;
+	ring->count = 0;
+	spin_unlock_irqrestore(&ring->lock, flags);
+
+	return count;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops mgmt_log_proc_ops = {
+	.proc_open    = mgmt_log_proc_open,
+	.proc_read    = mgmt_log_proc_read,
+	.proc_write   = mgmt_log_proc_write,
+	.proc_release = mgmt_log_proc_release,
+	.proc_lseek   = default_llseek,
+};
+#else
+static const struct file_operations mgmt_log_proc_fops = {
+	.owner   = THIS_MODULE,
+	.open    = mgmt_log_proc_open,
+	.read    = mgmt_log_proc_read,
+	.write   = mgmt_log_proc_write,
+	.release = mgmt_log_proc_release,
+	.llseek  = default_llseek,
+};
+#endif
 /** Proc mwlan directory entry */
 static struct proc_dir_entry *proc_mwlan;
 
@@ -1516,6 +1737,26 @@ void woal_proc_init(moal_handle *handle)
 		PRINTM(MERROR, "Failed to create proc fw dump\n");
 #endif
 
+	/* Create mgmt_log proc entry for net_rx logging */
+	mgmt_log_ring_init(&handle->mgmt_log);
+	if (handle->mgmt_log.buf) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+		r = proc_create_data(MGMT_LOG_PROC, 0644, handle->proc_wlan,
+				     &mgmt_log_proc_ops, &handle->mgmt_log);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
+		r = proc_create_data(MGMT_LOG_PROC, 0644, handle->proc_wlan,
+				     &mgmt_log_proc_fops, &handle->mgmt_log);
+#else
+		r = create_proc_entry(MGMT_LOG_PROC, 0644, handle->proc_wlan);
+		if (r) {
+			r->data = &handle->mgmt_log;
+			r->proc_fops = &mgmt_log_proc_fops;
+		}
+#endif
+		if (!r)
+			PRINTM(MERROR, "Fail to create proc mgmt_log\n");
+	}
+
 done:
 	LEAVE();
 }
@@ -1539,6 +1780,9 @@ void woal_proc_exit(moal_handle *handle)
 
 	PRINTM(MINFO, "Remove Proc Interface %s\n", handle->proc_wlan_name);
 	if (handle->proc_wlan) {
+		remove_proc_entry(MGMT_LOG_PROC, handle->proc_wlan);
+		mgmt_log_ring_free(&handle->mgmt_log);
+
 		strncpy(config_proc_dir, "config", sizeof(config_proc_dir));
 		remove_proc_entry(config_proc_dir, handle->proc_wlan);
 #ifdef DUMP_TO_PROC
