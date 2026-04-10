@@ -206,8 +206,8 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 			h_vlan_encapsulated_proto;
 	}
 
-	/* wbridge 동작 모방: clone→비동기 forward + 원본→커널.
-	 * dev_queue_xmit를 tasklet에서 실행하여 RX 핫패스 블로킹 방지. */
+	/* clone→비동기 forward + 원본→커널.
+	 * 모든 패킷에 대해 clone+tasklet: 안정적이고 검증된 방식. */
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
