@@ -2845,6 +2845,8 @@ struct _moal_handle {
 	t_u8 mac_addr[ETH_ALEN];
 	/** net_rx mgmt frame log ring buffer */
 	struct mgmt_log_ring mgmt_log;
+	/** L2 bridge context (NULL when bridge_mode=0) */
+	struct moal_bridge *bridge;
 #ifdef CONFIG_PROC_FS
 	/** Proc top level directory entry */
 	struct proc_dir_entry *proc_wlan;

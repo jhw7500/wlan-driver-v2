@@ -26,6 +26,7 @@ Change log:
 ********************************************************/
 
 #include "moal_main.h"
+#include "moal_bridge.h"
 #ifdef USB
 #include "moal_usb.h"
 #endif
@@ -2262,6 +2263,15 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				 * free by mlan*/
 				status = MLAN_STATUS_PENDING;
 				atomic_dec(&handle->mbufalloc_count);
+
+				/* L2 bridge fast path — before eth_type_trans
+				 * skb->data = ETH header, no skb_push needed */
+				if (unlikely(handle->bridge) &&
+				    atomic_read(&handle->bridge->active) &&
+				    moal_bridge_rx_fast(handle->bridge,
+						       skb, priv)) {
+					goto done;
+				}
 			} else {
 				PRINTM(MERROR, "%s without skb attach!!!\n",
 				       __func__);
@@ -2501,6 +2511,7 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					pmbuf->out_ts_usec = t.time_usec;
 				}
 			}
+			/* L2 bridge: moved to fast path (before eth_type_trans) */
 			if (priv->phandle->tp_acnt.drop_point == RX_DROP_P4) {
 				status = MLAN_STATUS_PENDING;
 				dev_kfree_skb(skb);

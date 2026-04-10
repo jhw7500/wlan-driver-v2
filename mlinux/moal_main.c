@@ -54,6 +54,7 @@ Change log:
 #endif
 #endif
 #include "moal_eth_ioctl.h"
+#include "moal_bridge.h"
 
 #include <linux/if_ether.h>
 #include <linux/in.h>
@@ -4364,6 +4365,17 @@ static mlan_status woal_add_card_dpc(moal_handle *handle)
 	}
 #endif
 #endif
+
+	/* L2 bridge init — Design Ref: §6.1 */
+	{
+		extern int bridge_mode;
+		extern char *bridge_peer;
+		extern int bridge_wlan_idx;
+		if (bridge_mode) {
+			if (moal_bridge_init(handle, bridge_peer, bridge_wlan_idx))
+				PRINTM(MERROR, "bridge: init failed\n");
+		}
+	}
 
 #ifdef MFG_CMD_SUPPORT
 done:
@@ -13661,6 +13673,9 @@ mlan_status woal_remove_card(void *card)
 	if (handle->rf_test_mode)
 		woal_process_rf_test_mode(handle, MFG_CMD_UNSET_TEST_MODE);
 	handle->surprise_removed = MTRUE;
+
+	/* L2 bridge deinit — Design Ref: §6.2 */
+	moal_bridge_deinit(handle);
 
 	woal_flush_workqueue(handle);
 

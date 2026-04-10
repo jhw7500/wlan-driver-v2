@@ -88,6 +88,10 @@ static int auto_ds;
 
 /** net_rx mode */
 static int net_rx = 1;
+int bridge_mode;
+char *bridge_peer = "eth0";
+int bridge_wlan_idx;
+int bridge_debug;
 /** amsdu deaggr mode */
 static int amsdu_deaggr = 1;
 
@@ -3087,6 +3091,14 @@ module_param(net_rx, int, 0);
 MODULE_PARM_DESC(
 	net_rx,
 	"0: netif_rx_ni; 1: netif_receive_skb; 2: 1+roaming RX log; 3: 1+all RX log; +4: TX log (e.g. 6=roaming RX+TX, 7=all RX+TX)");
+module_param(bridge_mode, int, 0);
+MODULE_PARM_DESC(bridge_mode, "L2 bridge: 0=off(default), 1=on");
+module_param(bridge_peer, charp, 0);
+MODULE_PARM_DESC(bridge_peer, "Bridge peer interface (default: eth0)");
+module_param(bridge_wlan_idx, int, 0);
+MODULE_PARM_DESC(bridge_wlan_idx, "Bridge WLAN BSS index for DBDC (default: 0)");
+module_param(bridge_debug, int, 0644);
+MODULE_PARM_DESC(bridge_debug, "Bridge debug log: 0=off(default), 1=on (runtime changeable)");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,

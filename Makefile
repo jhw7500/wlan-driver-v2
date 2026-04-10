@@ -521,7 +521,8 @@ MOALOBJS =	mlinux/moal_main.o \
 		mlinux/moal_ioctl.o \
 		mlinux/moal_shim.o \
 		mlinux/moal_eth_ioctl.o \
-		mlinux/moal_init.o
+		mlinux/moal_init.o \
+		mlinux/moal_bridge.o
 
 MLANOBJS =	mlan/mlan_shim.o mlan/mlan_init.o \
 		mlan/mlan_txrx.o \
