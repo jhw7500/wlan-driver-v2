@@ -17,6 +17,7 @@
 #include <linux/if_arp.h>
 #include <linux/atomic.h>
 #include <linux/inetdevice.h>
+#include <linux/workqueue.h>
 
 /** Bridge statistics per direction */
 struct moal_bridge_stats {
@@ -43,9 +44,10 @@ struct moal_bridge {
 	struct moal_bridge_stats wlan_to_peer;  /**< WLAN→ETH */
 	struct moal_bridge_stats peer_to_wlan;  /**< ETH→WLAN */
 
-	/** Async forwarding queue + tasklet */
+	/** Async forwarding queue + workqueue */
 	struct sk_buff_head fwd_queue;
-	struct tasklet_struct fwd_tasklet;
+	struct workqueue_struct *fwd_wq;
+	struct work_struct fwd_work;
 
 	/** ETH→WLAN capture method:
 	 *  0 = rx_handler (preferred, via netdev_rx_handler_register)

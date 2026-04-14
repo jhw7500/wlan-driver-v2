@@ -10,24 +10,7 @@
 
 #include "moal_main.h"
 #include "moal_bridge.h"
-
-/*
- * ---------- Async Forward Tasklet ----------
- */
-
-/**
- * moal_bridge_fwd_tasklet - 비동기 패킷 포워딩
- * RX 핫패스에서 clone → 큐 적재만 하고, 실제 dev_queue_xmit는 여기서.
- * moal_recv_packet 컨텍스트를 블로킹하지 않음 (wbridge 스레드와 유사 효과).
- */
-static void moal_bridge_fwd_tasklet(unsigned long data)
-{
-	struct moal_bridge *br = (struct moal_bridge *)data;
-	struct sk_buff *skb;
-
-	while ((skb = skb_dequeue(&br->fwd_queue)) != NULL)
-		dev_queue_xmit(skb);
-}
+#include <linux/ktime.h>
 
 /** DBDC guard: only one bridge instance allowed globally */
 static atomic_t bridge_instance_active = ATOMIC_INIT(0);
@@ -38,6 +21,43 @@ extern int bridge_debug;
 	if (bridge_debug) \
 		printk(KERN_INFO "bridge: " fmt, ##__VA_ARGS__); \
 } while (0)
+
+/*
+ * ---------- Async Forward Worker ----------
+ */
+
+/**
+ * moal_bridge_fwd_work - 비동기 패킷 포워딩
+ * RX 핫패스에서 skb 설정 → 큐 적재만 하고, 실제 dev_queue_xmit는 여기서.
+ * moal_recv_packet 컨텍스트에서 직접 dev_queue_xmit 시 RX 블로킹 발생
+ * (63ms → 16ms 개선, commit c11d516 참조).
+ */
+static void moal_bridge_fwd_work(struct work_struct *work)
+{
+	struct moal_bridge *br = container_of(work, struct moal_bridge,
+					      fwd_work);
+	struct sk_buff *skb;
+	int cnt = 0;
+	ktime_t t_start = ktime_get();
+
+	/* local_bh_disable로 전체 루프를 감싸서 dev_queue_xmit 내부의
+	 * softirq raise를 축적한 후, local_bh_enable에서 한 번에 드레인.
+	 * process context에서 dev_queue_xmit 호출 시 필수 패턴
+	 * (ath10k SDIO 수정 커밋 cfee8793a74d 참조) */
+	local_bh_disable();
+	while ((skb = skb_dequeue(&br->fwd_queue)) != NULL) {
+		dev_queue_xmit(skb);
+		cnt++;
+	}
+	local_bh_enable();
+
+	if (bridge_debug && cnt > 0) {
+		unsigned int pending = local_softirq_pending();
+		s64 dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
+		printk(KERN_INFO "bridge: fwd_work cpu=%d %d pkts %lldus pending=0x%x\n",
+		       smp_processor_id(), cnt, dt_us, pending);
+	}
+}
 
 /*
  * ---------- Helper: get IPv4 address from netdev ----------
@@ -183,10 +203,13 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 {
 	struct ethhdr *eth;
 	__be16 proto;
+	ktime_t t_start;
+	s64 dt_us;
 
 	if (!br || !skb)
 		return 0;
 
+	t_start = ktime_get();
 	eth = (struct ethhdr *)skb->data;
 	proto = eth->h_proto;
 
@@ -206,17 +229,36 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 			h_vlan_encapsulated_proto;
 	}
 
-	/* clone→비동기 forward + 원본→커널.
-	 * 모든 패킷에 대해 clone+tasklet: 안정적이고 검증된 방식. */
+	/* STA 모드: 모든 수신 패킷의 dst MAC = WLAN MAC (AP→STA 프레임 특성)
+	 * → MAC 기반 자기/포워딩 구분 불가.
+	 * IPv4 자기 IP 대상 패킷은 clone 생략 (bridge 자체 ping/ssh 지연 방지) */
+	if (proto == htons(ETH_P_IP) && br->wlan_ipv4) {
+		struct iphdr *iph;
+
+		if (skb->len >= ETH_HLEN + sizeof(struct iphdr)) {
+			iph = (struct iphdr *)(skb->data + ETH_HLEN);
+			if (iph->daddr == br->wlan_ipv4) {
+				BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
+				       &iph->daddr);
+				return 0;
+			}
+		}
+	}
+
+	/* 포워딩 대상 (타 IP 또는 ARP/기타): clone→peer 비동기 전송 */
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
 			skb2->dev = br->peer_dev;
 			skb_queue_tail(&br->fwd_queue, skb2);
-			tasklet_schedule(&br->fwd_tasklet);
+			queue_work(br->fwd_wq, &br->fwd_work);
 			atomic_long_inc(&br->wlan_to_peer.fwd_packets);
 		}
 	}
+	dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
+	BR_DBG("w2p FWD cpu=%d %lldus qlen=%d proto=0x%04x len=%d\n",
+	       smp_processor_id(), dt_us, skb_queue_len(&br->fwd_queue),
+	       ntohs(proto), skb->len);
 	return 0; /* 원본은 커널 스택으로 */
 }
 
@@ -307,9 +349,6 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 		return RX_HANDLER_PASS;
 
 	eth = eth_hdr(skb);
-	BR_DBG("p2w RX " MACSTR " -> " MACSTR " proto=0x%04x len=%d\n",
-	       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
-	       ntohs(skb->protocol), skb->len);
 
 	/* media_connected check */
 	if (!((moal_private *)br->wlan_priv)->media_connected)
@@ -319,14 +358,19 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	if (skb->protocol == htons(ETH_P_PAE))
 		return RX_HANDLER_PASS;
 
-	/* clone→비동기 forward + 원본→커널 */
+	/* 유니캐스트: peer(eth0) 자기 MAC → clone 불필요, 커널 스택만 처리 */
+	if (!is_multicast_ether_addr(eth->h_dest) &&
+	    ether_addr_equal(eth->h_dest, br->peer_dev->dev_addr))
+		return RX_HANDLER_PASS;
+
+	/* 포워딩 대상: clone→wlan 비동기 전송, 원본→커널 */
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
 			skb2->dev = br->wlan_dev;
 			skb_push(skb2, ETH_HLEN);
 			skb_queue_tail(&br->fwd_queue, skb2);
-			tasklet_schedule(&br->fwd_tasklet);
+			queue_work(br->fwd_wq, &br->fwd_work);
 			atomic_long_inc(&br->peer_to_wlan.fwd_packets);
 		}
 	}
@@ -366,11 +410,11 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
-	/* packet_type은 clone을 받으므로 비동기 forward */
+	/* packet_type은 이미 clone을 받으므로 비동기 전송 */
 	skb->dev = br->wlan_dev;
 	skb_push(skb, ETH_HLEN);
 	skb_queue_tail(&br->fwd_queue, skb);
-	tasklet_schedule(&br->fwd_tasklet);
+	queue_work(br->fwd_wq, &br->fwd_work);
 	atomic_long_inc(&br->peer_to_wlan.fwd_packets);
 
 	return 0;
@@ -506,10 +550,18 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	br->handle = handle;
 	atomic_set(&br->active, 0);
 
-	/* Async forward queue + tasklet 초기화 */
+	/* Async forward queue + workqueue 초기화 */
 	skb_queue_head_init(&br->fwd_queue);
-	tasklet_init(&br->fwd_tasklet, moal_bridge_fwd_tasklet,
-		     (unsigned long)br);
+	INIT_WORK(&br->fwd_work, moal_bridge_fwd_work);
+	br->fwd_wq = alloc_workqueue("MOAL_BRIDGE_FWD",
+				     WQ_HIGHPRI | WQ_UNBOUND |
+				     WQ_MEM_RECLAIM, 1);
+	if (!br->fwd_wq) {
+		dev_put(peer);
+		kfree(br);
+		atomic_set(&bridge_instance_active, 0);
+		return -ENOMEM;
+	}
 
 	/* MAC 주소 캐시 */
 	ether_addr_copy(br->wlan_mac, br->wlan_dev->dev_addr);
@@ -519,13 +571,11 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	br->wlan_ipv4 = moal_bridge_get_ipv4(br->wlan_dev);
 	br->peer_ipv4 = moal_bridge_get_ipv4(br->peer_dev);
 
-	/* 5a. peer(eth0) promiscuous 모드 활성화 — 클라이언트 패킷 수신 필수
-	 * wbridge도 pcap_open(promisc=1)로 동일하게 활성화함 */
-	dev_set_promiscuity(peer, 1);
-
-	/* 5b. ETH→WLAN: rx_handler 시도, 실패 시 packet_type fallback */
+	/* 5. RTNL 락 하에서 promiscuous + rx_handler 등록 (RTNL 필수)
+	 * dev_set_promiscuity, netdev_rx_handler_register 모두 RTNL 보유 필요 */
 	br->use_packet_type = 0;
 	rtnl_lock();
+	dev_set_promiscuity(peer, 1);
 	ret = netdev_rx_handler_register(peer, moal_bridge_peer_rx_handler, br);
 	rtnl_unlock();
 	if (ret) {
@@ -591,23 +641,25 @@ void moal_bridge_deinit(void *phandle)
 	unregister_inetaddr_notifier(&br->inet_nb);
 	unregister_netdevice_notifier(&br->netdev_nb);
 
-	/* 3. ETH→WLAN 경로 해제 */
+	/* 3. ETH→WLAN 경로 해제 + promiscuous 해제 (RTNL 하에서) */
+	rtnl_lock();
 	if (br->use_packet_type) {
 		dev_remove_pack(&br->peer_pt);
 	} else {
-		rtnl_lock();
 		netdev_rx_handler_unregister(br->peer_dev);
-		rtnl_unlock();
 	}
+	dev_set_promiscuity(br->peer_dev, -1);
+	rtnl_unlock();
 
-	/* 4. tasklet 중지 + 큐 비우기 */
-	tasklet_kill(&br->fwd_tasklet);
-	skb_queue_purge(&br->fwd_queue);
-
-	/* 5. 진행 중인 패킷 완료 대기 */
+	/* 4. 진행 중인 패킷 완료 대기 */
 	synchronize_net();
 
-	/* 5. 통계 출력 */
+	/* 5. workqueue 중지 + 큐 비우기 */
+	flush_workqueue(br->fwd_wq);
+	cancel_work_sync(&br->fwd_work);
+	skb_queue_purge(&br->fwd_queue);
+
+	/* 6. 통계 출력 */
 	PRINTM(MMSG, "bridge: %s <-> %s deactivated\n",
 	       br->wlan_dev->name, br->peer_dev->name);
 	PRINTM(MMSG, "bridge: w2p fwd=%ld drop=%ld err=%ld\n",
@@ -619,14 +671,12 @@ void moal_bridge_deinit(void *phandle)
 	       atomic_long_read(&br->peer_to_wlan.dropped),
 	       atomic_long_read(&br->peer_to_wlan.errors));
 
-	/* 6. peer promiscuous 해제 */
-	dev_set_promiscuity(br->peer_dev, -1);
-
 	/* 7. peer 참조 반환 + 메모리 해제 */
 	handle->bridge = NULL;
+	destroy_workqueue(br->fwd_wq);
 	dev_put(br->peer_dev);
 	kfree(br);
 
-	/* 7. DBDC guard 해제 */
+	/* 8. DBDC guard 해제 */
 	atomic_set(&bridge_instance_active, 0);
 }
