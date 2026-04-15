@@ -2133,6 +2133,11 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			dev_kfree_skb(frame);
 			continue;
 		}
+		/* L2 bridge fast path (A-MSDU sub-frame, before eth_type_trans) */
+		if (unlikely(handle->bridge) &&
+		    atomic_read(&handle->bridge->active))
+			moal_bridge_rx_fast(handle->bridge, frame, priv);
+
 		frame->protocol = eth_type_trans(frame, netdev);
 		frame->ip_summed = CHECKSUM_NONE;
 
@@ -2141,10 +2146,19 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 
 		if (in_interrupt())
 			netif_rx(frame);
-		else {
+		else if (atomic_read(&handle->rx_pending) >
+			 MAX_RX_PENDING_THRHLD)
+			netif_rx(frame);
+		else if (handle->params.net_rx >= 1) {
 			local_bh_disable();
 			netif_receive_skb(frame);
 			local_bh_enable();
+		} else {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+			netif_rx(frame);
+#else
+			netif_rx_ni(frame);
+#endif
 		}
 	}
 	if (handle->tp_acnt.on) {
@@ -2504,10 +2518,19 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				dev_kfree_skb(skb);
 			} else if (in_interrupt())
 				netif_rx(skb);
-			else {
+			else if (atomic_read(&handle->rx_pending) >
+				 MAX_RX_PENDING_THRHLD)
+				netif_rx(skb);
+			else if (handle->params.net_rx >= 1) {
 				local_bh_disable();
 				netif_receive_skb(skb);
 				local_bh_enable();
+			} else {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+				netif_rx(skb);
+#else
+				netif_rx_ni(skb);
+#endif
 			}
 			if (priv->phandle->tp_acnt.on) {
 				if (pmbuf && pmbuf->in_ts_sec)

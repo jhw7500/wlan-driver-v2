@@ -17,6 +17,8 @@ static atomic_t bridge_instance_active = ATOMIC_INIT(0);
 
 /** bridge_debug: runtime-changeable via /sys/module/moal/parameters/bridge_debug */
 extern int bridge_debug;
+/** bridge_keepalive_ms: 0=off, 1+=interval ms. Keeps SDIO main_work warm. */
+extern int bridge_keepalive_ms;
 #define BR_DBG(fmt, ...) do { \
 	if (bridge_debug) \
 		printk(KERN_INFO "bridge: " fmt, ##__VA_ARGS__); \
@@ -31,18 +33,18 @@ extern int bridge_debug;
  * 2ms 주기 hrtimer로 main_work를 깨워서 pcap polling 효과 재현.
  */
 
-#define BRIDGE_KEEPALIVE_NS (1 * NSEC_PER_MSEC)  /* 1ms */
-
 static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
 {
 	struct moal_bridge *br = container_of(timer, struct moal_bridge,
 					      keepalive_timer);
 	moal_handle *handle = (moal_handle *)br->handle;
+	ktime_t interval;
 
 	if (atomic_read(&br->active) && handle->workqueue)
 		queue_work(handle->workqueue, &handle->main_work);
 
-	hrtimer_forward_now(timer, ns_to_ktime(BRIDGE_KEEPALIVE_NS));
+	interval = ns_to_ktime((u64)bridge_keepalive_ms * NSEC_PER_MSEC);
+	hrtimer_forward_now(timer, interval);
 	return HRTIMER_RESTART;
 }
 
@@ -669,10 +671,19 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	register_inetaddr_notifier(&br->inet_nb);
 
 	/* 7. keepalive timer 시작 (드라이버 main_work warm 유지) */
-	hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	br->keepalive_timer.function = moal_bridge_keepalive;
-	hrtimer_start(&br->keepalive_timer, ns_to_ktime(BRIDGE_KEEPALIVE_NS),
-		      HRTIMER_MODE_REL);
+	if (bridge_keepalive_ms > 0) {
+		ktime_t interval = ns_to_ktime(
+			(u64)bridge_keepalive_ms * NSEC_PER_MSEC);
+		hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC,
+			     HRTIMER_MODE_REL);
+		br->keepalive_timer.function = moal_bridge_keepalive;
+		hrtimer_start(&br->keepalive_timer, interval,
+			      HRTIMER_MODE_REL);
+		PRINTM(MMSG, "bridge:   keepalive  = %dms\n",
+		       bridge_keepalive_ms);
+	} else {
+		PRINTM(MMSG, "bridge:   keepalive  = off\n");
+	}
 
 	/* 8. 활성화 */
 	handle->bridge = br;
@@ -714,7 +725,8 @@ void moal_bridge_deinit(void *phandle)
 
 	/* 1. 포워딩 비활성화 + keepalive timer 중지 */
 	atomic_set(&br->active, 0);
-	hrtimer_cancel(&br->keepalive_timer);
+	if (br->keepalive_timer.function)
+		hrtimer_cancel(&br->keepalive_timer);
 
 	/* 2. notifier 해제 */
 	unregister_inetaddr_notifier(&br->inet_nb);

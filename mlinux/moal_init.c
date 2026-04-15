@@ -92,6 +92,7 @@ int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
 int bridge_debug;
+int bridge_keepalive_ms = 1;
 /** amsdu deaggr mode */
 static int amsdu_deaggr = 1;
 
@@ -3099,6 +3100,8 @@ module_param(bridge_wlan_idx, int, 0);
 MODULE_PARM_DESC(bridge_wlan_idx, "Bridge WLAN BSS index for DBDC (default: 0)");
 module_param(bridge_debug, int, 0644);
 MODULE_PARM_DESC(bridge_debug, "Bridge debug log: 0=off(default), 1=on (runtime changeable)");
+module_param(bridge_keepalive_ms, int, 0644);
+MODULE_PARM_DESC(bridge_keepalive_ms, "Bridge keepalive timer interval ms: 0=off, 1=1ms(default). Keeps SDIO processing loop warm.");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,
