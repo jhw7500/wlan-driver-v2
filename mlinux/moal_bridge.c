@@ -671,16 +671,16 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	register_inetaddr_notifier(&br->inet_nb);
 
 	/* 7. keepalive timer 시작 (드라이버 main_work warm 유지) */
-	if (bridge_keepalive_ms > 0) {
+	if (handle->params.bridge_keepalive_ms > 0) {
 		ktime_t interval = ns_to_ktime(
-			(u64)bridge_keepalive_ms * NSEC_PER_MSEC);
+			(u64)handle->params.bridge_keepalive_ms * NSEC_PER_MSEC);
 		hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL);
 		br->keepalive_timer.function = moal_bridge_keepalive;
 		hrtimer_start(&br->keepalive_timer, interval,
 			      HRTIMER_MODE_REL);
 		PRINTM(MMSG, "bridge:   keepalive  = %dms\n",
-		       bridge_keepalive_ms);
+		       handle->params.bridge_keepalive_ms);
 	} else {
 		PRINTM(MMSG, "bridge:   keepalive  = off\n");
 	}

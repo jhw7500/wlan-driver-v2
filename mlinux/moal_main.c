@@ -4367,14 +4367,10 @@ static mlan_status woal_add_card_dpc(moal_handle *handle)
 #endif
 
 	/* L2 bridge init — Design Ref: §6.1 */
-	{
-		extern int bridge_mode;
-		extern char *bridge_peer;
-		extern int bridge_wlan_idx;
-		if (bridge_mode) {
-			if (moal_bridge_init(handle, bridge_peer, bridge_wlan_idx))
-				PRINTM(MERROR, "bridge: init failed\n");
-		}
+	if (handle->params.bridge_mode) {
+		if (moal_bridge_init(handle, handle->params.bridge_peer,
+				     handle->params.bridge_wlan_idx))
+			PRINTM(MERROR, "bridge: init failed\n");
 	}
 
 #ifdef MFG_CMD_SUPPORT

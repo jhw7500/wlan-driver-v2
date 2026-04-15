@@ -882,6 +882,39 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				goto err;
 			params->net_rx = out_data;
 			PRINTM(MMSG, "net_rx = %d\n", params->net_rx);
+		} else if (strncmp(line, "bridge_mode",
+				   strlen("bridge_mode")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->bridge_mode = out_data;
+			PRINTM(MMSG, "bridge_mode = %d\n",
+			       params->bridge_mode);
+		} else if (strncmp(line, "bridge_peer",
+				   strlen("bridge_peer")) == 0) {
+			if (parse_line_read_string(line, &out_str) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			strncpy(params->bridge_peer, out_str,
+				sizeof(params->bridge_peer) - 1);
+			PRINTM(MMSG, "bridge_peer = %s\n",
+			       params->bridge_peer);
+		} else if (strncmp(line, "bridge_wlan_idx",
+				   strlen("bridge_wlan_idx")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->bridge_wlan_idx = out_data;
+			PRINTM(MMSG, "bridge_wlan_idx = %d\n",
+			       params->bridge_wlan_idx);
+		} else if (strncmp(line, "bridge_keepalive_ms",
+				   strlen("bridge_keepalive_ms")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->bridge_keepalive_ms = out_data;
+			PRINTM(MMSG, "bridge_keepalive_ms = %d\n",
+			       params->bridge_keepalive_ms);
 		} else if (strncmp(line, "amsdu_deaggr",
 				   strlen("amsdu_deaggr")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1797,6 +1830,26 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.net_rx = net_rx;
 	if (params)
 		handle->params.net_rx = params->net_rx;
+
+	handle->params.bridge_mode = bridge_mode;
+	strncpy(handle->params.bridge_peer, bridge_peer,
+		sizeof(handle->params.bridge_peer) - 1);
+	handle->params.bridge_wlan_idx = bridge_wlan_idx;
+	handle->params.bridge_keepalive_ms = bridge_keepalive_ms;
+	if (params) {
+		if (params->bridge_mode)
+			handle->params.bridge_mode = params->bridge_mode;
+		if (params->bridge_peer[0])
+			strncpy(handle->params.bridge_peer,
+				params->bridge_peer,
+				sizeof(handle->params.bridge_peer) - 1);
+		if (params->bridge_wlan_idx)
+			handle->params.bridge_wlan_idx =
+				params->bridge_wlan_idx;
+		if (params->bridge_keepalive_ms)
+			handle->params.bridge_keepalive_ms =
+				params->bridge_keepalive_ms;
+	}
 
 	handle->params.amsdu_deaggr = amsdu_deaggr;
 	if (params)

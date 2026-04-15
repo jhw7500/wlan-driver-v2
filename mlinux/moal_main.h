@@ -2735,6 +2735,14 @@ typedef struct _moal_mod_para {
 	t_u32 reject_addba_req;
 	/** disable_11h_tpc setting */
 	int disable_11h_tpc;
+	/** L2 bridge: 0=off, 1=on */
+	int bridge_mode;
+	/** Bridge peer interface name */
+	char bridge_peer[IFNAMSIZ];
+	/** Bridge WLAN BSS index (DBDC) */
+	int bridge_wlan_idx;
+	/** Bridge keepalive timer interval (ms), 0=off */
+	int bridge_keepalive_ms;
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);
