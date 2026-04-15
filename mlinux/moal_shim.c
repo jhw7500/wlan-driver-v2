@@ -2142,22 +2142,9 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 		if (in_interrupt())
 			netif_rx(frame);
 		else {
-			if (atomic_read(&handle->rx_pending) >
-			    MAX_RX_PENDING_THRHLD)
-				netif_rx(frame);
-			else {
-				if (handle->params.net_rx >= 1) {
-					local_bh_disable();
-					netif_receive_skb(frame);
-					local_bh_enable();
-				} else {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
-					netif_rx(frame);
-#else
-					netif_rx_ni(frame);
-#endif
-				}
-			}
+			local_bh_disable();
+			netif_receive_skb(frame);
+			local_bh_enable();
 		}
 	}
 	if (handle->tp_acnt.on) {
@@ -2518,22 +2505,9 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			} else if (in_interrupt())
 				netif_rx(skb);
 			else {
-				if (atomic_read(&handle->rx_pending) >
-				    MAX_RX_PENDING_THRHLD)
-					netif_rx(skb);
-				else {
-					if (handle->params.net_rx >= 1) {
-						local_bh_disable();
-						netif_receive_skb(skb);
-						local_bh_enable();
-					} else {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
-						netif_rx(skb);
-#else
-						netif_rx_ni(skb);
-#endif
-					}
-				}
+				local_bh_disable();
+				netif_receive_skb(skb);
+				local_bh_enable();
 			}
 			if (priv->phandle->tp_acnt.on) {
 				if (pmbuf && pmbuf->in_ts_sec)

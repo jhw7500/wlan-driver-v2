@@ -18,6 +18,9 @@
 #include <linux/atomic.h>
 #include <linux/inetdevice.h>
 #include <linux/workqueue.h>
+#include <linux/kthread.h>
+#include <linux/wait.h>
+#include <linux/hrtimer.h>
 
 /** Bridge statistics per direction */
 struct moal_bridge_stats {
@@ -44,10 +47,15 @@ struct moal_bridge {
 	struct moal_bridge_stats wlan_to_peer;  /**< WLAN→ETH */
 	struct moal_bridge_stats peer_to_wlan;  /**< ETH→WLAN */
 
-	/** Async forwarding queue + workqueue */
-	struct sk_buff_head fwd_queue;
-	struct workqueue_struct *fwd_wq;
-	struct work_struct fwd_work;
+	/** w2p (WLAN→ETH): workqueue 기반 — eth TX는 빠르므로 충분 */
+	struct sk_buff_head w2p_queue;
+	struct workqueue_struct *w2p_wq;
+	struct work_struct w2p_work;
+
+	/** p2w (ETH→WLAN): 전용 kthread — SDIO TX 지연을 w2p와 격리 */
+	struct sk_buff_head p2w_queue;
+	struct task_struct *p2w_thread;
+	wait_queue_head_t p2w_wait;
 
 	/** ETH→WLAN capture method:
 	 *  0 = rx_handler (preferred, via netdev_rx_handler_register)
@@ -60,6 +68,10 @@ struct moal_bridge {
 	struct notifier_block netdev_nb;
 	/** Notifier for IPv4 address changes (DHCP 완료 감지) */
 	struct notifier_block inet_nb;
+
+	/** Keepalive timer: 주기적으로 드라이버 main_work를 깨워서
+	 *  SDIO 처리 루프를 warm 유지 (pcap RT polling 효과 재현) */
+	struct hrtimer keepalive_timer;
 
 	/** Back-pointer to moal_handle */
 	void *handle;

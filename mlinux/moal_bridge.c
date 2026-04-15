@@ -23,40 +23,92 @@ extern int bridge_debug;
 } while (0)
 
 /*
- * ---------- Async Forward Worker ----------
+ * ---------- Keepalive Timer ----------
+ *
+ * wifi-wbridge(pcap)가 빠른 이유: 지속적 eth0→mlan0 TX가 드라이버의
+ * main_work(SDIO TX/RX 처리 루프)를 항상 active 상태로 유지.
+ * 커널 브릿지의 비동기 포워딩은 미세한 gap이 있어 main_work가 sleep.
+ * 2ms 주기 hrtimer로 main_work를 깨워서 pcap polling 효과 재현.
  */
 
-/**
- * moal_bridge_fwd_work - 비동기 패킷 포워딩
- * RX 핫패스에서 skb 설정 → 큐 적재만 하고, 실제 dev_queue_xmit는 여기서.
- * moal_recv_packet 컨텍스트에서 직접 dev_queue_xmit 시 RX 블로킹 발생
- * (63ms → 16ms 개선, commit c11d516 참조).
+#define BRIDGE_KEEPALIVE_NS (1 * NSEC_PER_MSEC)  /* 1ms */
+
+static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
+{
+	struct moal_bridge *br = container_of(timer, struct moal_bridge,
+					      keepalive_timer);
+	moal_handle *handle = (moal_handle *)br->handle;
+
+	if (atomic_read(&br->active) && handle->workqueue)
+		queue_work(handle->workqueue, &handle->main_work);
+
+	hrtimer_forward_now(timer, ns_to_ktime(BRIDGE_KEEPALIVE_NS));
+	return HRTIMER_RESTART;
+}
+
+/*
+ * ---------- w2p Worker (WLAN→ETH, workqueue) ----------
  */
-static void moal_bridge_fwd_work(struct work_struct *work)
+
+static void moal_bridge_w2p_work(struct work_struct *work)
 {
 	struct moal_bridge *br = container_of(work, struct moal_bridge,
-					      fwd_work);
+					      w2p_work);
 	struct sk_buff *skb;
 	int cnt = 0;
-	ktime_t t_start = ktime_get();
 
-	/* local_bh_disable로 전체 루프를 감싸서 dev_queue_xmit 내부의
-	 * softirq raise를 축적한 후, local_bh_enable에서 한 번에 드레인.
-	 * process context에서 dev_queue_xmit 호출 시 필수 패턴
-	 * (ath10k SDIO 수정 커밋 cfee8793a74d 참조) */
 	local_bh_disable();
-	while ((skb = skb_dequeue(&br->fwd_queue)) != NULL) {
+	while ((skb = skb_dequeue(&br->w2p_queue)) != NULL) {
 		dev_queue_xmit(skb);
 		cnt++;
 	}
 	local_bh_enable();
 
 	if (bridge_debug && cnt > 0) {
-		unsigned int pending = local_softirq_pending();
-		s64 dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
-		printk(KERN_INFO "bridge: fwd_work cpu=%d %d pkts %lldus pending=0x%x\n",
-		       smp_processor_id(), cnt, dt_us, pending);
+		printk(KERN_INFO "bridge: w2p_work cpu=%d %d pkts\n",
+		       smp_processor_id(), cnt);
 	}
+}
+
+/*
+ * ---------- p2w Thread (ETH→WLAN, dedicated kthread) ----------
+ *
+ * pcap은 방향별 SCHED_FIFO 전용 스레드로 5.5ms 달성.
+ * workqueue 공유 시 w2p work 실행 중 p2w 대기 + CFS 스케줄링 지연 → 31ms.
+ * 전용 kthread로 분리하여 양방향 블로킹 제거 + wake-up 즉시 처리.
+ */
+static int moal_bridge_p2w_thread_fn(void *data)
+{
+	struct moal_bridge *br = data;
+	struct sk_buff *skb;
+	int cnt;
+
+	/* pcap과 동일: SCHED_FIFO:50으로 wake-up 즉시 실행.
+	 * 이전 실패(local_bh_disable + 양방향 kthread) 조건 해소:
+	 * - p2w 전용 (w2p 블로킹 없음)
+	 * - 외부 local_bh_disable 없음 (dev_queue_xmit 내부만 단발성) */
+	sched_set_fifo(current);
+
+	while (!kthread_should_stop()) {
+		wait_event_interruptible(br->p2w_wait,
+			!skb_queue_empty(&br->p2w_queue) ||
+			kthread_should_stop());
+
+		if (kthread_should_stop())
+			break;
+
+		cnt = 0;
+		while ((skb = skb_dequeue(&br->p2w_queue)) != NULL) {
+			dev_queue_xmit(skb);
+			cnt++;
+		}
+
+		if (bridge_debug && cnt > 0) {
+			printk(KERN_INFO "bridge: p2w_thread cpu=%d %d pkts\n",
+			       smp_processor_id(), cnt);
+		}
+	}
+	return 0;
 }
 
 /*
@@ -250,14 +302,14 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
 			skb2->dev = br->peer_dev;
-			skb_queue_tail(&br->fwd_queue, skb2);
-			queue_work(br->fwd_wq, &br->fwd_work);
+			skb_queue_tail(&br->w2p_queue, skb2);
+			queue_work(br->w2p_wq, &br->w2p_work);
 			atomic_long_inc(&br->wlan_to_peer.fwd_packets);
 		}
 	}
 	dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
 	BR_DBG("w2p FWD cpu=%d %lldus qlen=%d proto=0x%04x len=%d\n",
-	       smp_processor_id(), dt_us, skb_queue_len(&br->fwd_queue),
+	       smp_processor_id(), dt_us, skb_queue_len(&br->w2p_queue),
 	       ntohs(proto), skb->len);
 	return 0; /* 원본은 커널 스택으로 */
 }
@@ -349,6 +401,9 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 		return RX_HANDLER_PASS;
 
 	eth = eth_hdr(skb);
+	BR_DBG("p2w RX " MACSTR " -> " MACSTR " proto=0x%04x len=%d\n",
+	       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
+	       ntohs(skb->protocol), skb->len);
 
 	/* media_connected check */
 	if (!((moal_private *)br->wlan_priv)->media_connected)
@@ -363,14 +418,17 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	    ether_addr_equal(eth->h_dest, br->peer_dev->dev_addr))
 		return RX_HANDLER_PASS;
 
-	/* 포워딩 대상: clone→wlan 비동기 전송, 원본→커널 */
+	/* 포워딩 대상: clone→wlan 전용 kthread 전송 (process context 필수)
+	 * SDIO 반이중 버스 특성으로 softirq에서 직접 dev_queue_xmit(wlan) 시
+	 * SDIO TX가 RX를 블로킹하여 reply 지연 발생 (36ms avg).
+	 * 전용 p2w kthread로 w2p와 격리 + 즉시 wake-up. */
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
 			skb2->dev = br->wlan_dev;
 			skb_push(skb2, ETH_HLEN);
-			skb_queue_tail(&br->fwd_queue, skb2);
-			queue_work(br->fwd_wq, &br->fwd_work);
+			skb_queue_tail(&br->p2w_queue, skb2);
+			wake_up(&br->p2w_wait);
 			atomic_long_inc(&br->peer_to_wlan.fwd_packets);
 		}
 	}
@@ -410,11 +468,11 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
-	/* packet_type은 이미 clone을 받으므로 비동기 전송 */
+	/* packet_type은 이미 clone을 받으므로 p2w kthread 전송 */
 	skb->dev = br->wlan_dev;
 	skb_push(skb, ETH_HLEN);
-	skb_queue_tail(&br->fwd_queue, skb);
-	queue_work(br->fwd_wq, &br->fwd_work);
+	skb_queue_tail(&br->p2w_queue, skb);
+	wake_up(&br->p2w_wait);
 	atomic_long_inc(&br->peer_to_wlan.fwd_packets);
 
 	return 0;
@@ -550,17 +608,31 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	br->handle = handle;
 	atomic_set(&br->active, 0);
 
-	/* Async forward queue + workqueue 초기화 */
-	skb_queue_head_init(&br->fwd_queue);
-	INIT_WORK(&br->fwd_work, moal_bridge_fwd_work);
-	br->fwd_wq = alloc_workqueue("MOAL_BRIDGE_FWD",
-				     WQ_HIGHPRI | WQ_UNBOUND |
-				     WQ_MEM_RECLAIM, 1);
-	if (!br->fwd_wq) {
+	/* w2p: workqueue 초기화 (WLAN→ETH, eth TX는 빠르므로 WQ 충분) */
+	skb_queue_head_init(&br->w2p_queue);
+	INIT_WORK(&br->w2p_work, moal_bridge_w2p_work);
+	br->w2p_wq = alloc_workqueue("MOAL_BR_W2P",
+				     WQ_HIGHPRI | WQ_MEM_RECLAIM, 1);
+	if (!br->w2p_wq) {
 		dev_put(peer);
 		kfree(br);
 		atomic_set(&bridge_instance_active, 0);
 		return -ENOMEM;
+	}
+
+	/* p2w: 전용 kthread 초기화 (ETH→WLAN, SDIO TX 격리) */
+	skb_queue_head_init(&br->p2w_queue);
+	init_waitqueue_head(&br->p2w_wait);
+	br->p2w_thread = kthread_run(moal_bridge_p2w_thread_fn, br,
+				     "moal_br_p2w");
+	if (IS_ERR(br->p2w_thread)) {
+		ret = PTR_ERR(br->p2w_thread);
+		br->p2w_thread = NULL;
+		destroy_workqueue(br->w2p_wq);
+		dev_put(peer);
+		kfree(br);
+		atomic_set(&bridge_instance_active, 0);
+		return ret;
 	}
 
 	/* MAC 주소 캐시 */
@@ -596,7 +668,13 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	br->inet_nb.notifier_call = moal_bridge_inetaddr_event;
 	register_inetaddr_notifier(&br->inet_nb);
 
-	/* 7. 활성화 */
+	/* 7. keepalive timer 시작 (드라이버 main_work warm 유지) */
+	hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	br->keepalive_timer.function = moal_bridge_keepalive;
+	hrtimer_start(&br->keepalive_timer, ns_to_ktime(BRIDGE_KEEPALIVE_NS),
+		      HRTIMER_MODE_REL);
+
+	/* 8. 활성화 */
 	handle->bridge = br;
 	atomic_set(&br->active, 1);
 
@@ -634,8 +712,9 @@ void moal_bridge_deinit(void *phandle)
 	if (!handle || !br)
 		return;
 
-	/* 1. 포워딩 비활성화 (새 패킷 차단) */
+	/* 1. 포워딩 비활성화 + keepalive timer 중지 */
 	atomic_set(&br->active, 0);
+	hrtimer_cancel(&br->keepalive_timer);
 
 	/* 2. notifier 해제 */
 	unregister_inetaddr_notifier(&br->inet_nb);
@@ -654,10 +733,17 @@ void moal_bridge_deinit(void *phandle)
 	/* 4. 진행 중인 패킷 완료 대기 */
 	synchronize_net();
 
-	/* 5. workqueue 중지 + 큐 비우기 */
-	flush_workqueue(br->fwd_wq);
-	cancel_work_sync(&br->fwd_work);
-	skb_queue_purge(&br->fwd_queue);
+	/* 5a. p2w kthread 중지 */
+	if (br->p2w_thread) {
+		kthread_stop(br->p2w_thread);
+		br->p2w_thread = NULL;
+	}
+	skb_queue_purge(&br->p2w_queue);
+
+	/* 5b. w2p workqueue 중지 */
+	flush_workqueue(br->w2p_wq);
+	cancel_work_sync(&br->w2p_work);
+	skb_queue_purge(&br->w2p_queue);
 
 	/* 6. 통계 출력 */
 	PRINTM(MMSG, "bridge: %s <-> %s deactivated\n",
@@ -673,7 +759,7 @@ void moal_bridge_deinit(void *phandle)
 
 	/* 7. peer 참조 반환 + 메모리 해제 */
 	handle->bridge = NULL;
-	destroy_workqueue(br->fwd_wq);
+	destroy_workqueue(br->w2p_wq);
 	dev_put(br->peer_dev);
 	kfree(br);
 
