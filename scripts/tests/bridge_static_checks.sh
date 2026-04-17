@@ -209,4 +209,12 @@ printf '%s\n' "$W2P_FAST_BLOCK" | \
   grep -Eq 'if \(bridge_debug\)[[:space:]]*\{' || \
   fail "rx_fast timing block must be inside 'if (bridge_debug)'"
 
+# --- v2 A2: non-self unicast consumed without clone ---
+printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
+  grep -Eq 'return[[:space:]]+RX_HANDLER_CONSUMED' || \
+  fail "rx_handler must return RX_HANDLER_CONSUMED for non-self unicast"
+printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
+  grep -q '\*pskb = NULL;' || \
+  fail "rx_handler must null pskb before returning CONSUMED"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'

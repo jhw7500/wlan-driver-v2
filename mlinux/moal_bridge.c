@@ -488,7 +488,26 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	    ether_addr_equal(eth->h_dest, br->peer_dev->dev_addr))
 		return RX_HANDLER_PASS;
 
-	/* 포워딩 대상: clone→wlan 전용 kthread 전송 (process context 필수)
+	/* 비자기 유니캐스트: 로컬 스택이 소비할 수 없는 트래픽이므로
+	 * clone 없이 원본을 p2w 큐에 넘기고 CONSUMED로 반환.
+	 * skb_clone/스택 deliver 두 비용을 모두 제거. */
+	if (!is_multicast_ether_addr(eth->h_dest)) {
+		if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
+			atomic_dec(&br->p2w_qlen);
+			atomic_long_inc(&br->peer_to_wlan.dropped);
+			kfree_skb(skb);
+			*pskb = NULL;
+			return RX_HANDLER_CONSUMED;
+		}
+		skb->dev = br->wlan_dev;
+		skb_push(skb, ETH_HLEN);
+		skb_queue_tail(&br->p2w_queue, skb);
+		wake_up(&br->p2w_wait);
+		*pskb = NULL;
+		return RX_HANDLER_CONSUMED;
+	}
+
+	/* Multicast/Broadcast: 로컬 스택도 봐야 하므로 clone + PASS.
 	 * SDIO 반이중 버스 특성으로 softirq에서 직접 dev_queue_xmit(wlan) 시
 	 * SDIO TX가 RX를 블로킹하여 reply 지연 발생 (36ms avg).
 	 * 전용 p2w kthread로 w2p와 격리 + 즉시 wake-up. */
