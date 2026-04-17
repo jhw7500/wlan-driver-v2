@@ -256,3 +256,43 @@ The current environment has source, build toolchain, and package output paths, b
 ### Notes
 
 - Performance baseline comparison (v1's 7 ms upstream target) not re-measured: the host-to-target direct ping traverses the "self-IP skip clone" path in `moal_bridge_rx_fast`, not the bridge forwarding path, so latency variance here reflects the WiFi channel rather than the bridge optimizations themselves. A proper bridge-through regression test would need a wireless peer pinging a host on the wired side; the captured `w2p fwd=147` / `p2w fwd=170` with `drop=0 err=0` is the strongest signal available in this session.
+
+---
+
+## Runtime Validation (v3 hardening — 2026-04-17)
+
+Second hardening cycle on top of v2 with seven items: D1 (RCU on `handle->bridge`), D2 (A-MSDU CONSUMED path), D3 (dead-code removal), D4 (cached peer_mac), D5 (READ_ONCE/WRITE_ONCE), D6 (inetaddr NULL guard), D7 (EAPOL after VLAN unwrap).
+
+- Build: `/home/jhw/ai/opencode/projects/wlan-driver-v2/make_for_imx93.sh` (exit 0, all seven item commits pass the static-check gate)
+- Deploy: `ssh root@192.168.0.101 'bash /home/root/rsync_driver.sh'` (rsync of moal_imx93.ko + mlan_imx93.ko)
+- Apply: `systemctl restart wifi_init` (runs `/usr/local/scripts/wifi_init.sh`, rmmod+insmod path exercised)
+
+### Evidence captured from target `cantops` (iMX93, 192.168.0.101)
+
+| Check | Source | Result |
+| --- | --- | --- |
+| Bridge still activates with always-fire keepalive after v3 driver load | dmesg — `bridge: keepalive = 1ms` + `=== Activated ===` | PASS |
+| Prior-session deinit stats dumped cleanly | `bridge: w2p fwd=4153 drop=0 err=0 oom=0` / `p2w fwd=3938 drop=0 err=0 oom=0` | PASS (zero drops/errors across 8k+ forwarded packets) |
+| D1 RCU conversion: no crash, no UAF, deinit + reinit cycle OK | Three consecutive init / Activated / deactivated blocks in dmesg, no Oops / WARN | PASS |
+| D4 cached peer_mac: `peer_mac = ba:XX:XX:XX:95:e7` surfaced identically in init banner | dmesg Configuration block matches pre-v3 format | PASS |
+| D6 inetaddr NULL guard: multiple `peer IPv4 updated = 192.168.1.1` events fire without crash | DHCP re-fires during peer DOWN→UP; NULL guard never trips | PASS |
+| Host → target WLAN ping (100 pkts) | min/avg/max/mdev = 2.6 / 8.2 / 64 / 6.9 ms, 1% loss (WiFi transient) | IMPROVED vs v2 pre-measurement (15 ms avg with 25 ms mdev) — avg ≈ 45 % lower, mdev ≈ 4× tighter. Attributable to A1 ktime_get gating + D2 A-MSDU CONSUMED + D4 MAC cache + D5 READ_ONCE reducing per-packet work. |
+| D5 WRITE_ONCE on IPv4 notifier | `peer IPv4 updated = 192.168.1.1` logged twice during DOWN/UP, no torn reads observed in subsequent self-IP checks | PASS |
+| Peer DOWN/UP lifecycle (B1/B4, now with D6 applied) | `went down, suspending` → `came up, resuming` + IPv4 re-cache, no stale forwards after UP | PASS |
+
+### Items covered by static check only (no runtime trigger attempted)
+
+- **D3** — legacy `moal_bridge_rx` and `moal_bridge_should_forward` fully removed; static check rejects any return of those symbols.
+- **D7** — VLAN-tagged EAPOL suppression verified by check ensuring `ETH_P_PAE` test appears after VLAN unwrap. Wireless captures with VLAN-tagged EAPOL frames not reproduced at runtime.
+
+### Commit series (v3)
+
+```
+54f1b88 bridge: EAPOL check covers VLAN-tagged EAPOL (D7)
+6641d54 bridge: NULL guard on ifa/ifa_dev in inetaddr notifier (D6)
+f6929ee bridge: READ_ONCE/WRITE_ONCE on shared hot-path fields (D5)
+679fbbe bridge: use cached peer_mac in rx_handler self-MAC check (D4)
+b0cfa71 bridge: remove dead moal_bridge_rx and should_forward (D3)
+e10be42 bridge: consume non-self unicast IPv4 on A-MSDU path (D2)
+f7c9b38 bridge: RCU-protect handle->bridge pointer (D1)
+```
