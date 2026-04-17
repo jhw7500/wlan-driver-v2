@@ -68,7 +68,11 @@
 | SC-05 | CPU 사용량 감소 | PEND | 유저스페이스 제거 → 이론적 개선. iperf3 비교 필요 |
 | SC-06 | rmmod 정상 언로드 | PEND | 6단계 해제 순서 구현. 반복 insmod/rmmod 테스트 필요 |
 
-**Overall: 1/6 확인, 5/6 타겟 테스트 대기**
+**Overall: code integrated, but runtime validation and hardening still required before production use**
+
+- Static integration is present
+- Runtime verification is still pending on target hardware
+- Hardening items remain for queue bounds, keepalive behavior, xmit accounting, and init-failure cleanup
 
 ---
 
@@ -187,7 +191,33 @@ rmmod moal && rmmod mlan  # 정상 언로드 확인
 
 ---
 
-## 8. Lessons Learned
+## 8. Local Validation Status
+
+### 8.1 Verified in this workspace
+
+- Static bridge checks: PASS
+  - Command: `bash /home/jhw/ai/opencode/projects/wlan-driver-v2/scripts/tests/bridge_static_checks.sh`
+- Cross-build: PASS
+  - Command: `bash /home/jhw/ai/opencode/projects/wlan-driver-v2/make_for_imx93.sh`
+- Package copy helper: PASS when executed from `scripts/`
+  - Command: `bash update_package.sh`
+  - Note: running `scripts/update_package.sh` from repo root fails because the script uses relative paths assuming `scripts/` as cwd.
+
+### 8.2 Not verifiable in this workspace
+
+- Target module load: `insmod mlan.ko`, `insmod moal.ko bridge_mode=1 bridge_peer=eth0 bridge_keepalive_ms=0`
+- Bidirectional ping validation (SC-01)
+- SSH to bridge IP (SC-02)
+- iperf3/mpstat runtime validation (SC-05)
+- `rmmod moal && rmmod mlan` unload validation on target (SC-06)
+
+### 8.3 Current blocker
+
+The current environment has source, build toolchain, and package output paths, but no live target board session. Runtime bridge validation still requires real hardware with the built modules loaded.
+
+---
+
+## 9. Lessons Learned
 
 | # | Lesson | Category |
 |---|--------|----------|

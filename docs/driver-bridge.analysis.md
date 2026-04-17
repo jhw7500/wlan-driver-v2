@@ -163,10 +163,8 @@
 
 ## 8. Conclusion
 
-**Match Rate 97.2% — PASS (>= 90% threshold)**
+**Static implementation coverage is high, but runtime readiness is still pending.**
 
-- Must 우선순위 FR 10건 중 10건 구현 완료
-- Should 우선순위 FR-08 (VLAN ID 필터링) 1건 미구현 — 현재 요구에 불필요하여 ACCEPTED
-- 빌드 성공 확인 (make_for_imx93.sh, 에러/경고 0)
-- 해제 순서 Design §7.4 완전 일치
-- SC-01~06 중 SC-04 코드 레벨 확인, SC-01~03/05/06은 타겟 보드 실기 테스트 필요
+- Build verification passed via `/home/jhw/ai/opencode/projects/wlan-driver-v2/make_for_imx93.sh`
+- Queue backpressure, keepalive consistency, and hot-path accounting require explicit hardening before calling the bridge production-ready
+- SC-01, SC-02, SC-03, SC-05, and SC-06 still require target validation
