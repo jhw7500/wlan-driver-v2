@@ -235,8 +235,8 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	eth = (struct ethhdr *)skb->data;
 	proto = eth->h_proto;
 
-	/* media_connected check */
-	if (!((moal_private *)br->wlan_priv)->media_connected)
+	/* media_connected check (READ_ONCE — disconnect race 방어) */
+	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected))
 		return 0;
 
 	/* EAPOL: never forward */
@@ -264,28 +264,32 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	 *   - non-self IPv4 unicast: 원본 consume (return 1, 스택 배달 생략)
 	 *   - 나머지 (mcast, non-IPv4, iph pull 실패): clone + 스택 배달 (return 0) */
 	if (proto == htons(ETH_P_IP) &&
-	    !is_multicast_ether_addr(eth->h_dest) &&
-	    br->wlan_ipv4 &&
-	    pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
-		struct iphdr *iph = (struct iphdr *)(skb->data + l3_off);
+	    !is_multicast_ether_addr(eth->h_dest)) {
+		__be32 wlan_ip = READ_ONCE(br->wlan_ipv4);
 
-		if (iph->daddr == br->wlan_ipv4) {
-			BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
-			       &iph->daddr);
-			return 0;
+		if (wlan_ip &&
+		    pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
+			struct iphdr *iph = (struct iphdr *)(skb->data + l3_off);
+
+			if (iph->daddr == wlan_ip) {
+				BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
+				       &iph->daddr);
+				return 0;
+			}
+			/* Non-self unicast IPv4 → consume original (no clone, no stack) */
+			if (atomic_inc_return(&br->w2p_qlen) >
+			    MOAL_BR_W2P_QUEUE_MAX) {
+				atomic_dec(&br->w2p_qlen);
+				atomic_long_inc(&br->wlan_to_peer.dropped);
+				kfree_skb(skb);
+				return 1; /* consumed: dropped without stack deliver */
+			}
+			skb->dev = br->peer_dev;
+			skb_queue_tail(&br->w2p_queue, skb);
+			wake_up(&br->w2p_wait);
+			return 1; /* consumed: forwarded, skip stack deliver */
 		}
-		/* Non-self unicast IPv4 → consume original (no clone, no stack) */
-		if (atomic_inc_return(&br->w2p_qlen) >
-		    MOAL_BR_W2P_QUEUE_MAX) {
-			atomic_dec(&br->w2p_qlen);
-			atomic_long_inc(&br->wlan_to_peer.dropped);
-			kfree_skb(skb);
-			return 1; /* consumed: dropped without stack deliver */
-		}
-		skb->dev = br->peer_dev;
-		skb_queue_tail(&br->w2p_queue, skb);
-		wake_up(&br->w2p_wait);
-		return 1; /* consumed: forwarded, skip stack deliver */
+		/* wlan_ip == 0 or iph pull failed → fall through to clone+pass */
 	}
 
 	/* Multicast/Broadcast, 비IPv4 유니캐스트, 또는 iph pull 실패 →
@@ -345,8 +349,8 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
 	       ntohs(skb->protocol), skb->len);
 
-	/* media_connected check */
-	if (!((moal_private *)br->wlan_priv)->media_connected)
+	/* media_connected check (READ_ONCE — disconnect race 방어) */
+	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected))
 		return RX_HANDLER_PASS;
 
 	/* EAPOL: never forward */
@@ -429,8 +433,8 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
-	/* media_connected + EAPOL check */
-	if (!((moal_private *)br->wlan_priv)->media_connected ||
+	/* media_connected + EAPOL check (READ_ONCE — disconnect race 방어) */
+	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected) ||
 	    skb->protocol == htons(ETH_P_PAE)) {
 		kfree_skb(skb);
 		return 0;
@@ -476,11 +480,11 @@ static int moal_bridge_inetaddr_event(struct notifier_block *nb,
 	struct moal_bridge *br = container_of(nb, struct moal_bridge, inet_nb);
 
 	if (dev == br->wlan_dev) {
-		br->wlan_ipv4 = ifa->ifa_local;
+		WRITE_ONCE(br->wlan_ipv4, ifa->ifa_local);
 		PRINTM(MMSG, "bridge: wlan IPv4 updated = %pI4\n",
 		       &br->wlan_ipv4);
 	} else if (dev == br->peer_dev) {
-		br->peer_ipv4 = ifa->ifa_local;
+		WRITE_ONCE(br->peer_ipv4, ifa->ifa_local);
 		PRINTM(MMSG, "bridge: peer IPv4 updated = %pI4\n",
 		       &br->peer_ipv4);
 	}
@@ -522,8 +526,8 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 		PRINTM(MMSG, "bridge: peer '%s' came up, resuming\n",
 		       dev->name);
 		/* IPv4 재캐시 (DHCP로 IP 변경 가능) */
-		br->peer_ipv4 = moal_bridge_get_ipv4(br->peer_dev);
-		br->wlan_ipv4 = moal_bridge_get_ipv4(br->wlan_dev);
+		WRITE_ONCE(br->peer_ipv4, moal_bridge_get_ipv4(br->peer_dev));
+		WRITE_ONCE(br->wlan_ipv4, moal_bridge_get_ipv4(br->wlan_dev));
 		atomic_set(&br->active, 1);
 		break;
 	case NETDEV_UNREGISTER:

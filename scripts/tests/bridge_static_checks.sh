@@ -223,4 +223,14 @@ printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
   grep -q 'br->peer_mac' || \
   fail "rx_handler must reference cached br->peer_mac"
 
+# --- v3 D5: READ_ONCE / WRITE_ONCE on shared hot-path fields ---
+grep -q 'READ_ONCE(br->wlan_ipv4)' "$BRIDGE_C" || \
+  fail "wlan_ipv4 hot-path read must use READ_ONCE"
+grep -q 'WRITE_ONCE(br->wlan_ipv4' "$BRIDGE_C" || \
+  fail "wlan_ipv4 write in inetaddr notifier must use WRITE_ONCE"
+grep -q 'WRITE_ONCE(br->peer_ipv4' "$BRIDGE_C" || \
+  fail "peer_ipv4 write in inetaddr notifier must use WRITE_ONCE"
+grep -q 'READ_ONCE(((moal_private \*)br->wlan_priv)->media_connected)' "$BRIDGE_C" || \
+  fail "media_connected hot-path read must use READ_ONCE"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
