@@ -68,6 +68,9 @@ struct moal_bridge {
 	int use_packet_type;
 	struct packet_type peer_pt;  /**< packet_type for fallback mode */
 
+	/** 1 when peer handler/ref already released via NETDEV_UNREGISTER */
+	int peer_released;
+
 	/** Notifier for peer netdev events (DOWN/UNREGISTER) */
 	struct notifier_block netdev_nb;
 	/** Notifier for IPv4 address changes (DHCP 완료 감지) */

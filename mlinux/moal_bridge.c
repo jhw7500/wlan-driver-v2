@@ -620,6 +620,17 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 		PRINTM(MMSG, "bridge: peer '%s' unregistered, disabling\n",
 		       dev->name);
 		atomic_set(&br->active, 0);
+		/* Called with RTNL held by the netdev notifier chain, so
+		 * handler unregister / dev_set_promiscuity are safe here. */
+		if (!br->peer_released) {
+			if (br->use_packet_type)
+				dev_remove_pack(&br->peer_pt);
+			else
+				netdev_rx_handler_unregister(br->peer_dev);
+			dev_set_promiscuity(br->peer_dev, -1);
+			dev_put(br->peer_dev);
+			br->peer_released = 1;
+		}
 		break;
 	}
 	return NOTIFY_DONE;
@@ -808,15 +819,17 @@ void moal_bridge_deinit(void *phandle)
 	unregister_inetaddr_notifier(&br->inet_nb);
 	unregister_netdevice_notifier(&br->netdev_nb);
 
-	/* 3. ETH→WLAN 경로 해제 + promiscuous 해제 (RTNL 하에서) */
-	rtnl_lock();
-	if (br->use_packet_type) {
-		dev_remove_pack(&br->peer_pt);
-	} else {
-		netdev_rx_handler_unregister(br->peer_dev);
+	/* 3. ETH→WLAN 경로 해제 + promiscuous 해제 (RTNL 하에서).
+	 *    peer_released=1이면 NETDEV_UNREGISTER 경로에서 이미 정리됨. */
+	if (!br->peer_released) {
+		rtnl_lock();
+		if (br->use_packet_type)
+			dev_remove_pack(&br->peer_pt);
+		else
+			netdev_rx_handler_unregister(br->peer_dev);
+		dev_set_promiscuity(br->peer_dev, -1);
+		rtnl_unlock();
 	}
-	dev_set_promiscuity(br->peer_dev, -1);
-	rtnl_unlock();
 
 	/* 4. 진행 중인 패킷 완료 대기 */
 	synchronize_net();
@@ -849,7 +862,8 @@ void moal_bridge_deinit(void *phandle)
 
 	/* 7. peer 참조 반환 + 메모리 해제 */
 	handle->bridge = NULL;
-	dev_put(br->peer_dev);
+	if (!br->peer_released)
+		dev_put(br->peer_dev);
 	kfree(br);
 
 	/* 8. DBDC guard 해제 */

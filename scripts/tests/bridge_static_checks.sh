@@ -137,4 +137,23 @@ printf '%s\n' "$DBDC_BLOCK" | grep -q 'return -EBUSY;' || \
 printf '%s\n' "$DBDC_BLOCK" | grep -q 'MERROR' || \
   fail "DBDC double-init log level must be MERROR"
 
+# --- v2 B1: NETDEV_UNREGISTER handler/ref release ---
+grep -Eq 'int\s+peer_released' "$ROOT/mlinux/moal_bridge.h" || \
+  fail "peer_released flag missing from struct moal_bridge"
+
+UNREG_BLOCK="$(grep -n -A20 -m1 'case NETDEV_UNREGISTER:' "$BRIDGE_C")"
+printf '%s\n' "$UNREG_BLOCK" | \
+  grep -Eq 'netdev_rx_handler_unregister\(br->peer_dev\)|dev_remove_pack\(&br->peer_pt\)' || \
+  fail "NETDEV_UNREGISTER branch must unregister handler"
+printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_set_promiscuity(br->peer_dev, -1)' || \
+  fail "NETDEV_UNREGISTER branch must drop promisc"
+printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_put(br->peer_dev)' || \
+  fail "NETDEV_UNREGISTER branch must dev_put peer"
+printf '%s\n' "$UNREG_BLOCK" | grep -q 'br->peer_released = 1' || \
+  fail "NETDEV_UNREGISTER branch must set peer_released"
+
+DEINIT_BLOCK="$(grep -n -A90 -m1 'void moal_bridge_deinit' "$BRIDGE_C")"
+printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!br->peer_released)' || \
+  fail "deinit must skip handler/ref release when peer already released"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
