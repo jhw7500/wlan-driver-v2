@@ -353,9 +353,10 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	if (skb->protocol == htons(ETH_P_PAE))
 		return RX_HANDLER_PASS;
 
-	/* 유니캐스트: peer(eth0) 자기 MAC → clone 불필요, 커널 스택만 처리 */
+	/* 유니캐스트: peer(eth0) 자기 MAC → clone 불필요, 커널 스택만 처리
+	 * (init에서 캐시된 br->peer_mac 사용 — peer_dev->dev_addr pointer chase 제거) */
 	if (!is_multicast_ether_addr(eth->h_dest) &&
-	    ether_addr_equal(eth->h_dest, br->peer_dev->dev_addr))
+	    ether_addr_equal(eth->h_dest, br->peer_mac))
 		return RX_HANDLER_PASS;
 
 	/* 비자기 유니캐스트: 로컬 스택이 소비할 수 없는 트래픽이므로

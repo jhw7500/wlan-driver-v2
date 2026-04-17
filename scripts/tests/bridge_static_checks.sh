@@ -214,4 +214,13 @@ grep -Eq 'if \(consumed\)[[:space:]]*\{?.*continue;' "$SHIM_C" || \
 grep -Eq 'if \(br_consumed\)' "$SHIM_C" || \
   fail "A-MSDU loop must honor rx_fast consumed return"
 
+# --- v3 D4: use cached peer_mac in rx_handler ---
+P2W_RX_HANDLER_BLOCK2="$(grep -n -A200 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
+printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
+  grep -q 'br->peer_dev->dev_addr' && \
+  fail "rx_handler must use cached br->peer_mac, not br->peer_dev->dev_addr"
+printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
+  grep -q 'br->peer_mac' || \
+  fail "rx_handler must reference cached br->peer_mac"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
