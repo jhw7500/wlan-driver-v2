@@ -22,8 +22,8 @@
 #include <linux/wait.h>
 #include <linux/hrtimer.h>
 
-#define MOAL_BR_W2P_QUEUE_MAX 256
-#define MOAL_BR_P2W_QUEUE_MAX 256
+#define MOAL_BR_W2P_QUEUE_MAX 512
+#define MOAL_BR_P2W_QUEUE_MAX 512
 
 /** Bridge statistics per direction */
 struct moal_bridge_stats {
