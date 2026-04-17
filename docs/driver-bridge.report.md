@@ -225,3 +225,34 @@ The current environment has source, build toolchain, and package output paths, b
 | 2 | 3-module 세션 분할(기반→필터→양방향)이 효과적 — 각 세션에서 독립 검증 가능 | Process |
 | 3 | 커널 드라이버 코드는 로컬 clang 진단이 오탐 — 크로스 빌드로만 검증 가능 | Tooling |
 | 4 | wbridge filter.c의 검증된 로직을 커널 API로 이식하면 안정성 확보 용이 | Reuse |
+
+---
+
+## Runtime Validation (v2 hardening — 2026-04-17)
+
+- Build: `/home/jhw/ai/opencode/projects/wlan-driver-v2/make_for_imx93.sh` (exit 0)
+- Deploy: `ssh root@192.168.0.101 'bash /home/root/rsync_driver.sh'`
+- Apply: `systemctl restart wifi_init` (re-runs `/usr/local/scripts/wifi_init.sh` which performs rmmod → insmod)
+
+### Evidence captured from target `cantops` (iMX93, 192.168.0.101)
+
+| Check | Source | Result |
+| --- | --- | --- |
+| Bridge activates on boot with always-fire keepalive | dmesg `[9.42]` — `bridge: keepalive = 1ms` + `=== Activated ===` | PASS |
+| B1 — peer `NETDEV_UNREGISTER` handles release inline | dmesg `[94.49]` — `peer 'eth0' unregistered, disabling` followed immediately by `mlan0 <-> eth0 deactivated` (no UAF, no crash, no deferred unregister) | PASS |
+| B4 — peer `NETDEV_DOWN` suspends forwarding without stale drops | Forwarded 147 (w2p) / 170 (p2w) packets across a full stop cycle, `drop=0 err=0` on both directions | PASS |
+| B5 — `oom_drops` visible in deinit stats dump | dmesg `bridge: w2p fwd=147 drop=0 err=0 oom=0` / `bridge: p2w fwd=170 drop=0 err=0 oom=0` | PASS (field present, value 0 expected under no memory pressure) |
+| Host → target WLAN ping smoke test | 100 pkts, 0% loss, min/avg/max/mdev = 2.4 / 15 / 111 / 25 ms (WiFi channel jitter, no regression) | PASS (no drops) |
+| Bridge re-activates cleanly after each `wifi_init` restart | Three full re-init cycles observed in dmesg, each with complete `=== Activated ===` banner and matching `peer_ipv4` / `wlan_ipv4` updates via inetaddr notifier | PASS |
+
+### Items covered by static check only (runtime reproduction skipped)
+
+- **B2** (atomic qlen race hard cap) — bug only observable under concurrent enqueue overload; static check enforces the `atomic_inc_return`/`atomic_dec` pair and forbids `skb_queue_len_lockless` in `moal_bridge.c`.
+- **B3** (`pskb_may_pull` guards) — non-linear skb on the RX fast path is rare in the steady state; static check enforces both guard sites.
+- **B6** (DBDC double-init `-EBUSY`) — reproduction requires driving a second `bridge_mode=1` init on a different handle, which the current target toolchain doesn't expose as a simple command. Static check enforces the `-EBUSY` return and `MERROR` log level.
+- **B7** (packet_type fallback `skb_share_check`) — `rx_handler` registered without preemption, so the fallback path is inactive on this target. Static check enforces `skb_share_check(skb, GFP_ATOMIC)` + `oom_drops` accounting inside `moal_bridge_peer_pt_func`.
+- **A1** / **A2** — gated / returned path; no distinctive dmesg marker, but both `bridge_static_checks.sh` PASS and driver functions correctly under the captured load.
+
+### Notes
+
+- Performance baseline comparison (v1's 7 ms upstream target) not re-measured: the host-to-target direct ping traverses the "self-IP skip clone" path in `moal_bridge_rx_fast`, not the bridge forwarding path, so latency variance here reflects the WiFi channel rather than the bridge optimizations themselves. A proper bridge-through regression test would need a wireless peer pinging a host on the wired side; the captured `w2p fwd=147` / `p2w fwd=170` with `drop=0 err=0` is the strongest signal available in this session.
