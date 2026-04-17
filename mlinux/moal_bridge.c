@@ -542,7 +542,14 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
-	/* packet_type은 이미 clone을 받으므로 p2w kthread 전송 */
+	/* packet_type handlers receive a refcount-shared skb, not a clone;
+	 * unshare before mutating skb->data via skb_push(). */
+	skb = skb_share_check(skb, GFP_ATOMIC);
+	if (!skb) {
+		atomic_long_inc(&br->peer_to_wlan.oom_drops);
+		return 0;
+	}
+
 	if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
 		atomic_dec(&br->p2w_qlen);
 		atomic_long_inc(&br->peer_to_wlan.dropped);

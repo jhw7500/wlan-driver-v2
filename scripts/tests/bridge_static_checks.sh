@@ -193,4 +193,12 @@ printf '%s\n' "$W2P_FAST_BLOCK" | \
   grep -Eq 'pskb_may_pull\(skb,\s*l3_off \+ sizeof\(struct iphdr\)\)' || \
   fail "rx_fast missing IPv4 header pull guard"
 
+# --- v2 B7: packet_type fallback skb_share_check ---
+printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
+  grep -Eq 'skb\s*=\s*skb_share_check\(skb,\s*GFP_ATOMIC\)' || \
+  fail "packet_type fallback must unshare via skb_share_check"
+printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
+  grep -q 'atomic_long_inc(&br->peer_to_wlan.oom_drops)' || \
+  fail "packet_type fallback must count share_check OOM as oom_drops"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
