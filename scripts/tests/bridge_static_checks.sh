@@ -185,4 +185,12 @@ printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->w2p_qlen, 0)' || \
 printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->p2w_qlen, 0)' || \
   fail "NETDEV_DOWN must reset p2w_qlen"
 
+# --- v2 B3: pskb_may_pull guards in rx_fast ---
+printf '%s\n' "$W2P_FAST_BLOCK" | \
+  grep -Eq 'pskb_may_pull\(skb,\s*VLAN_ETH_HLEN\)' || \
+  fail "rx_fast missing VLAN header pull guard"
+printf '%s\n' "$W2P_FAST_BLOCK" | \
+  grep -Eq 'pskb_may_pull\(skb,\s*l3_off \+ sizeof\(struct iphdr\)\)' || \
+  fail "rx_fast missing IPv4 header pull guard"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'

@@ -315,9 +315,9 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	if (proto == htons(ETH_P_PAE))
 		return 0;
 
-	/* VLAN: extract inner proto */
+	/* VLAN: extract inner proto (head must be linear through VLAN tag) */
 	if (proto == htons(ETH_P_8021Q)) {
-		if (skb->len < VLAN_ETH_HLEN)
+		if (!pskb_may_pull(skb, VLAN_ETH_HLEN))
 			return 0;
 		proto = ((struct vlan_hdr *)(skb->data + ETH_HLEN))->
 			h_vlan_encapsulated_proto;
@@ -336,7 +336,7 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	if (proto == htons(ETH_P_IP) && br->wlan_ipv4) {
 		struct iphdr *iph;
 
-		if (skb->len >= l3_off + sizeof(struct iphdr)) {
+		if (pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
 			iph = (struct iphdr *)(skb->data + l3_off);
 			if (iph->daddr == br->wlan_ipv4) {
 				BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
