@@ -22,6 +22,8 @@ PKG_CONFIG_PATH=${SYSROOT}/usr/lib/pkgconfig
 #SYSROOT_COMPONENT=/opt/desktop/build-desktop/tmp/sysroots-components/cortexa53-crypto
 #export GLIBS="-I${SYSROOT_COMPONENT}/glib-2.0/usr/include/glib-2.0 -I${SYSROOT_COMPONENT}/glib-2.0/usr/lib/glib-2.0/include"
 
+MOD_SUFFIX=${MOD_SUFFIX:-_imx93}
+
 MLANUTL_CFLAGS="-DSTA_SUPPORT -DUAP_SUPPORT -DWIFI_DIRECT_SUPPORT -DMFG_CMD_SUPPORT -DTDLS_SUPPORT -DMULTI_CHAN_SUPPORT -DDFS_TESTING_SUPPORT"
 
 if [ "$1" = "mlanutl" ]; then
@@ -32,11 +34,11 @@ elif [ "$1" = "all" ]; then
     shift
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
-        make $@
+        make MOD_SUFFIX=${MOD_SUFFIX} $@
     make -C mapp/mlanutl INSTALLDIR=../../ clean
     make -C mapp/mlanutl INSTALLDIR=../../
 else
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
-        make $@
+        make MOD_SUFFIX=${MOD_SUFFIX} ${@:-build}
 fi

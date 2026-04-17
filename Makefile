@@ -173,6 +173,7 @@ endif
 LD += -S
 
 BINDIR = bin_wlan
+MOD_SUFFIX ?=
 APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 
 #############################################################################
@@ -653,9 +654,9 @@ build:		echo default
 		mkdir $(BINDIR); \
 	fi
 
-	cp -f mlan.$(MODEXT) $(BINDIR)/mlan$(DBG).$(MODEXT)
+	cp -f mlan.$(MODEXT) $(BINDIR)/mlan$(MOD_SUFFIX)$(DBG).$(MODEXT)
 
-	cp -f moal.$(MODEXT) $(BINDIR)/moal$(DBG).$(MODEXT)
+	cp -f moal.$(MODEXT) $(BINDIR)/moal$(MOD_SUFFIX)$(DBG).$(MODEXT)
 
 	cp -f README $(BINDIR)
 
@@ -683,8 +684,8 @@ endif
 
 install: default
 
-	cp -f mlan.$(MODEXT) $(INSTALLDIR)/mlan$(DBG).$(MODEXT)
-	cp -f moal.$(MODEXT) $(INSTALLDIR)/moal$(DBG).$(MODEXT)
+	cp -f mlan.$(MODEXT) $(INSTALLDIR)/mlan$(MOD_SUFFIX)$(DBG).$(MODEXT)
+	cp -f moal.$(MODEXT) $(INSTALLDIR)/moal$(MOD_SUFFIX)$(DBG).$(MODEXT)
 	echo $(INSTALLDIR)
 	echo "MX Driver Installed"
 
