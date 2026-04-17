@@ -130,4 +130,11 @@ fi
 
 grep -q 'oom=%ld' "$BRIDGE_C" || fail "deinit stats dump missing oom=%ld field"
 
+# --- v2 B6: DBDC double-init returns -EBUSY ---
+DBDC_BLOCK="$(grep -n -A6 -m1 'atomic_cmpxchg(&bridge_instance_active, 0, 1) != 0' "$BRIDGE_C")"
+printf '%s\n' "$DBDC_BLOCK" | grep -q 'return -EBUSY;' || \
+  fail "DBDC double-init guard must return -EBUSY"
+printf '%s\n' "$DBDC_BLOCK" | grep -q 'MERROR' || \
+  fail "DBDC double-init log level must be MERROR"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'

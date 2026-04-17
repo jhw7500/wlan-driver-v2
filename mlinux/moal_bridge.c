@@ -647,8 +647,9 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 
 	/* 0. DBDC guard: 이미 다른 handle에서 bridge 활성화됨 */
 	if (atomic_cmpxchg(&bridge_instance_active, 0, 1) != 0) {
-		PRINTM(MMSG, "bridge: skipped (another instance already active)\n");
-		return 0;
+		PRINTM(MERROR,
+		       "bridge: init refused, another instance already active\n");
+		return -EBUSY;
 	}
 
 	/* 1. wlan netdev 확인 — DBDC: bridge_wlan_idx로 BSS 선택 */
