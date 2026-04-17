@@ -2135,14 +2135,22 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 		}
 		/* L2 bridge fast path (A-MSDU sub-frame, before eth_type_trans).
 		 * RCU-protected pointer read — see moal_bridge_deinit for the
-		 * matching rcu_assign_pointer(NULL) + synchronize_rcu. */
-		rcu_read_lock();
+		 * matching rcu_assign_pointer(NULL) + synchronize_rcu.
+		 * If bridge consumed the subframe (non-self unicast IPv4),
+		 * skip stack delivery for this iteration. */
 		{
-			struct moal_bridge *br = rcu_dereference(handle->bridge);
+			struct moal_bridge *br;
+			int br_consumed = 0;
+
+			rcu_read_lock();
+			br = rcu_dereference(handle->bridge);
 			if (unlikely(br) && atomic_read(&br->active))
-				moal_bridge_rx_fast(br, frame, priv);
+				br_consumed = moal_bridge_rx_fast(
+					br, frame, priv);
+			rcu_read_unlock();
+			if (br_consumed)
+				continue;
 		}
-		rcu_read_unlock();
 
 		frame->protocol = eth_type_trans(frame, netdev);
 		frame->ip_summed = CHECKSUM_NONE;

@@ -332,22 +332,37 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	}
 
 	/* STA 모드: 모든 수신 패킷의 dst MAC = WLAN MAC (AP→STA 프레임 특성)
-	 * → MAC 기반 자기/포워딩 구분 불가.
-	 * IPv4 자기 IP 대상 패킷은 clone 생략 (bridge 자체 ping/ssh 지연 방지) */
-	if (proto == htons(ETH_P_IP) && br->wlan_ipv4) {
-		struct iphdr *iph;
+	 * → MAC 기반 자기/포워딩 구분 불가. IP로 판정:
+	 *   - self IPv4 unicast: 스택만 처리 (return 0)
+	 *   - non-self IPv4 unicast: 원본 consume (return 1, 스택 배달 생략)
+	 *   - 나머지 (mcast, non-IPv4, iph pull 실패): clone + 스택 배달 (return 0) */
+	if (proto == htons(ETH_P_IP) &&
+	    !is_multicast_ether_addr(eth->h_dest) &&
+	    br->wlan_ipv4 &&
+	    pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
+		struct iphdr *iph = (struct iphdr *)(skb->data + l3_off);
 
-		if (pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
-			iph = (struct iphdr *)(skb->data + l3_off);
-			if (iph->daddr == br->wlan_ipv4) {
-				BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
-				       &iph->daddr);
-				return 0;
-			}
+		if (iph->daddr == br->wlan_ipv4) {
+			BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
+			       &iph->daddr);
+			return 0;
 		}
+		/* Non-self unicast IPv4 → consume original (no clone, no stack) */
+		if (atomic_inc_return(&br->w2p_qlen) >
+		    MOAL_BR_W2P_QUEUE_MAX) {
+			atomic_dec(&br->w2p_qlen);
+			atomic_long_inc(&br->wlan_to_peer.dropped);
+			kfree_skb(skb);
+			return 1; /* consumed: dropped without stack deliver */
+		}
+		skb->dev = br->peer_dev;
+		skb_queue_tail(&br->w2p_queue, skb);
+		wake_up(&br->w2p_wait);
+		return 1; /* consumed: forwarded, skip stack deliver */
 	}
 
-	/* 포워딩 대상 (타 IP 또는 ARP/기타): clone→peer 비동기 전송 */
+	/* Multicast/Broadcast, 비IPv4 유니캐스트, 또는 iph pull 실패 →
+	 * clone + 원본 스택 배달 */
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {

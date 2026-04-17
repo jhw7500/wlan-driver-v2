@@ -231,4 +231,14 @@ grep -cE 'handle->bridge(->|\s*\))' "$SHIM_C" | awk '$1 > 0 {
   if ($1 > 2) { print "FAIL: lingering handle->bridge direct deref in shim (" $1 ")"; exit 1 }
 }'
 
+# --- v3 D2: A-MSDU subframe honors rx_fast CONSUMED return ---
+W2P_FAST_BLOCK2="$(grep -n -A140 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
+printf '%s\n' "$W2P_FAST_BLOCK2" | \
+  grep -Eq 'return[[:space:]]+1;\s*/\*.*consumed' || \
+  fail "rx_fast must return 1 for consumed (non-self unicast)"
+
+grep -Eq 'if \(consumed\)[[:space:]]*\{?.*continue;' "$SHIM_C" || \
+grep -Eq 'if \(br_consumed\)' "$SHIM_C" || \
+  fail "A-MSDU loop must honor rx_fast consumed return"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
