@@ -22,6 +22,9 @@
 #include <linux/wait.h>
 #include <linux/hrtimer.h>
 
+#define MOAL_BR_W2P_QUEUE_MAX 256
+#define MOAL_BR_P2W_QUEUE_MAX 256
+
 /** Bridge statistics per direction */
 struct moal_bridge_stats {
 	atomic_long_t fwd_packets;   /**< Successfully forwarded */
@@ -47,10 +50,10 @@ struct moal_bridge {
 	struct moal_bridge_stats wlan_to_peer;  /**< WLAN→ETH */
 	struct moal_bridge_stats peer_to_wlan;  /**< ETH→WLAN */
 
-	/** w2p (WLAN→ETH): workqueue 기반 — eth TX는 빠르므로 충분 */
+	/** w2p (WLAN→ETH) */
 	struct sk_buff_head w2p_queue;
-	struct workqueue_struct *w2p_wq;
-	struct work_struct w2p_work;
+	struct task_struct *w2p_thread;
+	wait_queue_head_t w2p_wait;
 
 	/** p2w (ETH→WLAN): 전용 kthread — SDIO TX 지연을 w2p와 격리 */
 	struct sk_buff_head p2w_queue;
