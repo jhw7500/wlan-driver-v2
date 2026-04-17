@@ -913,6 +913,7 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			    MLAN_STATUS_SUCCESS)
 				goto err;
 			params->bridge_keepalive_ms = out_data;
+			params->bridge_keepalive_ms_present = 1;
 			PRINTM(MMSG, "bridge_keepalive_ms = %d\n",
 			       params->bridge_keepalive_ms);
 		} else if (strncmp(line, "amsdu_deaggr",
@@ -1836,6 +1837,7 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 		sizeof(handle->params.bridge_peer) - 1);
 	handle->params.bridge_wlan_idx = bridge_wlan_idx;
 	handle->params.bridge_keepalive_ms = bridge_keepalive_ms;
+	handle->params.bridge_keepalive_ms_present = 0;
 	if (params) {
 		if (params->bridge_mode)
 			handle->params.bridge_mode = params->bridge_mode;
@@ -1846,9 +1848,11 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 		if (params->bridge_wlan_idx)
 			handle->params.bridge_wlan_idx =
 				params->bridge_wlan_idx;
-		if (params->bridge_keepalive_ms)
+		if (params->bridge_keepalive_ms_present) {
 			handle->params.bridge_keepalive_ms =
 				params->bridge_keepalive_ms;
+			handle->params.bridge_keepalive_ms_present = 1;
+		}
 	}
 
 	handle->params.amsdu_deaggr = amsdu_deaggr;
