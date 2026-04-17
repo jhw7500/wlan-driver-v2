@@ -6,6 +6,7 @@ ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 BRIDGE_C="$ROOT/mlinux/moal_bridge.c"
 INIT_C="$ROOT/mlinux/moal_init.c"
 MAIN_H="$ROOT/mlinux/moal_main.h"
+SHIM_C="$ROOT/mlinux/moal_shim.c"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -216,5 +217,18 @@ printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
 printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
   grep -q '\*pskb = NULL;' || \
   fail "rx_handler must null pskb before returning CONSUMED"
+
+# --- v3 D1: RCU protection on handle->bridge ---
+grep -q 'rcu_assign_pointer(handle->bridge, br)' "$BRIDGE_C" || \
+  fail "bridge init must rcu_assign_pointer(handle->bridge, br)"
+grep -q 'rcu_assign_pointer(handle->bridge, NULL)' "$BRIDGE_C" || \
+  fail "bridge deinit must rcu_assign_pointer NULL"
+grep -q 'synchronize_rcu()' "$BRIDGE_C" || \
+  fail "bridge deinit must synchronize_rcu before kfree"
+grep -q 'rcu_dereference(handle->bridge)' "$SHIM_C" || \
+  fail "moal_shim must rcu_dereference(handle->bridge) on RX fast path"
+grep -cE 'handle->bridge(->|\s*\))' "$SHIM_C" | awk '$1 > 0 {
+  if ($1 > 2) { print "FAIL: lingering handle->bridge direct deref in shim (" $1 ")"; exit 1 }
+}'
 
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'

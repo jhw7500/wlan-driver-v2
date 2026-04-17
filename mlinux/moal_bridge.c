@@ -813,8 +813,8 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 		PRINTM(MMSG, "bridge:   keepalive  = off\n");
 	}
 
-	/* 8. 활성화 */
-	handle->bridge = br;
+	/* 8. 활성화 — rcu_assign_pointer publishes br before readers may observe it */
+	rcu_assign_pointer(handle->bridge, br);
 	atomic_set(&br->active, 1);
 
 	PRINTM(MMSG, "bridge: === Configuration ===\n");
@@ -901,8 +901,11 @@ void moal_bridge_deinit(void *phandle)
 	       atomic_long_read(&br->peer_to_wlan.errors),
 	       atomic_long_read(&br->peer_to_wlan.oom_drops));
 
-	/* 7. peer 참조 반환 + 메모리 해제 */
-	handle->bridge = NULL;
+	/* 7. peer 참조 반환 + 메모리 해제.
+	 *    rcu_assign_pointer + synchronize_rcu: readers holding an old br
+	 *    pointer must drain before kfree. */
+	rcu_assign_pointer(handle->bridge, NULL);
+	synchronize_rcu();
 	if (!br->peer_released)
 		dev_put(br->peer_dev);
 	kfree(br);

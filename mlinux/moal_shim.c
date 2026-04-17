@@ -2133,10 +2133,16 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			dev_kfree_skb(frame);
 			continue;
 		}
-		/* L2 bridge fast path (A-MSDU sub-frame, before eth_type_trans) */
-		if (unlikely(handle->bridge) &&
-		    atomic_read(&handle->bridge->active))
-			moal_bridge_rx_fast(handle->bridge, frame, priv);
+		/* L2 bridge fast path (A-MSDU sub-frame, before eth_type_trans).
+		 * RCU-protected pointer read — see moal_bridge_deinit for the
+		 * matching rcu_assign_pointer(NULL) + synchronize_rcu. */
+		rcu_read_lock();
+		{
+			struct moal_bridge *br = rcu_dereference(handle->bridge);
+			if (unlikely(br) && atomic_read(&br->active))
+				moal_bridge_rx_fast(br, frame, priv);
+		}
+		rcu_read_unlock();
 
 		frame->protocol = eth_type_trans(frame, netdev);
 		frame->ip_summed = CHECKSUM_NONE;
@@ -2266,12 +2272,21 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				atomic_dec(&handle->mbufalloc_count);
 
 				/* L2 bridge fast path — before eth_type_trans
-				 * skb->data = ETH header, no skb_push needed */
-				if (unlikely(handle->bridge) &&
-				    atomic_read(&handle->bridge->active) &&
-				    moal_bridge_rx_fast(handle->bridge,
-						       skb, priv)) {
-					goto done;
+				 * skb->data = ETH header, no skb_push needed.
+				 * RCU-protected pointer read. */
+				{
+					struct moal_bridge *br;
+					int consumed = 0;
+
+					rcu_read_lock();
+					br = rcu_dereference(handle->bridge);
+					if (unlikely(br) &&
+					    atomic_read(&br->active))
+						consumed = moal_bridge_rx_fast(
+							br, skb, priv);
+					rcu_read_unlock();
+					if (consumed)
+						goto done;
 				}
 			} else {
 				PRINTM(MERROR, "%s without skb attach!!!\n",
