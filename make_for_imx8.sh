@@ -10,8 +10,8 @@
 
 . ${SDK_LOC}/environment-setup-${SDK_NAME}
 
-export KERNELDIR ?= /opt/sda/mini-6.6.3/imx-6.6.3-1.0.0-build/build-wayland/tmp/work/imx8mmevk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
-export CROSS_COMPILE?=/shared/fsl-imx-xwayland/6.6-nanbield/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
+export KERNELDIR=${KERNELDIR:-/opt/sda/mini-6.6.3/imx-6.6.3-1.0.0-build/build-wayland/tmp/work/imx8mmevk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git}
+export CROSS_COMPILE=${CROSS_COMPILE:-/shared/fsl-imx-xwayland/6.6-nanbield/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-}
 
 SYSROOT=${SDK_LOC}/sysroots/${SDK_NAME}
 PKG_CONFIG_SYSROOT_DIR=${SYSROOT}
@@ -26,15 +26,15 @@ MLANUTL_CFLAGS="-DSTA_SUPPORT -DUAP_SUPPORT -DWIFI_DIRECT_SUPPORT -DMFG_CMD_SUPP
 
 if [ "$1" = "mlanutl" ]; then
     shift
-    make -C mapp/mlanutl INSTALLDIR=../../ clean
-    make -C mapp/mlanutl INSTALLDIR=../../ "ccflags-y=${MLANUTL_CFLAGS}" $@
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} clean
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANUTL_CFLAGS}" $@
 elif [ "$1" = "all" ]; then
     shift
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
-    make -C mapp/mlanutl INSTALLDIR=../../ clean
-    make -C mapp/mlanutl INSTALLDIR=../../
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} clean
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX}
 else
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \

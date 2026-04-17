@@ -28,15 +28,15 @@ MLANUTL_CFLAGS="-DSTA_SUPPORT -DUAP_SUPPORT -DWIFI_DIRECT_SUPPORT -DMFG_CMD_SUPP
 
 if [ "$1" = "mlanutl" ]; then
     shift
-    make -C mapp/mlanutl INSTALLDIR=../../ clean
-    make -C mapp/mlanutl INSTALLDIR=../../ "ccflags-y=${MLANUTL_CFLAGS}" $@
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} clean
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANUTL_CFLAGS}" $@
 elif [ "$1" = "all" ]; then
     shift
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
-    make -C mapp/mlanutl INSTALLDIR=../../ clean
-    make -C mapp/mlanutl INSTALLDIR=../../
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} clean
+    make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX}
 else
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
