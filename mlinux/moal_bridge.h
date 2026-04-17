@@ -89,7 +89,6 @@ struct moal_bridge {
 /* API — implemented in moal_bridge.c */
 int moal_bridge_init(void *handle, const char *peer_name, int wlan_bss_idx);
 void moal_bridge_deinit(void *handle);
-int moal_bridge_rx(struct moal_bridge *br, struct sk_buff *skb);
 int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv);
 
 #endif /* _MOAL_BRIDGE_H_ */

@@ -82,40 +82,13 @@ grep -Eq 'atomic_long_add\([^,]+,\s*&br->wlan_to_peer\.fwd_bytes\);' "$BRIDGE_C"
 grep -Eq 'atomic_long_add\([^,]+,\s*&br->peer_to_wlan\.fwd_bytes\);' "$BRIDGE_C" || \
   fail "p2w byte accounting missing"
 
-W2P_RX_BLOCK="$(grep -n -A240 -m1 '^int moal_bridge_rx\b' "$BRIDGE_C")"
-printf '%s\n' "$W2P_RX_BLOCK" | \
-  grep -q 'moal_bridge_should_forward(br, skb)' || \
-  fail "legacy w2p path no longer delegates to shared filter logic"
-printf '%s\n' "$W2P_RX_BLOCK" | \
-  grep -q 'net_xmit_eval(err)' || \
-  fail "moal_bridge_rx is missing net_xmit_eval(err)"
-
-printf '%s\n' "$W2P_RX_BLOCK" | \
-  grep -q 'NET_XMIT_SUCCESS' && \
-  fail "moal_bridge_rx still compares NET_XMIT_SUCCESS"
-
-printf '%s\n' "$W2P_RX_BLOCK" | \
-  grep -q 'atomic_long_inc(&br->wlan_to_peer.fwd_packets)' && \
-  fail "moal_bridge_rx still increments w2p fwd_packets"
-
-printf '%s\n' "$W2P_RX_BLOCK" | \
-  grep -Eq 'atomic_long_add\([^,]+,\s*&br->wlan_to_peer\.fwd_bytes\);' && \
-  fail "moal_bridge_rx still increments w2p fwd_bytes"
-
-W2P_RX_UNICAST_XMIT_TAIL="$(printf '%s\n' "$W2P_RX_BLOCK" | grep -n -A20 -m1 'dev_queue_xmit(skb)')"
-printf '%s\n' "$W2P_RX_UNICAST_XMIT_TAIL" | \
-  grep -q 'skb->' && \
-  fail "moal_bridge_rx unicast path accesses skb after dev_queue_xmit(skb)"
-
-W2P_RX_MCAST_BLOCK="$(printf '%s\n' "$W2P_RX_BLOCK" | awk '
-  /if \(is_multicast_ether_addr/ { inside=1 }
-  inside { print }
-  inside && /return 0; \/\* 원본은 커널 스택으로 \*\// { exit }
- ')"
-W2P_RX_MCAST_XMIT_TAIL="$(printf '%s\n' "$W2P_RX_MCAST_BLOCK" | grep -n -A20 -m1 'dev_queue_xmit(skb2)')"
-printf '%s\n' "$W2P_RX_MCAST_XMIT_TAIL" | \
-  grep -Eq 'skb->|skb2->' && \
-  fail "moal_bridge_rx mcast path accesses skb/skb2 after dev_queue_xmit(skb2)"
+# --- v3 D3: legacy moal_bridge_rx / moal_bridge_should_forward removed ---
+grep -Eq '^int moal_bridge_rx\(' "$BRIDGE_C" && \
+  fail "legacy moal_bridge_rx must be removed"
+grep -q 'moal_bridge_should_forward' "$BRIDGE_C" && \
+  fail "legacy moal_bridge_should_forward must be removed"
+grep -q 'int moal_bridge_rx(' "$ROOT/mlinux/moal_bridge.h" && \
+  fail "moal_bridge_rx decl must be removed from header"
 
 grep -q 'bridge: wlan BSS\[%d\] not ready' "$BRIDGE_C" || fail "wlan BSS guard site missing"
 grep -q 'atomic_set(&bridge_instance_active, 0);' "$BRIDGE_C" || fail "bridge instance guard reset missing"

@@ -206,83 +206,10 @@ static bool moal_bridge_arp_is_for_self(struct moal_bridge *br,
 	return (br->wlan_ipv4 && target_ip == br->wlan_ipv4);
 }
 
-/* IP 필터 제거: 브릿지 구조에서 wlan_ipv4 = 클라이언트 응답 IP이므로
- * IP 기반 필터링 시 정상 트래픽도 차단됨. wbridge도 enable_ip_filter=0 기본. */
-
-/**
- * moal_bridge_should_forward - 패킷을 peer로 포워딩할지 판정
- * Design Ref: §5.1 — wbridge filter.c::filter_should_drop() 역논리
- *
- * @note eth_type_trans()가 이미 호출된 상태이므로:
- *       - skb->protocol = EtherType (network order)
- *       - skb->data는 ETH_HLEN 이후 (L3 payload)
- *       - eth_hdr(skb)로 이더넷 헤더 접근 가능 (skb->mac_header 설정됨)
- *
- * Return: true=포워딩, false=커널 스택으로 전달
- */
-static bool moal_bridge_should_forward(struct moal_bridge *br,
-				       struct sk_buff *skb)
-{
-	struct ethhdr *eth = eth_hdr(skb);
-	__be16 proto = skb->protocol;
-
-	/* WiFi 미연결 시 포워딩 차단 — wbridge는 연결 후 수동 실행하여 이 문제 없었음.
-	 * 커널 브릿지는 드라이버 로드 시 즉시 활성화되므로 연결 전 TX 간섭 방지 필요 */
-	if (!((moal_private *)br->wlan_priv)->media_connected) {
-		BR_DBG("not connected (media_connected=%d)\n",
-		       ((moal_private *)br->wlan_priv)->media_connected);
-		return false;
-	}
-
-	/* EAPOL(802.1X) / WAPI: 인증 패킷은 절대 포워딩하지 않음
-	 * — 포워딩 시 WPA 핸드셰이크 실패 ("protocol 888e is buggy" 발생) */
-	if (proto == htons(ETH_P_PAE))
-		return false;
-
-	/* VLAN 802.1Q: 내부 프로토콜 추출 (skb 데이터는 수정하지 않음)
-	 * Design Ref: §5.1 — VLAN 태그 투명 처리 */
-	if (proto == htons(ETH_P_8021Q)) {
-		if (skb->len < sizeof(struct vlan_hdr))
-			return false;
-		proto = vlan_eth_hdr(skb)->h_vlan_encapsulated_proto;
-	}
-
-	/* 멀티캐스트/브로드캐스트 */
-	if (is_multicast_ether_addr(eth->h_dest)) {
-		/* ARP for bridge IP → 커널이 응답해야 함 */
-		if (proto == htons(ETH_P_ARP) &&
-		    moal_bridge_arp_is_for_self(br, skb, 0))
-			return false;
-		/* 나머지 멀티캐스트/브로드캐스트 → 포워딩 */
-		return true;
-	}
-
-	/* 유니캐스트: 자기(wlan) MAC 대상 → 커널 스택으로 (브릿지 관리 트래픽)
-	 * 단, MAC/IP 필터는 최소한만 적용 (wbridge도 기본 OFF)
-	 * IP 필터 제거: 브릿지 구조에서 wlan_ipv4 = 클라이언트 응답 IP이므로
-	 * IP 필터 시 정상 트래픽도 차단됨 */
-	if (ether_addr_equal(eth->h_dest, br->wlan_dev->dev_addr))
-		return false;
-
-	/* 그 외 → 포워딩 */
-	return true;
-}
-
 /*
  * ---------- WLAN → ETH Forwarding ----------
  */
 
-/**
- * moal_bridge_rx - WLAN RX 패킷을 peer(eth)로 포워딩
- * Design Ref: §4.1 — WLAN→ETH 방향
- *
- * @param br   Bridge context
- * @param skb  Received packet (eth_type_trans already called by moal_recv_packet)
- *
- * @return 1 if skb consumed (forwarded or freed), 0 if caller should deliver to stack
- *
- * Plan SC: SC-01 (WLAN→ETH 포워딩), SC-02 (자기 IP는 커널 스택으로)
- */
 /**
  * moal_bridge_rx_fast - WLAN RX fast path (before eth_type_trans)
  *
@@ -388,78 +315,6 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 		       ntohs(proto), skb->len);
 	}
 	return 0; /* 원본은 커널 스택으로 */
-}
-
-/**
- * moal_bridge_rx - WLAN RX legacy path (after eth_type_trans, kept for reference)
- */
-int moal_bridge_rx(struct moal_bridge *br, struct sk_buff *skb)
-{
-	struct ethhdr *eth;
-
-	if (!br || !skb)
-		return 0;
-
-	eth = eth_hdr(skb);
-	BR_DBG("w2p RX " MACSTR " -> " MACSTR " proto=0x%04x len=%d\n",
-	       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
-	       ntohs(skb->protocol), skb->len);
-
-	if (!moal_bridge_should_forward(br, skb)) {
-		atomic_long_inc(&br->wlan_to_peer.dropped);
-		BR_DBG(" w2p drop " MACSTR " -> " MACSTR
-		       " proto=0x%04x\n",
-		       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
-		       ntohs(skb->protocol));
-		return 0; /* 커널 스택으로 전달 */
-	}
-
-	/* 멀티캐스트: clone 후 peer로 포워딩, 원본은 커널 스택으로
-	 * Design Ref: §7.3 — 멀티캐스트 패킷 처리 */
-	if (is_multicast_ether_addr(eth->h_dest)) {
-		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
-		int err;
-
-		if (skb2) {
-			int len = skb->len;
-
-			BR_DBG(" w2p mcast " MACSTR " -> "
-			       MACSTR " len=%d\n",
-			       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
-			       len);
-			skb2->dev = br->peer_dev;
-			skb_push(skb2, ETH_HLEN);
-			err = dev_queue_xmit(skb2);
-			if (net_xmit_eval(err)) {
-				atomic_long_inc(&br->wlan_to_peer.errors);
-				PRINTM(MERROR, "bridge: w2p xmit failed\n");
-			}
-		} else {
-			atomic_long_inc(&br->wlan_to_peer.oom_drops);
-		}
-		return 0; /* 원본은 커널 스택으로 */
-	}
-
-	BR_DBG(" w2p fwd " MACSTR " -> " MACSTR
-	       " proto=0x%04x len=%d\n",
-	       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
-	       ntohs(skb->protocol), skb->len);
-
-	/* 유니캐스트: skb 소유권 이전하여 peer로 포워딩 */
-	skb->dev = br->peer_dev;
-	skb_push(skb, ETH_HLEN);
-
-	{
-		int err;
-
-		err = dev_queue_xmit(skb);
-		if (net_xmit_eval(err)) {
-		atomic_long_inc(&br->wlan_to_peer.errors);
-		PRINTM(MERROR, "bridge: w2p xmit failed\n");
-		}
-	}
-
-	return 1; /* skb consumed */
 }
 
 /*
