@@ -297,13 +297,14 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	struct ethhdr *eth;
 	__be16 proto;
 	unsigned int l3_off = ETH_HLEN;
-	ktime_t t_start;
-	s64 dt_us;
+	ktime_t t_start = 0;
 
 	if (!br || !skb)
 		return 0;
 
-	t_start = ktime_get();
+	if (bridge_debug)
+		t_start = ktime_get();
+
 	eth = (struct ethhdr *)skb->data;
 	proto = eth->h_proto;
 
@@ -364,10 +365,13 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 			atomic_long_inc(&br->wlan_to_peer.oom_drops);
 		}
 	}
-	dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
-	BR_DBG("w2p FWD cpu=%d %lldus qlen=%d proto=0x%04x len=%d\n",
-	       smp_processor_id(), dt_us, skb_queue_len(&br->w2p_queue),
-	       ntohs(proto), skb->len);
+	if (bridge_debug) {
+		s64 dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
+		BR_DBG("w2p FWD cpu=%d %lldus qlen=%d proto=0x%04x len=%d\n",
+		       smp_processor_id(), dt_us,
+		       skb_queue_len(&br->w2p_queue),
+		       ntohs(proto), skb->len);
+	}
 	return 0; /* 원본은 커널 스택으로 */
 }
 

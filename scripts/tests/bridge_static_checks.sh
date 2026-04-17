@@ -201,4 +201,12 @@ printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
   grep -q 'atomic_long_inc(&br->peer_to_wlan.oom_drops)' || \
   fail "packet_type fallback must count share_check OOM as oom_drops"
 
+# --- v2 A1: ktime_get gated by bridge_debug in rx_fast ---
+printf '%s\n' "$W2P_FAST_BLOCK" | \
+  awk '/ktime_get\(\)/ {found=NR} END {if (found) print found}' | \
+  grep -q '.' || fail "ktime_get expected inside rx_fast"
+printf '%s\n' "$W2P_FAST_BLOCK" | \
+  grep -Eq 'if \(bridge_debug\)[[:space:]]*\{' || \
+  fail "rx_fast timing block must be inside 'if (bridge_debug)'"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
