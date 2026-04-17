@@ -612,6 +612,10 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 		PRINTM(MMSG, "bridge: peer '%s' went down, suspending\n",
 		       dev->name);
 		atomic_set(&br->active, 0);
+		skb_queue_purge(&br->w2p_queue);
+		skb_queue_purge(&br->p2w_queue);
+		atomic_set(&br->w2p_qlen, 0);
+		atomic_set(&br->p2w_qlen, 0);
 		break;
 	case NETDEV_UP:
 		PRINTM(MMSG, "bridge: peer '%s' came up, resuming\n",

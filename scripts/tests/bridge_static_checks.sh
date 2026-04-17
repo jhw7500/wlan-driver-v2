@@ -174,4 +174,15 @@ grep -Eq 'atomic_dec\(&br->p2w_qlen\)' "$BRIDGE_C" || \
 grep -q 'skb_queue_len_lockless' "$BRIDGE_C" && \
   fail "skb_queue_len_lockless must be fully replaced by atomic qlen"
 
+# --- v2 B4: NETDEV_DOWN purges both queues ---
+DOWN_BLOCK="$(grep -n -A8 -m1 'case NETDEV_DOWN:' "$BRIDGE_C")"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_queue_purge(&br->w2p_queue)' || \
+  fail "NETDEV_DOWN must purge w2p_queue"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_queue_purge(&br->p2w_queue)' || \
+  fail "NETDEV_DOWN must purge p2w_queue"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->w2p_qlen, 0)' || \
+  fail "NETDEV_DOWN must reset w2p_qlen"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->p2w_qlen, 0)' || \
+  fail "NETDEV_DOWN must reset p2w_qlen"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
