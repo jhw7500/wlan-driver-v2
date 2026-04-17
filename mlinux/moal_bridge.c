@@ -476,8 +476,13 @@ static int moal_bridge_inetaddr_event(struct notifier_block *nb,
 				      unsigned long event, void *ptr)
 {
 	struct in_ifaddr *ifa = (struct in_ifaddr *)ptr;
-	struct net_device *dev = ifa->ifa_dev->dev;
+	struct net_device *dev;
 	struct moal_bridge *br = container_of(nb, struct moal_bridge, inet_nb);
+
+	/* Defensive: some notifier paths may deliver a partially-constructed ifa */
+	if (!ifa || !ifa->ifa_dev || !ifa->ifa_dev->dev)
+		return NOTIFY_DONE;
+	dev = ifa->ifa_dev->dev;
 
 	if (dev == br->wlan_dev) {
 		WRITE_ONCE(br->wlan_ipv4, ifa->ifa_local);

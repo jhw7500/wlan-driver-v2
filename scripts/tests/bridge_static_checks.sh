@@ -233,4 +233,10 @@ grep -q 'WRITE_ONCE(br->peer_ipv4' "$BRIDGE_C" || \
 grep -q 'READ_ONCE(((moal_private \*)br->wlan_priv)->media_connected)' "$BRIDGE_C" || \
   fail "media_connected hot-path read must use READ_ONCE"
 
+# --- v3 D6: NULL guard in inetaddr notifier ---
+INET_BLOCK="$(grep -n -A25 -m1 'moal_bridge_inetaddr_event' "$BRIDGE_C")"
+printf '%s\n' "$INET_BLOCK" | \
+  grep -Eq 'if \(!ifa \|\| !ifa->ifa_dev' || \
+  fail "inetaddr notifier must guard against NULL ifa/ifa_dev"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
