@@ -53,11 +53,13 @@ struct moal_bridge {
 
 	/** w2p (WLAN→ETH) */
 	struct sk_buff_head w2p_queue;
+	atomic_t w2p_qlen;             /**< hard cap counter for w2p_queue */
 	struct task_struct *w2p_thread;
 	wait_queue_head_t w2p_wait;
 
 	/** p2w (ETH→WLAN): 전용 kthread — SDIO TX 지연을 w2p와 격리 */
 	struct sk_buff_head p2w_queue;
+	atomic_t p2w_qlen;             /**< hard cap counter for p2w_queue */
 	struct task_struct *p2w_thread;
 	wait_queue_head_t p2w_wait;
 

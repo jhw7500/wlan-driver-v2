@@ -79,6 +79,7 @@ static int moal_bridge_w2p_thread_fn(void *data)
 
 		cnt = 0;
 		while ((skb = skb_dequeue(&br->w2p_queue)) != NULL) {
+			atomic_dec(&br->w2p_qlen);
 			len = skb->len;
 			err = dev_queue_xmit(skb);
 			if (net_xmit_eval(err)) {
@@ -130,6 +131,7 @@ static int moal_bridge_p2w_thread_fn(void *data)
 
 		cnt = 0;
 		while ((skb = skb_dequeue(&br->p2w_queue)) != NULL) {
+			atomic_dec(&br->p2w_qlen);
 			len = skb->len;
 			err = dev_queue_xmit(skb);
 			if (net_xmit_eval(err)) {
@@ -348,8 +350,9 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
-			if (skb_queue_len_lockless(&br->w2p_queue) >=
+			if (atomic_inc_return(&br->w2p_qlen) >
 			    MOAL_BR_W2P_QUEUE_MAX) {
+				atomic_dec(&br->w2p_qlen);
 				atomic_long_inc(&br->wlan_to_peer.dropped);
 				dev_kfree_skb_any(skb2);
 				return 0;
@@ -488,8 +491,9 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	{
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
-			if (skb_queue_len_lockless(&br->p2w_queue) >=
+			if (atomic_inc_return(&br->p2w_qlen) >
 			    MOAL_BR_P2W_QUEUE_MAX) {
+				atomic_dec(&br->p2w_qlen);
 				atomic_long_inc(&br->peer_to_wlan.dropped);
 				dev_kfree_skb_any(skb2);
 				return RX_HANDLER_PASS;
@@ -539,7 +543,8 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 	}
 
 	/* packet_type은 이미 clone을 받으므로 p2w kthread 전송 */
-	if (skb_queue_len_lockless(&br->p2w_queue) >= MOAL_BR_P2W_QUEUE_MAX) {
+	if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
+		atomic_dec(&br->p2w_qlen);
 		atomic_long_inc(&br->peer_to_wlan.dropped);
 		dev_kfree_skb_any(skb);
 		return 0;
@@ -696,6 +701,7 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	atomic_set(&br->active, 0);
 
 	skb_queue_head_init(&br->w2p_queue);
+	atomic_set(&br->w2p_qlen, 0);
 	init_waitqueue_head(&br->w2p_wait);
 	br->w2p_thread = kthread_run(moal_bridge_w2p_thread_fn, br,
 				     "moal_br_w2p");
@@ -710,6 +716,7 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 
 	/* p2w: 전용 kthread 초기화 (ETH→WLAN, SDIO TX 격리) */
 	skb_queue_head_init(&br->p2w_queue);
+	atomic_set(&br->p2w_qlen, 0);
 	init_waitqueue_head(&br->p2w_wait);
 	br->p2w_thread = kthread_run(moal_bridge_p2w_thread_fn, br,
 				     "moal_br_p2w");

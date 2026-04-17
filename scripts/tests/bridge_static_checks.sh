@@ -29,7 +29,7 @@ grep -q 'MOAL_BR_P2W_QUEUE_MAX' "$ROOT/mlinux/moal_bridge.h" || fail "p2w queue 
 
 W2P_FAST_BLOCK="$(grep -n -A120 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
 printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -q 'skb_queue_len_lockless(&br->w2p_queue)' || \
+  grep -q 'atomic_inc_return(&br->w2p_qlen)' || \
   fail "w2p queue length guard missing (rx_fast)"
 printf '%s\n' "$W2P_FAST_BLOCK" | \
   grep -q 'MOAL_BR_W2P_QUEUE_MAX' || \
@@ -49,7 +49,7 @@ printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
   grep -Eq 'struct sk_buff \*skb2\s*=\s*skb_clone\b' || \
   fail "p2w rx_handler clone path missing"
 printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -q 'skb_queue_len_lockless(&br->p2w_queue)' || \
+  grep -q 'atomic_inc_return(&br->p2w_qlen)' || \
   fail "p2w queue length guard missing (rx_handler)"
 printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
   grep -q 'MOAL_BR_P2W_QUEUE_MAX' || \
@@ -63,7 +63,7 @@ printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
 
 P2W_PACKET_TYPE_BLOCK="$(grep -n -A160 -m1 'moal_bridge_peer_pt_func' "$BRIDGE_C")"
 printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -q 'skb_queue_len_lockless(&br->p2w_queue)' || \
+  grep -q 'atomic_inc_return(&br->p2w_qlen)' || \
   fail "p2w queue length guard missing (packet_type)"
 printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
   grep -q 'MOAL_BR_P2W_QUEUE_MAX' || \
@@ -155,5 +155,23 @@ printf '%s\n' "$UNREG_BLOCK" | grep -q 'br->peer_released = 1' || \
 DEINIT_BLOCK="$(grep -n -A90 -m1 'void moal_bridge_deinit' "$BRIDGE_C")"
 printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!br->peer_released)' || \
   fail "deinit must skip handler/ref release when peer already released"
+
+# --- v2 B2: atomic qlen hard cap ---
+grep -Eq 'atomic_t\s+w2p_qlen' "$ROOT/mlinux/moal_bridge.h" || \
+  fail "w2p_qlen atomic missing from struct moal_bridge"
+grep -Eq 'atomic_t\s+p2w_qlen' "$ROOT/mlinux/moal_bridge.h" || \
+  fail "p2w_qlen atomic missing from struct moal_bridge"
+
+grep -Eq 'atomic_inc_return\(&br->w2p_qlen\)' "$BRIDGE_C" || \
+  fail "w2p enqueue guard not using atomic_inc_return"
+grep -Eq 'atomic_inc_return\(&br->p2w_qlen\)' "$BRIDGE_C" || \
+  fail "p2w enqueue guard not using atomic_inc_return"
+grep -Eq 'atomic_dec\(&br->w2p_qlen\)' "$BRIDGE_C" || \
+  fail "w2p dequeue not decrementing qlen"
+grep -Eq 'atomic_dec\(&br->p2w_qlen\)' "$BRIDGE_C" || \
+  fail "p2w dequeue not decrementing qlen"
+
+grep -q 'skb_queue_len_lockless' "$BRIDGE_C" && \
+  fail "skb_queue_len_lockless must be fully replaced by atomic qlen"
 
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
