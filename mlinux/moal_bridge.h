@@ -31,6 +31,7 @@ struct moal_bridge_stats {
 	atomic_long_t fwd_bytes;     /**< Forwarded bytes */
 	atomic_long_t dropped;       /**< Filtered/dropped */
 	atomic_long_t errors;        /**< Forward failures */
+	atomic_long_t oom_drops;     /**< skb_clone/skb_share_check OOM drops */
 };
 
 /** Bridge context — one per moal_handle */

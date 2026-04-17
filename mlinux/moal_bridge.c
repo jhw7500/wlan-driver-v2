@@ -357,6 +357,8 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 			skb2->dev = br->peer_dev;
 			skb_queue_tail(&br->w2p_queue, skb2);
 			wake_up(&br->w2p_wait);
+		} else {
+			atomic_long_inc(&br->wlan_to_peer.oom_drops);
 		}
 	}
 	dt_us = ktime_to_us(ktime_sub(ktime_get(), t_start));
@@ -410,6 +412,8 @@ int moal_bridge_rx(struct moal_bridge *br, struct sk_buff *skb)
 				atomic_long_inc(&br->wlan_to_peer.errors);
 				PRINTM(MERROR, "bridge: w2p xmit failed\n");
 			}
+		} else {
+			atomic_long_inc(&br->wlan_to_peer.oom_drops);
 		}
 		return 0; /* 원본은 커널 스택으로 */
 	}
@@ -494,6 +498,8 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			skb_push(skb2, ETH_HLEN);
 			skb_queue_tail(&br->p2w_queue, skb2);
 			wake_up(&br->p2w_wait);
+		} else {
+			atomic_long_inc(&br->peer_to_wlan.oom_drops);
 		}
 	}
 	return RX_HANDLER_PASS;
@@ -829,14 +835,16 @@ void moal_bridge_deinit(void *phandle)
 	/* 6. 통계 출력 */
 	PRINTM(MMSG, "bridge: %s <-> %s deactivated\n",
 	       br->wlan_dev->name, br->peer_dev->name);
-	PRINTM(MMSG, "bridge: w2p fwd=%ld drop=%ld err=%ld\n",
+	PRINTM(MMSG, "bridge: w2p fwd=%ld drop=%ld err=%ld oom=%ld\n",
 	       atomic_long_read(&br->wlan_to_peer.fwd_packets),
 	       atomic_long_read(&br->wlan_to_peer.dropped),
-	       atomic_long_read(&br->wlan_to_peer.errors));
-	PRINTM(MMSG, "bridge: p2w fwd=%ld drop=%ld err=%ld\n",
+	       atomic_long_read(&br->wlan_to_peer.errors),
+	       atomic_long_read(&br->wlan_to_peer.oom_drops));
+	PRINTM(MMSG, "bridge: p2w fwd=%ld drop=%ld err=%ld oom=%ld\n",
 	       atomic_long_read(&br->peer_to_wlan.fwd_packets),
 	       atomic_long_read(&br->peer_to_wlan.dropped),
-	       atomic_long_read(&br->peer_to_wlan.errors));
+	       atomic_long_read(&br->peer_to_wlan.errors),
+	       atomic_long_read(&br->peer_to_wlan.oom_drops));
 
 	/* 7. peer 참조 반환 + 메모리 해제 */
 	handle->bridge = NULL;

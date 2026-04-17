@@ -119,4 +119,15 @@ printf '%s\n' "$W2P_RX_MCAST_XMIT_TAIL" | \
 grep -q 'bridge: wlan BSS\[%d\] not ready' "$BRIDGE_C" || fail "wlan BSS guard site missing"
 grep -q 'atomic_set(&bridge_instance_active, 0);' "$BRIDGE_C" || fail "bridge instance guard reset missing"
 
+# --- v2 B5: oom_drops counter ---
+grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \
+  fail "oom_drops field missing from struct moal_bridge_stats"
+
+OOM_INC_COUNT="$(grep -c 'atomic_long_inc(&.*oom_drops)' "$BRIDGE_C" || true)"
+if [ "$OOM_INC_COUNT" -lt 3 ]; then
+  fail "oom_drops increment sites < 3 in moal_bridge.c (got $OOM_INC_COUNT)"
+fi
+
+grep -q 'oom=%ld' "$BRIDGE_C" || fail "deinit stats dump missing oom=%ld field"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
