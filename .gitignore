@@ -18,3 +18,11 @@ tmp/
 .bkit/
 .codex/
 bin_wlan/
+
+# Compiled mapp userspace binaries
+mapp/mlanutl/mlanutl
+mapp/mlanconfig/mlanconfig
+mapp/mlanevent/mlanevent
+mapp/uaputl/uaputl
+mapp/wifidirectutl/wifidirectutl
+mapp/mlan2040coex/mlan2040coex
