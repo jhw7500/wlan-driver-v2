@@ -239,10 +239,6 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected))
 		return 0;
 
-	/* EAPOL: never forward */
-	if (proto == htons(ETH_P_PAE))
-		return 0;
-
 	/* VLAN: extract inner proto (head must be linear through VLAN tag) */
 	if (proto == htons(ETH_P_8021Q)) {
 		if (!pskb_may_pull(skb, VLAN_ETH_HLEN))
@@ -251,6 +247,10 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 			h_vlan_encapsulated_proto;
 		l3_off = VLAN_ETH_HLEN;
 	}
+
+	/* EAPOL (raw or VLAN-tagged): never forward */
+	if (proto == htons(ETH_P_PAE))
+		return 0;
 
 	if (proto == htons(ETH_P_ARP) &&
 	    moal_bridge_arp_is_for_self(br, skb, l3_off)) {

@@ -239,4 +239,9 @@ printf '%s\n' "$INET_BLOCK" | \
   grep -Eq 'if \(!ifa \|\| !ifa->ifa_dev' || \
   fail "inetaddr notifier must guard against NULL ifa/ifa_dev"
 
+# --- v3 D7: EAPOL check must catch VLAN-tagged EAPOL (after VLAN unwrap) ---
+printf '%s\n' "$W2P_FAST_BLOCK" | \
+  awk '/l3_off = VLAN_ETH_HLEN/ {seen_vlan=1} seen_vlan && /ETH_P_PAE/ {found=1} END {exit !found}' || \
+  fail "rx_fast must check EAPOL after VLAN unwrap (not before)"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
