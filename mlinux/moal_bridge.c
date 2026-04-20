@@ -11,6 +11,8 @@
 #include "moal_main.h"
 #include "moal_bridge.h"
 #include <linux/ktime.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
 
 /** DBDC guard: only one bridge instance allowed globally */
 static atomic_t bridge_instance_active = ATOMIC_INIT(0);
@@ -732,6 +734,74 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 }
 
 /*
+ * ---------- Sysfs stats node ----------
+ *
+ * /sys/kernel/moal_bridge/stats — read-only live counters. Hot path is
+ * not affected (no writers from the show handler). Single-instance:
+ * DBDC guard limits the driver to one active bridge at a time, so a
+ * global kobject + static bridge pointer is enough.
+ */
+
+static struct kobject *moal_bridge_kobj;
+static struct moal_bridge *moal_bridge_for_sysfs;
+
+static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
+			  char *buf)
+{
+	struct moal_bridge *br = READ_ONCE(moal_bridge_for_sysfs);
+
+	if (!br)
+		return scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
+	return scnprintf(buf, PAGE_SIZE,
+			 "w2p fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d\n"
+			 "p2w fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d\n"
+			 "active=%d peer_released=%d\n",
+			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
+			 atomic_long_read(&br->wlan_to_peer.fwd_bytes),
+			 atomic_long_read(&br->wlan_to_peer.dropped),
+			 atomic_long_read(&br->wlan_to_peer.errors),
+			 atomic_long_read(&br->wlan_to_peer.oom_drops),
+			 atomic_read(&br->w2p_qlen),
+			 atomic_long_read(&br->peer_to_wlan.fwd_packets),
+			 atomic_long_read(&br->peer_to_wlan.fwd_bytes),
+			 atomic_long_read(&br->peer_to_wlan.dropped),
+			 atomic_long_read(&br->peer_to_wlan.errors),
+			 atomic_long_read(&br->peer_to_wlan.oom_drops),
+			 atomic_read(&br->p2w_qlen),
+			 atomic_read(&br->active),
+			 br->peer_released);
+}
+
+static struct kobj_attribute stats_attr = __ATTR_RO(stats);
+
+static int moal_bridge_sysfs_init(struct moal_bridge *br)
+{
+	int ret;
+
+	moal_bridge_kobj = kobject_create_and_add("moal_bridge", kernel_kobj);
+	if (!moal_bridge_kobj)
+		return -ENOMEM;
+	ret = sysfs_create_file(moal_bridge_kobj, &stats_attr.attr);
+	if (ret) {
+		kobject_put(moal_bridge_kobj);
+		moal_bridge_kobj = NULL;
+		return ret;
+	}
+	WRITE_ONCE(moal_bridge_for_sysfs, br);
+	return 0;
+}
+
+static void moal_bridge_sysfs_deinit(void)
+{
+	WRITE_ONCE(moal_bridge_for_sysfs, NULL);
+	if (moal_bridge_kobj) {
+		sysfs_remove_file(moal_bridge_kobj, &stats_attr.attr);
+		kobject_put(moal_bridge_kobj);
+		moal_bridge_kobj = NULL;
+	}
+}
+
+/*
  * ---------- Lifecycle ----------
  */
 
@@ -873,6 +943,10 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	rcu_assign_pointer(handle->bridge, br);
 	atomic_set(&br->active, 1);
 
+	/* 8b. sysfs stats node (best-effort; log but do not fail init) */
+	if (moal_bridge_sysfs_init(br))
+		PRINTM(MMSG, "bridge: sysfs stats node unavailable\n");
+
 	PRINTM(MMSG, "bridge: === Configuration ===\n");
 	PRINTM(MMSG, "bridge:   mode        = %d\n", 1);
 	PRINTM(MMSG, "bridge:   wlan_bss    = %d (%s)\n",
@@ -907,8 +981,9 @@ void moal_bridge_deinit(void *phandle)
 	if (!handle || !br)
 		return;
 
-	/* 1. 포워딩 비활성화 + keepalive timer 중지 */
+	/* 1. 포워딩 비활성화 + keepalive timer 중지 + sysfs 노드 제거 */
 	atomic_set(&br->active, 0);
+	moal_bridge_sysfs_deinit();
 	if (br->keepalive_timer.function)
 		hrtimer_cancel(&br->keepalive_timer);
 

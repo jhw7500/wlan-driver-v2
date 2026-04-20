@@ -283,4 +283,19 @@ if [ "$HEADROOM_COUNT" -lt 4 ]; then
   fail "moal_bridge_ensure_headroom should guard all 3 skb_push sites (got $HEADROOM_COUNT, need ≥4 = helper + 3 uses)"
 fi
 
+# --- v4 E5: /sys/kernel/moal_bridge/stats read-only sysfs node ---
+grep -q 'kobject_create_and_add' "$BRIDGE_C" || \
+  fail "sysfs stats node must use kobject_create_and_add"
+grep -q '__ATTR_RO(stats)' "$BRIDGE_C" || \
+  fail "sysfs stats must be read-only (__ATTR_RO)"
+grep -q 'moal_bridge_sysfs_init' "$BRIDGE_C" || \
+  fail "sysfs init helper missing"
+grep -q 'moal_bridge_sysfs_deinit' "$BRIDGE_C" || \
+  fail "sysfs deinit helper missing"
+grep -Eq 'moal_bridge_sysfs_init\(' "$BRIDGE_C" | head -1 >/dev/null && \
+grep -q 'moal_bridge_sysfs_init(br)' "$BRIDGE_C" || \
+  fail "moal_bridge_init must call sysfs_init"
+grep -q 'moal_bridge_sysfs_deinit()' "$BRIDGE_C" || \
+  fail "moal_bridge_deinit must call sysfs_deinit"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
