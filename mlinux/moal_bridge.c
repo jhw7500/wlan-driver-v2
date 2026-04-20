@@ -56,6 +56,59 @@ static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
 }
 
 /*
+ * Apply the scheduling policy for the bridge w2p/p2w kthreads.
+ *
+ * Bridge threads are latency-critical (pcap-equivalent SCHED_FIFO:50 is
+ * the original target), so unlike moal_main.c's main_work/rx_work paths
+ * this helper ignores SCHED_NORMAL/BATCH/IDLE requests from
+ * wq_sched_policy and collapses them to the bridge's FIFO default.
+ *
+ * Honored combinations:
+ *   - wq_sched_policy == SCHED_FIFO or SCHED_RR, with prio in [1, 99]
+ *     → apply exactly via sched_setscheduler / sched_setattr_nocheck
+ *   - anything else (including the (0, 0) unset default)
+ *     → fall back to sched_set_fifo(current)
+ *
+ * Kernel version brackets match the existing moal_main.c pattern so the
+ * bridge behaves identically across the supported kernels. Kernel
+ * versions 5.8.19..5.13.19 fall back to sched_set_fifo because the
+ * sched_attr / sched_setattr_nocheck API was still unstable there.
+ */
+static void moal_bridge_apply_sched(moal_handle *handle)
+{
+	int policy = handle->params.wq_sched_policy;
+	int prio = handle->params.wq_sched_prio;
+	bool honor = (policy == SCHED_FIFO || policy == SCHED_RR) &&
+		     prio >= 1 && prio <= 99;
+
+	if (!honor) {
+		sched_set_fifo(current);
+		return;
+	}
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 10) &&                           \
+	LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 18)
+	{
+		struct sched_param sp;
+
+		sp.sched_priority = prio;
+		sched_setscheduler(current, policy, &sp);
+	}
+#elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
+	{
+		struct sched_attr attr;
+
+		attr.sched_policy = policy;
+		attr.sched_nice = DEF_NICE;
+		attr.sched_priority = prio;
+		sched_setattr_nocheck(current, &attr);
+	}
+#else
+	sched_set_fifo(current);
+#endif
+}
+
+/*
  * ---------- w2p Thread (WLAN→ETH, dedicated kthread) ----------
  */
 
@@ -67,7 +120,7 @@ static int moal_bridge_w2p_thread_fn(void *data)
 	int err;
 	int cnt;
 
-	sched_set_fifo(current);
+	moal_bridge_apply_sched((moal_handle *)br->handle);
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(br->w2p_wait,
@@ -118,8 +171,10 @@ static int moal_bridge_p2w_thread_fn(void *data)
 	/* pcap과 동일: SCHED_FIFO:50으로 wake-up 즉시 실행.
 	 * 이전 실패(local_bh_disable + 양방향 kthread) 조건 해소:
 	 * - p2w 전용 (w2p 블로킹 없음)
-	 * - 외부 local_bh_disable 없음 (dev_queue_xmit 내부만 단발성) */
-	sched_set_fifo(current);
+	 * - 외부 local_bh_disable 없음 (dev_queue_xmit 내부만 단발성).
+	 * 정책/우선순위는 wq_sched_policy/wq_sched_prio로 튜닝 가능;
+	 * 기본값(0, 0) 또는 SCHED_FIFO/RR 외 값은 SCHED_FIFO로 폴백. */
+	moal_bridge_apply_sched((moal_handle *)br->handle);
 
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(br->p2w_wait,
