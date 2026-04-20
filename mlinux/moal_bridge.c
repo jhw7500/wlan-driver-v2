@@ -133,6 +133,12 @@ static int moal_bridge_w2p_thread_fn(void *data)
 		cnt = 0;
 		while ((skb = skb_dequeue(&br->w2p_queue)) != NULL) {
 			atomic_dec(&br->w2p_qlen);
+			if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
+				atomic_long_inc(&br->wlan_to_peer.dropped);
+				dev_kfree_skb_any(skb);
+				cnt++;
+				continue;
+			}
 			len = skb->len;
 			err = dev_queue_xmit(skb);
 			if (net_xmit_eval(err)) {
@@ -187,6 +193,12 @@ static int moal_bridge_p2w_thread_fn(void *data)
 		cnt = 0;
 		while ((skb = skb_dequeue(&br->p2w_queue)) != NULL) {
 			atomic_dec(&br->p2w_qlen);
+			if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {
+				atomic_long_inc(&br->peer_to_wlan.dropped);
+				dev_kfree_skb_any(skb);
+				cnt++;
+				continue;
+			}
 			len = skb->len;
 			err = dev_queue_xmit(skb);
 			if (net_xmit_eval(err)) {
@@ -227,6 +239,19 @@ static __be32 moal_bridge_get_ipv4(struct net_device *dev)
 /*
  * ---------- Filter Logic (from wbridge filter.c) ----------
  */
+
+/**
+ * moal_bridge_dev_ready - egress netdev is usable for forwarding
+ * Combines admin-up (netif_running), link-up (netif_carrier_ok), and
+ * still-registered (reg_state == NETREG_REGISTERED) checks into one gate.
+ * Used at enqueue and again before dev_queue_xmit to avoid xmit'ing into
+ * a device that went down between queue and drain.
+ */
+static inline bool moal_bridge_dev_ready(const struct net_device *dev)
+{
+	return dev && netif_running(dev) && netif_carrier_ok(dev) &&
+	       READ_ONCE(dev->reg_state) == NETREG_REGISTERED;
+}
 
 /**
  * moal_bridge_is_link_local - IEEE 802.1D bridge group address (link-local)
@@ -352,6 +377,11 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 				return 0;
 			}
 			/* Non-self unicast IPv4 → consume original (no clone, no stack) */
+			if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
+				atomic_long_inc(&br->wlan_to_peer.dropped);
+				kfree_skb(skb);
+				return 1;
+			}
 			if (atomic_inc_return(&br->w2p_qlen) >
 			    MOAL_BR_W2P_QUEUE_MAX) {
 				atomic_dec(&br->w2p_qlen);
@@ -369,7 +399,9 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 
 	/* Multicast/Broadcast, 비IPv4 유니캐스트, 또는 iph pull 실패 →
 	 * clone + 원본 스택 배달 */
-	{
+	if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
+		atomic_long_inc(&br->wlan_to_peer.dropped);
+	} else {
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
 			if (atomic_inc_return(&br->w2p_qlen) >
@@ -450,6 +482,12 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	 * clone 없이 원본을 p2w 큐에 넘기고 CONSUMED로 반환.
 	 * skb_clone/스택 deliver 두 비용을 모두 제거. */
 	if (!is_multicast_ether_addr(eth->h_dest)) {
+		if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {
+			atomic_long_inc(&br->peer_to_wlan.dropped);
+			kfree_skb(skb);
+			*pskb = NULL;
+			return RX_HANDLER_CONSUMED;
+		}
 		if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
 			atomic_dec(&br->p2w_qlen);
 			atomic_long_inc(&br->peer_to_wlan.dropped);
@@ -469,7 +507,9 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	 * SDIO 반이중 버스 특성으로 softirq에서 직접 dev_queue_xmit(wlan) 시
 	 * SDIO TX가 RX를 블로킹하여 reply 지연 발생 (36ms avg).
 	 * 전용 p2w kthread로 w2p와 격리 + 즉시 wake-up. */
-	{
+	if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {
+		atomic_long_inc(&br->peer_to_wlan.dropped);
+	} else {
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
 		if (skb2) {
 			if (atomic_inc_return(&br->p2w_qlen) >
@@ -528,6 +568,12 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 	skb = skb_share_check(skb, GFP_ATOMIC);
 	if (!skb) {
 		atomic_long_inc(&br->peer_to_wlan.oom_drops);
+		return 0;
+	}
+
+	if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {
+		atomic_long_inc(&br->peer_to_wlan.dropped);
+		dev_kfree_skb_any(skb);
 		return 0;
 	}
 

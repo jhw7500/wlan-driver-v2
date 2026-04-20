@@ -256,4 +256,16 @@ printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
   grep -q 'moal_bridge_is_link_local' || \
   fail "peer_rx_handler must drop 802.1D link-local frames"
 
+# --- v4 E2: carrier/registration readiness checks ---
+grep -q 'moal_bridge_dev_ready' "$BRIDGE_C" || \
+  fail "carrier/reg readiness helper (moal_bridge_dev_ready) missing"
+DEV_READY_COUNT=$(grep -c 'moal_bridge_dev_ready' "$BRIDGE_C" || true)
+if [ "$DEV_READY_COUNT" -lt 5 ]; then
+  fail "moal_bridge_dev_ready should be used at helper + 3 enqueue + 2 xmit sites (got $DEV_READY_COUNT)"
+fi
+grep -q 'netif_carrier_ok' "$BRIDGE_C" || \
+  fail "dev_ready helper must use netif_carrier_ok"
+grep -q 'NETREG_REGISTERED' "$BRIDGE_C" || \
+  fail "dev_ready helper must gate on NETREG_REGISTERED"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
