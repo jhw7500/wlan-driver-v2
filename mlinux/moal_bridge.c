@@ -229,6 +229,18 @@ static __be32 moal_bridge_get_ipv4(struct net_device *dev)
  */
 
 /**
+ * moal_bridge_is_link_local - IEEE 802.1D bridge group address (link-local)
+ * Destination MACs in 01:80:C2:00:00:00 .. 01:80:C2:00:00:0F must never be
+ * forwarded across bridges (STP BPDU, LACP, 802.1X, LLDP, etc.). Forwarding
+ * them between two L2 segments can form a topology loop or confuse STP.
+ */
+static inline bool moal_bridge_is_link_local(const u8 *dst)
+{
+	return dst[0] == 0x01 && dst[1] == 0x80 && dst[2] == 0xc2 &&
+	       dst[3] == 0x00 && dst[4] == 0x00 && (dst[5] & 0xf0) == 0x00;
+}
+
+/**
  * moal_bridge_arp_is_for_self - ARP target IP가 자기 IP인지 확인
  * Design Ref: §5.2 — wbridge filter.c::filter_arp_is_for_bridge() 이식
  *
@@ -306,6 +318,14 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	/* EAPOL (raw or VLAN-tagged): never forward */
 	if (proto == htons(ETH_P_PAE))
 		return 0;
+
+	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */
+	if (moal_bridge_is_link_local(eth->h_dest)) {
+		atomic_long_inc(&br->wlan_to_peer.dropped);
+		BR_DBG("w2p link-local drop dst=" MACSTR "\n",
+		       MAC2STR(eth->h_dest));
+		return 0;
+	}
 
 	if (proto == htons(ETH_P_ARP) &&
 	    moal_bridge_arp_is_for_self(br, skb, l3_off)) {
@@ -411,6 +431,14 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	/* EAPOL: never forward */
 	if (skb->protocol == htons(ETH_P_PAE))
 		return RX_HANDLER_PASS;
+
+	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */
+	if (moal_bridge_is_link_local(eth->h_dest)) {
+		atomic_long_inc(&br->peer_to_wlan.dropped);
+		BR_DBG("p2w link-local drop dst=" MACSTR "\n",
+		       MAC2STR(eth->h_dest));
+		return RX_HANDLER_PASS;
+	}
 
 	/* 유니캐스트: peer(eth0) 자기 MAC → clone 불필요, 커널 스택만 처리
 	 * (init에서 캐시된 br->peer_mac 사용 — peer_dev->dev_addr pointer chase 제거) */

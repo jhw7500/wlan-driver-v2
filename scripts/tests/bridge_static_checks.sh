@@ -244,4 +244,16 @@ printf '%s\n' "$W2P_FAST_BLOCK" | \
   awk '/l3_off = VLAN_ETH_HLEN/ {seen_vlan=1} seen_vlan && /ETH_P_PAE/ {found=1} END {exit !found}' || \
   fail "rx_fast must check EAPOL after VLAN unwrap (not before)"
 
+# --- v4 E1: 802.1D bridge group (link-local) never forwarded ---
+grep -q 'moal_bridge_is_link_local' "$BRIDGE_C" || \
+  fail "802.1D link-local filter helper (moal_bridge_is_link_local) missing"
+grep -q 'IEEE 802.1D' "$BRIDGE_C" || \
+  fail "IEEE 802.1D bridge group drop comment missing from moal_bridge.c"
+printf '%s\n' "$W2P_FAST_BLOCK" | \
+  grep -q 'moal_bridge_is_link_local' || \
+  fail "rx_fast must drop 802.1D link-local frames"
+printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
+  grep -q 'moal_bridge_is_link_local' || \
+  fail "peer_rx_handler must drop 802.1D link-local frames"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
