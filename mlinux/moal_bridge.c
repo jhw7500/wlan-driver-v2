@@ -26,6 +26,10 @@ extern int bridge_keepalive_ms;
 		printk(KERN_INFO "bridge: " fmt, ##__VA_ARGS__); \
 } while (0)
 
+/* Forward declarations for helpers used by the w2p/p2w kthreads before
+ * their definitions appear later in the file. */
+static inline bool moal_bridge_dev_ready(const struct net_device *dev);
+
 /*
  * ---------- Keepalive Timer ----------
  *
@@ -279,8 +283,11 @@ static inline struct sk_buff *moal_bridge_ensure_headroom(struct sk_buff *skb)
  */
 static inline bool moal_bridge_dev_ready(const struct net_device *dev)
 {
-	return dev && netif_running(dev) && netif_carrier_ok(dev) &&
-	       READ_ONCE(dev->reg_state) == NETREG_REGISTERED;
+	/* reg_state is an enum; READ_ONCE's __native_word check rejects it.
+	 * Lifecycle changes are RTNL-serialized, so a plain read is fine. */
+	if (!dev || !netif_running(dev) || !netif_carrier_ok(dev))
+		return false;
+	return dev->reg_state == NETREG_REGISTERED;
 }
 
 /**
