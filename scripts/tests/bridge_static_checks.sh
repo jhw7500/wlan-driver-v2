@@ -273,4 +273,14 @@ SCHED_BLOCK="$(grep -n -A40 -m1 'moal_bridge_apply_sched' "$BRIDGE_C")"
 printf '%s\n' "$SCHED_BLOCK" | grep -q 'pr_warn_once' || \
   fail "moal_bridge_apply_sched must pr_warn_once on scheduler API failure"
 
+# --- v4 E4: skb headroom guard before skb_push(ETH_HLEN) ---
+grep -q 'moal_bridge_ensure_headroom' "$BRIDGE_C" || \
+  fail "headroom helper (moal_bridge_ensure_headroom) missing"
+grep -q 'skb_realloc_headroom' "$BRIDGE_C" || \
+  fail "helper must use skb_realloc_headroom on headroom underflow"
+HEADROOM_COUNT=$(grep -c 'moal_bridge_ensure_headroom' "$BRIDGE_C" || true)
+if [ "$HEADROOM_COUNT" -lt 4 ]; then
+  fail "moal_bridge_ensure_headroom should guard all 3 skb_push sites (got $HEADROOM_COUNT, need ≥4 = helper + 3 uses)"
+fi
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'

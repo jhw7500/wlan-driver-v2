@@ -249,6 +249,26 @@ static __be32 moal_bridge_get_ipv4(struct net_device *dev)
  */
 
 /**
+ * moal_bridge_ensure_headroom - guarantee ETH_HLEN headroom for skb_push
+ * The p2w forwarding path calls skb_push(skb, ETH_HLEN) after
+ * eth_type_trans stripped the Ethernet header. Normally headroom is
+ * sufficient, but fragmented / reallocated skbs from the peer side may
+ * arrive with < ETH_HLEN headroom; skb_push would then underflow data.
+ * Reallocate headroom (frees old skb, returns new) and bump oom_drops
+ * if the atomic alloc fails.
+ */
+static inline struct sk_buff *moal_bridge_ensure_headroom(struct sk_buff *skb)
+{
+	struct sk_buff *nskb;
+
+	if (likely(skb_headroom(skb) >= ETH_HLEN))
+		return skb;
+	nskb = skb_realloc_headroom(skb, ETH_HLEN);
+	kfree_skb(skb);
+	return nskb;
+}
+
+/**
  * moal_bridge_dev_ready - egress netdev is usable for forwarding
  * Combines admin-up (netif_running), link-up (netif_carrier_ok), and
  * still-registered (reg_state == NETREG_REGISTERED) checks into one gate.
@@ -503,6 +523,13 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			*pskb = NULL;
 			return RX_HANDLER_CONSUMED;
 		}
+		skb = moal_bridge_ensure_headroom(skb);
+		if (!skb) {
+			atomic_dec(&br->p2w_qlen);
+			atomic_long_inc(&br->peer_to_wlan.oom_drops);
+			*pskb = NULL;
+			return RX_HANDLER_CONSUMED;
+		}
 		skb->dev = br->wlan_dev;
 		skb_push(skb, ETH_HLEN);
 		skb_queue_tail(&br->p2w_queue, skb);
@@ -525,6 +552,12 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 				atomic_dec(&br->p2w_qlen);
 				atomic_long_inc(&br->peer_to_wlan.dropped);
 				dev_kfree_skb_any(skb2);
+				return RX_HANDLER_PASS;
+			}
+			skb2 = moal_bridge_ensure_headroom(skb2);
+			if (!skb2) {
+				atomic_dec(&br->p2w_qlen);
+				atomic_long_inc(&br->peer_to_wlan.oom_drops);
 				return RX_HANDLER_PASS;
 			}
 			skb2->dev = br->wlan_dev;
@@ -589,6 +622,12 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		atomic_dec(&br->p2w_qlen);
 		atomic_long_inc(&br->peer_to_wlan.dropped);
 		dev_kfree_skb_any(skb);
+		return 0;
+	}
+	skb = moal_bridge_ensure_headroom(skb);
+	if (!skb) {
+		atomic_dec(&br->p2w_qlen);
+		atomic_long_inc(&br->peer_to_wlan.oom_drops);
 		return 0;
 	}
 	skb->dev = br->wlan_dev;
