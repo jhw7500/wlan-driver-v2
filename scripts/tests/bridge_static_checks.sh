@@ -268,4 +268,9 @@ grep -q 'netif_carrier_ok' "$BRIDGE_C" || \
 grep -q 'NETREG_REGISTERED' "$BRIDGE_C" || \
   fail "dev_ready helper must gate on NETREG_REGISTERED"
 
+# --- v4 E3: sched_setscheduler / setattr failures surface via pr_warn_once ---
+SCHED_BLOCK="$(grep -n -A40 -m1 'moal_bridge_apply_sched' "$BRIDGE_C")"
+printf '%s\n' "$SCHED_BLOCK" | grep -q 'pr_warn_once' || \
+  fail "moal_bridge_apply_sched must pr_warn_once on scheduler API failure"
+
 printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'

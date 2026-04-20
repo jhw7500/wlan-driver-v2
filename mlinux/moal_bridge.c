@@ -90,18 +90,26 @@ static void moal_bridge_apply_sched(moal_handle *handle)
 	LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 18)
 	{
 		struct sched_param sp;
+		int ret;
 
 		sp.sched_priority = prio;
-		sched_setscheduler(current, policy, &sp);
+		ret = sched_setscheduler(current, policy, &sp);
+		if (ret)
+			pr_warn_once("bridge: sched_setscheduler(policy=%d, prio=%d) failed: %d — thread may run at default priority\n",
+				     policy, prio, ret);
 	}
 #elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
 	{
 		struct sched_attr attr;
+		int ret;
 
 		attr.sched_policy = policy;
 		attr.sched_nice = DEF_NICE;
 		attr.sched_priority = prio;
-		sched_setattr_nocheck(current, &attr);
+		ret = sched_setattr_nocheck(current, &attr);
+		if (ret)
+			pr_warn_once("bridge: sched_setattr_nocheck(policy=%d, prio=%d) failed: %d — thread may run at default priority\n",
+				     policy, prio, ret);
 	}
 #else
 	sched_set_fifo(current);
