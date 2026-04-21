@@ -2066,6 +2066,18 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 		goto done;
 	}
 
+	/* IA-M10: hoist bridge RCU-deref outside the A-MSDU subframe loop.
+	 * A single rcu_read_lock spans the whole batch (bounded ~16 subframes,
+	 * non-sleeping ops only) — eliminates N× rcu_dereference + atomic_read
+	 * per burst. Cached pointer remains valid for the entire critical
+	 * section; deinit's rcu_assign_pointer(NULL) + synchronize_rcu waits
+	 * until this read side exits before kfree(br). */
+	struct moal_bridge *br_amsdu = NULL;
+	int br_amsdu_active = 0;
+	rcu_read_lock();
+	br_amsdu = rcu_dereference(handle->bridge);
+	br_amsdu_active = br_amsdu && atomic_read(&br_amsdu->active);
+
 	while (skb != frame) {
 		__be16 len;
 		u8 padding;
@@ -2134,23 +2146,11 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			continue;
 		}
 		/* L2 bridge fast path (A-MSDU sub-frame, before eth_type_trans).
-		 * RCU-protected pointer read — see moal_bridge_deinit for the
-		 * matching rcu_assign_pointer(NULL) + synchronize_rcu.
-		 * If bridge consumed the subframe (non-self unicast IPv4),
-		 * skip stack delivery for this iteration. */
-		{
-			struct moal_bridge *br;
-			int br_consumed = 0;
-
-			rcu_read_lock();
-			br = rcu_dereference(handle->bridge);
-			if (unlikely(br) && atomic_read(&br->active))
-				br_consumed = moal_bridge_rx_fast(
-					br, frame, priv);
-			rcu_read_unlock();
-			if (br_consumed)
-				continue;
-		}
+		 * IA-M10: uses hoisted br_amsdu cache under a single RCU read
+		 * critical section instead of re-dereferencing per subframe. */
+		if (br_amsdu_active &&
+		    moal_bridge_rx_fast(br_amsdu, frame, priv))
+			continue;
 
 		frame->protocol = eth_type_trans(frame, netdev);
 		frame->ip_summed = CHECKSUM_NONE;

@@ -13,6 +13,7 @@
 #include <linux/ktime.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
+#include <linux/freezer.h>
 
 /** DBDC guard: only one bridge instance allowed globally */
 static atomic_t bridge_instance_active = ATOMIC_INIT(0);
@@ -135,9 +136,13 @@ static int moal_bridge_w2p_thread_fn(void *data)
 	int cnt;
 
 	moal_bridge_apply_sched((moal_handle *)br->handle);
+	/* F2: join freezer so PM suspend halts this kthread cleanly instead of
+	 * blocking on SDIO I/O during system sleep. wait_event_freezable will
+	 * handle the freezer_do_not_count/freezer_count transitions. */
+	set_freezable();
 
 	while (!kthread_should_stop()) {
-		wait_event_interruptible(br->w2p_wait,
+		wait_event_freezable(br->w2p_wait,
 			!skb_queue_empty(&br->w2p_queue) ||
 			kthread_should_stop());
 
@@ -195,9 +200,11 @@ static int moal_bridge_p2w_thread_fn(void *data)
 	 * 정책/우선순위는 wq_sched_policy/wq_sched_prio로 튜닝 가능;
 	 * 기본값(0, 0) 또는 SCHED_FIFO/RR 외 값은 SCHED_FIFO로 폴백. */
 	moal_bridge_apply_sched((moal_handle *)br->handle);
+	/* F2: freezer join — same rationale as w2p_thread_fn. */
+	set_freezable();
 
 	while (!kthread_should_stop()) {
-		wait_event_interruptible(br->p2w_wait,
+		wait_event_freezable(br->p2w_wait,
 			!skb_queue_empty(&br->p2w_queue) ||
 			kthread_should_stop());
 
@@ -497,8 +504,11 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected))
 		return RX_HANDLER_PASS;
 
-	/* EAPOL: never forward */
-	if (skb->protocol == htons(ETH_P_PAE))
+	/* EAPOL: never forward. D8: VLAN-aware to match rx_fast(D7) policy —
+	 * vlan_get_protocol unwraps outer 802.1Q/AD tag (hwaccel or in-band)
+	 * so a VLAN-tagged EAPOL from peer_dev is also caught and passed to
+	 * the kernel stack instead of being bridged to wlan. */
+	if (vlan_get_protocol(skb) == htons(ETH_P_PAE))
 		return RX_HANDLER_PASS;
 
 	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */

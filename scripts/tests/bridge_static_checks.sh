@@ -210,9 +210,17 @@ printf '%s\n' "$W2P_FAST_BLOCK2" | \
   grep -Eq 'return[[:space:]]+1;\s*/\*.*consumed' || \
   fail "rx_fast must return 1 for consumed (non-self unicast)"
 
-grep -Eq 'if \(consumed\)[[:space:]]*\{?.*continue;' "$SHIM_C" || \
-grep -Eq 'if \(br_consumed\)' "$SHIM_C" || \
-  fail "A-MSDU loop must honor rx_fast consumed return"
+# v6 IA-M10: cached pattern 'if (br_amsdu_active && moal_bridge_rx_fast(...)) continue;'
+# 가 2줄로 나뉘어 있으므로 multiline 모드(-Pz)로 검사. legacy br_consumed 패턴도 대체 허용.
+if grep -Pzoq 'if \(br_amsdu_active[\s\S]{0,60}moal_bridge_rx_fast' "$SHIM_C" 2>/dev/null; then
+  :
+elif grep -Eq 'if \(consumed\)[[:space:]]*\{?.*continue;' "$SHIM_C"; then
+  :
+elif grep -Eq 'if \(br_consumed\)' "$SHIM_C"; then
+  :
+else
+  fail "A-MSDU loop must honor rx_fast consumed return (br_amsdu_active cache or legacy br_consumed)"
+fi
 
 # --- v3 D4: use cached peer_mac in rx_handler ---
 P2W_RX_HANDLER_BLOCK2="$(grep -n -A200 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
@@ -323,6 +331,45 @@ fi
 if [ "$SYNC_RCU_LINE" -le "$RCU_NULL_LINE" ] || \
    [ "$SYNC_RCU_LINE" -ge "$KTHREAD_W2P_LINE" ]; then
   fail "F1: synchronize_rcu() must sit between rcu_assign_pointer(NULL) and kthread_stop (rcu=$RCU_NULL_LINE sync=$SYNC_RCU_LINE w2p=$KTHREAD_W2P_LINE)"
+fi
+
+# --- v6 F2: kthread freezer join + wait_event_freezable ---
+# PM suspend 시 w2p/p2w kthread 가 SDIO IO를 물고 멈추지 않도록 freezer 등록.
+grep -q '#include <linux/freezer.h>' "$BRIDGE_C" || \
+  fail "F2: moal_bridge.c must #include <linux/freezer.h>"
+FREEZABLE_COUNT=$(grep -c 'set_freezable();' "$BRIDGE_C" || true)
+if [ "$FREEZABLE_COUNT" -lt 2 ]; then
+  fail "F2: set_freezable() expected in both w2p_thread_fn and p2w_thread_fn (got $FREEZABLE_COUNT)"
+fi
+WAIT_FREEZE_COUNT=$(grep -c 'wait_event_freezable' "$BRIDGE_C" || true)
+if [ "$WAIT_FREEZE_COUNT" -lt 2 ]; then
+  fail "F2: wait_event_freezable expected in both kthreads (got $WAIT_FREEZE_COUNT)"
+fi
+grep -q 'wait_event_interruptible(br->w2p_wait' "$BRIDGE_C" && \
+  fail "F2: w2p_thread_fn still uses wait_event_interruptible (should be _freezable)"
+grep -q 'wait_event_interruptible(br->p2w_wait' "$BRIDGE_C" && \
+  fail "F2: p2w_thread_fn still uses wait_event_interruptible (should be _freezable)"
+
+# --- v6 D8: peer_rx_handler uses VLAN-aware EAPOL detection ---
+P2W_RX_HANDLER_BLOCK3="$(grep -n -A200 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
+printf '%s\n' "$P2W_RX_HANDLER_BLOCK3" | \
+  grep -q 'vlan_get_protocol(skb) == htons(ETH_P_PAE)' || \
+  fail "D8: peer_rx_handler must use vlan_get_protocol for EAPOL detection (symmetry with rx_fast D7)"
+
+# --- v6 IA-M10: A-MSDU loop caches bridge pointer outside the subframe loop ---
+grep -q 'br_amsdu_active' "$SHIM_C" || \
+  fail "IA-M10: A-MSDU loop must hoist bridge pointer into br_amsdu cache"
+# rcu_read_lock must appear BEFORE 'while (skb != frame)' in recv_amsdu_packet
+AMSDU_FUNC_START=$(grep -n '^mlan_status moal_recv_amsdu_packet' "$SHIM_C" | head -1 | cut -d: -f1)
+if [ -n "$AMSDU_FUNC_START" ]; then
+  AMSDU_RCU_LOCK=$(awk -v s="$AMSDU_FUNC_START" 'NR > s && /rcu_read_lock\(\);/ { print NR; exit }' "$SHIM_C")
+  AMSDU_WHILE=$(awk -v s="$AMSDU_FUNC_START" 'NR > s && /while \(skb != frame\)/ { print NR; exit }' "$SHIM_C")
+  if [ -z "$AMSDU_RCU_LOCK" ] || [ -z "$AMSDU_WHILE" ]; then
+    fail "IA-M10: could not locate rcu_read_lock or while-loop in moal_recv_amsdu_packet"
+  fi
+  if [ "$AMSDU_RCU_LOCK" -ge "$AMSDU_WHILE" ]; then
+    fail "IA-M10: rcu_read_lock must precede A-MSDU 'while (skb != frame)' (rcu=$AMSDU_RCU_LOCK while=$AMSDU_WHILE)"
+  fi
 fi
 
 # Forbid plain br->peer_released access outside atomic_read / atomic_set wrappers
