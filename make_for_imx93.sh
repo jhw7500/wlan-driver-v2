@@ -1,4 +1,23 @@
 #!/bin/bash
+
+# ----------------------------------------------------------------------------
+# Static checks (bridge v2~v7 규칙) — 빌드 전 선제 검증.
+# 타겟 배포로 이어지는 워크플로우에서 "빌드가 성공" 자체가 의미있는 게이트
+# 이므로, 여기서 구조 규칙 위반을 잡아 cross-compile 낭비 및 배포 회귀
+# 차단.
+# 우회:  SKIP_STATIC_CHECK=1 ./make_for_imx93.sh
+# ----------------------------------------------------------------------------
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+STATIC_CHECK="$SCRIPT_DIR/scripts/tests/bridge_static_checks.sh"
+if [ -z "$SKIP_STATIC_CHECK" ] && [ -f "$STATIC_CHECK" ]; then
+    echo "make_for_imx93.sh: running static checks..."
+    if ! bash "$STATIC_CHECK"; then
+        echo "make_for_imx93.sh: static checks FAILED — aborting build" >&2
+        echo "  강제 우회 (권장 안 함): SKIP_STATIC_CHECK=1 $0" >&2
+        exit 1
+    fi
+fi
+
 [ "$SDK_LOC" ] || SDK_LOC=/shared/fsl-imx-wayland/6.6-nanbield
 #[ "$SDK_NAME" ] || SDK_NAME=cortexa53-crypto-poky-linux
 [ "$SDK_NAME" ] || SDK_NAME=armv8a-poky-linux
