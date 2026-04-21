@@ -2175,6 +2175,11 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 #endif
 		}
 	}
+	/* IA-M10 hotfix: balance rcu_read_lock() taken before the while loop.
+	 * Missing unlock leaks one read-side critical section per A-MSDU RX
+	 * call → any synchronize_rcu() elsewhere blocks forever (observed as
+	 * WiFi module load / shell login hang). */
+	rcu_read_unlock();
 	if (handle->tp_acnt.on) {
 		if (pmbuf->in_ts_sec)
 			moal_tp_accounting(handle, pmbuf, RX_TIME_PKT);
