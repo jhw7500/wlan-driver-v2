@@ -726,14 +726,14 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 		atomic_set(&br->active, 0);
 		/* Called with RTNL held by the netdev notifier chain, so
 		 * handler unregister / dev_set_promiscuity are safe here. */
-		if (!br->peer_released) {
+		if (!atomic_read(&br->peer_released)) {
 			if (br->use_packet_type)
 				dev_remove_pack(&br->peer_pt);
 			else
 				netdev_rx_handler_unregister(br->peer_dev);
 			dev_set_promiscuity(br->peer_dev, -1);
 			dev_put(br->peer_dev);
-			br->peer_released = 1;
+			atomic_set(&br->peer_released, 1);
 		}
 		break;
 	}
@@ -776,7 +776,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->peer_to_wlan.oom_drops),
 			 atomic_read(&br->p2w_qlen),
 			 atomic_read(&br->active),
-			 br->peer_released);
+			 atomic_read(&br->peer_released));
 }
 
 static struct kobj_attribute stats_attr = __ATTR_RO(stats);
@@ -1000,7 +1000,7 @@ void moal_bridge_deinit(void *phandle)
 
 	/* 3. ETH→WLAN 경로 해제 + promiscuous 해제 (RTNL 하에서).
 	 *    peer_released=1이면 NETDEV_UNREGISTER 경로에서 이미 정리됨. */
-	if (!br->peer_released) {
+	if (!atomic_read(&br->peer_released)) {
 		rtnl_lock();
 		if (br->use_packet_type)
 			dev_remove_pack(&br->peer_pt);
@@ -1010,9 +1010,19 @@ void moal_bridge_deinit(void *phandle)
 		rtnl_unlock();
 	}
 
-	/* 4. 진행 중인 패킷 완료 대기 */
+	/* 4. 진행 중인 rx_handler / packet_type / moal_recv_packet reader 배수.
+	 *    synchronize_net 은 net path 의 RCU reader 를 포함한다. */
 	synchronize_net();
 
+	/* 5. handle->bridge 공개 포인터를 먼저 NULL 로 치환하고 RCU drain.
+	 *    이 시점 이후 어떤 RX 경로도 br 을 새로 잡을 수 없으므로,
+	 *    kthread_stop 이후 reader 가 w2p/p2w 큐에 skb 를 밀어넣는
+	 *    race 가 원천 차단된다. synchronize_net 이 네트 경로를 드레인한
+	 *    뒤이지만, 이 단계를 kthread_stop 앞으로 당겨야 설계 의도가 명확. */
+	rcu_assign_pointer(handle->bridge, NULL);
+	synchronize_rcu();
+
+	/* 6. 전용 kthread 종료 후 남은 큐 purge. */
 	if (br->w2p_thread) {
 		kthread_stop(br->w2p_thread);
 		br->w2p_thread = NULL;
@@ -1025,7 +1035,7 @@ void moal_bridge_deinit(void *phandle)
 	}
 	skb_queue_purge(&br->p2w_queue);
 
-	/* 6. 통계 출력 */
+	/* 7. 통계 출력 */
 	PRINTM(MMSG, "bridge: %s <-> %s deactivated\n",
 	       br->wlan_dev->name, br->peer_dev->name);
 	PRINTM(MMSG, "bridge: w2p fwd=%ld drop=%ld err=%ld oom=%ld\n",
@@ -1039,15 +1049,11 @@ void moal_bridge_deinit(void *phandle)
 	       atomic_long_read(&br->peer_to_wlan.errors),
 	       atomic_long_read(&br->peer_to_wlan.oom_drops));
 
-	/* 7. peer 참조 반환 + 메모리 해제.
-	 *    rcu_assign_pointer + synchronize_rcu: readers holding an old br
-	 *    pointer must drain before kfree. */
-	rcu_assign_pointer(handle->bridge, NULL);
-	synchronize_rcu();
-	if (!br->peer_released)
+	/* 8. peer 참조 반환 + 메모리 해제. */
+	if (!atomic_read(&br->peer_released))
 		dev_put(br->peer_dev);
 	kfree(br);
 
-	/* 8. DBDC guard 해제 */
+	/* 9. DBDC guard 해제 */
 	atomic_set(&bridge_instance_active, 0);
 }

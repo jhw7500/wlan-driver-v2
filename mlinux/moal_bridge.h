@@ -70,8 +70,11 @@ struct moal_bridge {
 	int use_packet_type;
 	struct packet_type peer_pt;  /**< packet_type for fallback mode */
 
-	/** 1 when peer handler/ref already released via NETDEV_UNREGISTER */
-	int peer_released;
+	/** 1 when peer handler/ref already released via NETDEV_UNREGISTER.
+	 *  atomic_t — writer is the netdev notifier chain (RTNL/softirq),
+	 *  reader is deinit() (process context). atomic 로 SMP torn access
+	 *  를 차단한다. */
+	atomic_t peer_released;
 
 	/** Notifier for peer netdev events (DOWN/UNREGISTER) */
 	struct notifier_block netdev_nb;
