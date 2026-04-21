@@ -541,15 +541,16 @@ rx_handler 실패 경로(B7):
 | T-13 (v2) | sysfs stats 갱신 | `watch -n1 cat /sys/kernel/moal_bridge/stats` | — |
 | T-14 (v2) | keepalive 효과 | `bridge_keepalive_ms=0` vs `=1` latency 비교 | NFR-01 |
 
-### 9.2 성능 테스트
+### 9.2 성능 테스트 (latency 중심, CPU 측정은 스코프 제외)
 
 | ID | 테스트 | 도구 | SC |
 |----|--------|------|-----|
 | P-01 | TCP throughput | `iperf3 -t 60` | — |
 | P-02 | UDP throughput | `iperf3 -u -b 100M` | — |
-| P-03 | Latency | `ping -c 1000`, 분포 분석 | NFR-01 |
-| P-04 | CPU | `mpstat 1 60` | SC-05 |
-| P-05 | wbridge 대비 | P-01~P-04 비교 | SC-05 |
+| P-03 | Latency 분포 | `ping -c 1000 -i 0.01 -q`, avg/mdev/max 분석 | NFR-01 |
+| P-05 | wbridge 대비 | P-01~P-03 (throughput + latency) 비교 | SC-05 |
+
+> **Note**: 이전 v2 초안에 있던 P-04 CPU 사용량 측정은 스코프에서 제외. 본 드라이버의 설계 목적은 *latency 감소*이며 CPU 사용량 증가(keepalive hrtimer 등)는 감수 대상.
 
 ### 9.3 안정성 테스트
 
