@@ -372,6 +372,25 @@ if [ -n "$AMSDU_FUNC_START" ]; then
   fi
 fi
 
+# --- v7: RCU read-side lock/unlock balance (file-level) ---
+# 같은 파일 내 rcu_read_lock() 개수와 rcu_read_unlock() 개수가 일치해야 함.
+# 2026-04-21 IA-M10 hotfix(32a9129) 가 해결한 회귀(unlock 누락 → WiFi 로드 hang)
+# 같은 부류를 커밋 전 catch 하기 위한 규칙.
+check_rcu_balance() {
+  local file="$1"
+  local lock_cnt unlock_cnt
+  # Match only statement-form "\s* rcu_read_lock();" at line start.
+  # 주석 내부의 rcu_read_lock() 언급( " * ... rcu_read_lock() ...") 은
+  # 제외되어 false-positive 방지.
+  lock_cnt=$(grep -cE '^[[:space:]]*rcu_read_lock\(\);' "$file" || true)
+  unlock_cnt=$(grep -cE '^[[:space:]]*rcu_read_unlock\(\);' "$file" || true)
+  if [ "$lock_cnt" -ne "$unlock_cnt" ]; then
+    fail "RCU balance: $file rcu_read_lock=$lock_cnt rcu_read_unlock=$unlock_cnt — unbalanced"
+  fi
+}
+check_rcu_balance "$BRIDGE_C"
+check_rcu_balance "$SHIM_C"
+
 # Forbid plain br->peer_released access outside atomic_read / atomic_set wrappers
 # (sysfs PRINTM uses atomic_read, UNREG uses atomic_set, deinit uses atomic_read).
 PLAIN_PEER_RELEASED=$(grep -n 'br->peer_released' "$BRIDGE_C" \

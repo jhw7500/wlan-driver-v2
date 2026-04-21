@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# driver-bridge pre-commit hook
+# ------------------------------
+# 커밋 전에 scripts/tests/bridge_static_checks.sh 를 실행하여
+# 구조적 회귀(RCU lock/unlock 불균형, peer_released atomic 위반,
+# F1 deinit ordering 위반 등) 를 차단한다.
+#
+# 활성화:
+#   git -C <repo> config core.hooksPath scripts/git-hooks
+#
+# 일회성 우회 (권장하지 않음):
+#   git commit --no-verify
+#
+# 모든 static check 규칙은 bridge_static_checks.sh 의 v2~v7 블록에 정의.
+
+set -e
+
+REPO="$(git rev-parse --show-toplevel)"
+SCRIPT="$REPO/scripts/tests/bridge_static_checks.sh"
+
+if [ ! -f "$SCRIPT" ]; then
+  echo "pre-commit: $SCRIPT not found — skipping static checks."
+  exit 0
+fi
+
+echo "pre-commit: running bridge_static_checks.sh ..."
+if ! bash "$SCRIPT"; then
+  echo ""
+  echo "pre-commit: bridge static checks FAILED — commit aborted."
+  echo "  우회 (권장 안 함): git commit --no-verify"
+  echo "  규칙 확인: less $SCRIPT"
+  exit 1
+fi
