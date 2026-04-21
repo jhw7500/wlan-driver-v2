@@ -112,8 +112,8 @@ printf '%s\n' "$DBDC_BLOCK" | grep -q 'MERROR' || \
   fail "DBDC double-init log level must be MERROR"
 
 # --- v2 B1: NETDEV_UNREGISTER handler/ref release ---
-grep -Eq 'int\s+peer_released' "$ROOT/mlinux/moal_bridge.h" || \
-  fail "peer_released flag missing from struct moal_bridge"
+grep -Eq 'atomic_t\s+peer_released' "$ROOT/mlinux/moal_bridge.h" || \
+  fail "peer_released must be atomic_t (F1) in struct moal_bridge"
 
 UNREG_BLOCK="$(grep -n -A20 -m1 'case NETDEV_UNREGISTER:' "$BRIDGE_C")"
 printf '%s\n' "$UNREG_BLOCK" | \
@@ -123,12 +123,12 @@ printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_set_promiscuity(br->peer_dev, -1)' |
   fail "NETDEV_UNREGISTER branch must drop promisc"
 printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_put(br->peer_dev)' || \
   fail "NETDEV_UNREGISTER branch must dev_put peer"
-printf '%s\n' "$UNREG_BLOCK" | grep -q 'br->peer_released = 1' || \
-  fail "NETDEV_UNREGISTER branch must set peer_released"
+printf '%s\n' "$UNREG_BLOCK" | grep -q 'atomic_set(&br->peer_released, 1)' || \
+  fail "NETDEV_UNREGISTER branch must atomic_set peer_released = 1 (F1)"
 
 DEINIT_BLOCK="$(grep -n -A90 -m1 'void moal_bridge_deinit' "$BRIDGE_C")"
-printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!br->peer_released)' || \
-  fail "deinit must skip handler/ref release when peer already released"
+printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!atomic_read(&br->peer_released))' || \
+  fail "deinit must use atomic_read(&peer_released) for gate check (F1)"
 
 # --- v2 B2: atomic qlen hard cap ---
 grep -Eq 'atomic_t\s+w2p_qlen' "$ROOT/mlinux/moal_bridge.h" || \
@@ -298,4 +298,41 @@ grep -q 'moal_bridge_sysfs_init(br)' "$BRIDGE_C" || \
 grep -q 'moal_bridge_sysfs_deinit()' "$BRIDGE_C" || \
   fail "moal_bridge_deinit must call sysfs_deinit"
 
-printf 'PASS: keepalive config, bounded bridge queues, and worker accounting are enforced\n'
+# --- v5 F1: atomic peer_released + RCU drain before kthread_stop ---
+# Enforce deinit order: rcu_assign_pointer(handle->bridge, NULL) + synchronize_rcu()
+# must appear BEFORE kthread_stop(br->w2p/p2w_thread). This closes the race
+# where a RCU reader still holding the old br pointer could skb_queue_tail
+# into a queue whose kthread has already been stopped.
+# Scope every lookup to lines AFTER moal_bridge_deinit() starts — otherwise
+# init()'s rollback cleanup (stops a partially-created kthread on error) would
+# shadow the deinit occurrence and the ordering check would be nonsensical.
+DEINIT_START=$(grep -n '^void moal_bridge_deinit' "$BRIDGE_C" | head -1 | cut -d: -f1)
+[ -n "$DEINIT_START" ] || fail "F1: moal_bridge_deinit() not found"
+RCU_NULL_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /rcu_assign_pointer\(handle->bridge, NULL\)/ { print NR; exit }' "$BRIDGE_C")
+SYNC_RCU_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /^[[:space:]]*synchronize_rcu\(\);/ { print NR; exit }' "$BRIDGE_C")
+KTHREAD_W2P_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /kthread_stop\(br->w2p_thread\)/ { print NR; exit }' "$BRIDGE_C")
+KTHREAD_P2W_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /kthread_stop\(br->p2w_thread\)/ { print NR; exit }' "$BRIDGE_C")
+if [ -z "$RCU_NULL_LINE" ] || [ -z "$SYNC_RCU_LINE" ] || \
+   [ -z "$KTHREAD_W2P_LINE" ] || [ -z "$KTHREAD_P2W_LINE" ]; then
+  fail "F1: required deinit statements missing (rcu_assign NULL / synchronize_rcu / kthread_stop w2p+p2w)"
+fi
+if [ "$RCU_NULL_LINE" -ge "$KTHREAD_W2P_LINE" ] || \
+   [ "$RCU_NULL_LINE" -ge "$KTHREAD_P2W_LINE" ]; then
+  fail "F1: rcu_assign_pointer(handle->bridge, NULL) must appear BEFORE kthread_stop (rcu=$RCU_NULL_LINE w2p=$KTHREAD_W2P_LINE p2w=$KTHREAD_P2W_LINE)"
+fi
+if [ "$SYNC_RCU_LINE" -le "$RCU_NULL_LINE" ] || \
+   [ "$SYNC_RCU_LINE" -ge "$KTHREAD_W2P_LINE" ]; then
+  fail "F1: synchronize_rcu() must sit between rcu_assign_pointer(NULL) and kthread_stop (rcu=$RCU_NULL_LINE sync=$SYNC_RCU_LINE w2p=$KTHREAD_W2P_LINE)"
+fi
+
+# Forbid plain br->peer_released access outside atomic_read / atomic_set wrappers
+# (sysfs PRINTM uses atomic_read, UNREG uses atomic_set, deinit uses atomic_read).
+PLAIN_PEER_RELEASED=$(grep -n 'br->peer_released' "$BRIDGE_C" \
+  | grep -Ev 'atomic_read\(&br->peer_released\)|atomic_set\(&br->peer_released,' \
+  || true)
+if [ -n "$PLAIN_PEER_RELEASED" ]; then
+  printf 'F1: plain br->peer_released access (must wrap atomic):\n%s\n' "$PLAIN_PEER_RELEASED" >&2
+  exit 1
+fi
+
+printf 'PASS: keepalive, bounded queues, worker accounting, F1 RCU drain ordering + atomic peer_released enforced\n'
