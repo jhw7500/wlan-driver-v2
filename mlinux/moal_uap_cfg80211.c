@@ -582,7 +582,10 @@ static int woal_deauth_assoc_station(moal_private *priv, const u8 *mac_addr,
 		LEAVE();
 		return -EINVAL;
 	}
-#if KERNEL_VERSION(3, 8, 0) <= CFG80211_VERSION_CODE
+#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+	if (moal_extflg_isset(priv->phandle, EXT_HOST_MLME))
+		cfg80211_del_sta(priv->netdev->ieee80211_ptr, mac_addr, GFP_KERNEL);
+#elif KERNEL_VERSION(3, 8, 0) <= CFG80211_VERSION_CODE
 	if (moal_extflg_isset(priv->phandle, EXT_HOST_MLME))
 		cfg80211_del_sta(priv->netdev, mac_addr, GFP_KERNEL);
 #endif
@@ -4288,7 +4291,12 @@ done:
  * @return                0 -- success, otherwise fail
  */
 #endif
-int woal_cfg80211_del_station(struct wiphy *wiphy, struct net_device *dev,
+int woal_cfg80211_del_station(struct wiphy *wiphy,
+#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+			      struct wireless_dev *wdev,
+#else
+			      struct net_device *dev,
+#endif
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 19, 0)
 			      struct station_del_parameters *param)
 #else
@@ -4303,7 +4311,11 @@ int woal_cfg80211_del_station(struct wiphy *wiphy, struct net_device *dev,
 	const u8 *mac_addr = NULL;
 #endif
 	u16 reason_code = REASON_CODE_DEAUTH_LEAVING;
+#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+	moal_private *priv = (moal_private *)woal_get_netdev_priv(wdev->netdev);
+#else
 	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
+#endif
 #ifdef UAP_SUPPORT
 #if defined(UAP_CFG80211) || defined(STA_CFG80211)
 	int i;
