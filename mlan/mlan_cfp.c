@@ -6,7 +6,7 @@
  *  related code
  *
  *
- *  Copyright 2009-2025 NXP
+ *  Copyright 2009-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -4550,7 +4550,7 @@ static mlan_status wlan_get_6g_cfpinfo(pmlan_adapter pmadapter,
 		c.is6g_present = 1;
 		c.rows_6g = cfp_no_6g;
 		c.cols_6g = pmadapter->tx_power_table_6g_cols;
-		size += pmadapter->tx_power_table_6g_size;
+		size += (c.rows_6g * c.cols_6g);
 	}
 	/* Check information buffer length of MLAN IOCTL */
 	if (pioctl_req->buf_len < size) {
@@ -4578,9 +4578,8 @@ static mlan_status wlan_get_6g_cfpinfo(pmlan_adapter pmadapter,
 	if (pmadapter->tx_power_table_6g) {
 		memcpy_ext(pmadapter, req_buf + len,
 			   pmadapter->tx_power_table_6g,
-			   pmadapter->tx_power_table_6g_size,
-			   pmadapter->tx_power_table_6g_size);
-		len += pmadapter->tx_power_table_6g_size;
+			   (c.rows_6g * c.cols_6g), (c.rows_6g * c.cols_6g));
+		len += (c.rows_6g * c.cols_6g);
 	}
 out:
 	if (pioctl_req)

@@ -586,7 +586,7 @@ mlan_status mlan_register(pmlan_device pmdevice, t_void **ppmlan_adapter)
 
 #ifdef SECURE_HOST
 	pmadapter->shc_secure_host = pmdevice->secure_host;
-	if (pmadapter->second_mac && pmadapter->shc_secure_host) {
+	if (pmadapter->shc_secure_host && pmadapter->second_mac) {
 		if (pcb->moal_secure_host_derive_traffic_keys(
 			    pmadapter->pmoal_handle) ||
 		    pcb->moal_secure_host_data_ctx_init(
@@ -1372,8 +1372,8 @@ static void mlan_refill_rx_ring(t_void *padapter)
 				 pmadapter->callbacks.moal_spin_lock,
 				 pmadapter->callbacks.moal_spin_unlock);
 	while (refill_index != MLAN_INVALID_TXRX_INDEX_VAL) {
-		if (MLAN_STATUS_SUCCESS ==
-		    wlan_pcie_reattach_pmbuf(pmadapter, refill_index, &pmbuf)) {
+		if (wlan_pcie_reattach_pmbuf(pmadapter, refill_index, &pmbuf) ==
+		    MLAN_STATUS_SUCCESS) {
 			reattach_fail = 0;
 			/* Update WR PTR after Reattach success */
 			wlan_pcie_rx_ring_move_rdwrptr(pmadapter, refill_index,
@@ -1423,6 +1423,7 @@ static void mlan_refill_rx_ring(t_void *padapter)
 static t_void wlan_free_txrx(pmlan_adapter pmadapter)
 {
 	t_u8 i;
+
 	for (i = 0; i < pmadapter->priv_num; i++) {
 		if (pmadapter->priv[i])
 			wlan_clean_txrx(pmadapter->priv[i]);
@@ -2066,7 +2067,6 @@ mlan_status mlan_recv(t_void *padapter, pmlan_buffer pmbuf, t_u32 port)
 
 	MASSERT(len >= MLAN_TYPE_LEN);
 	recv_type = read_u32_unaligned(pmadapter, pbuf);
-	;
 	recv_type = wlan_le32_to_cpu(recv_type);
 	pbuf += MLAN_TYPE_LEN;
 	len -= MLAN_TYPE_LEN;

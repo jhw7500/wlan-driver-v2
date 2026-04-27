@@ -4,7 +4,7 @@
  *  @brief This file contains the functions for 11ax related features.
  *
  *
- *  Copyright 2018-2022, 2025 NXP
+ *  Copyright 2018-2022, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -653,6 +653,7 @@ t_u8 wlan_get_6g_ap_bandconfig(BSSDescriptor_t *pbss_desc,
 	IEEEtypes_HeOp_t *phe_op_info;
 	IEEEtypes_He6GOpInfo_t *phe_6g_op_info;
 	t_u8 ie_len = HE_OP_INFO_IE_FIX_LEN;
+
 	if (!pbss_desc->phe_oprat)
 		return band_width;
 	phe_op_info = (IEEEtypes_HeOp_t *)pbss_desc->phe_oprat;
@@ -684,7 +685,8 @@ t_u8 wlan_get_6g_ap_bandconfig(BSSDescriptor_t *pbss_desc,
 		}
 		break;
 	case BW_80MHZ:
-	/* TODO: Use CHAN_BW_80MHZ until the support for 160MHz gets added */
+		/* TODO: Use CHAN_BW_80MHZ until the support for 160MHz gets
+		 * added */
 	case BW_160MHZ:
 		band_width = CHAN_BW_80MHZ;
 		break;

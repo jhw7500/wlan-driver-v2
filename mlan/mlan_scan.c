@@ -5570,7 +5570,7 @@ static t_bool wlan_active_scan_req_for_passive_chan(mlan_private *pmpriv,
 		PRINTM(MCMND, "active scan request for passive channel %d\n",
 		       id);
 		if (wlan_scan_networks(pmpriv, pioctl_buf, user_scan_cfg) !=
-		    MLAN_STATUS_SUCCESS)
+		    MLAN_STATUS_SUCCESS) {
 			goto done;
 		ret = MTRUE;
 	}
@@ -5634,8 +5634,8 @@ static t_bool wlan_scan_6g_network(mlan_private *pmpriv,
 	while (pcoloc_ap &&
 	       pcoloc_ap != (wlan_6e_coloc_ap_t *)&pmadapter->coloc_ap_list) {
 		PRINTM(MCMND,
-		       "Colocated AP(#%02d): " MACSTR ", "
-		       "SSID[%s], Short-SSID[0x%0x], Operating Class[%d], Channel Number[%d], BSS parameters[0x%0x]\n",
+		       "Colocated AP(#%02d): " MACSTR
+		       ", SSID[%s], Short-SSID[0x%0x], Operating Class[%d], Channel Number[%d], BSS parameters[0x%0x]\n",
 		       num++, MAC2STR(pcoloc_ap->ap_info.bssid),
 		       pcoloc_ap->ap_info.ssid.ssid,
 		       pcoloc_ap->ap_info.short_ssid,
@@ -7181,7 +7181,8 @@ static t_u32 wlan_gen_new_ie(mlan_private *pmpriv, t_u8 *ie, t_u32 ie_len,
 				     &pos, new_ie, new_ie_len)) <= 0)
 				return 0;
 			/* Safe: sub pointer and length validated by
-			 * wlan_find_elem_match with bounds checking */
+			 * wlan_find_elem_match with bounds checking
+			 */
 			// coverity[overflow_sink:SUPPRESS]
 			sub = wlan_find_elem_match(
 				pmadapter, id, sub->data + sub->ieee_hdr.len,
@@ -7344,7 +7345,8 @@ static void wlan_gen_non_trans_bssid_profile(mlan_private *pmpriv,
 
 		/* Allocate the beacon buffer for new entry */
 		/* Safe: ie_len is validated beacon buffer size minus fixed
-		 * header, allocation size is controlled */
+		 * header, allocation size is controlled
+		 */
 		// coverity[overflow_sink:SUPPRESS]
 		ret = pcb->moal_malloc(pmadapter->pmoal_handle, ie_len,
 				       MLAN_MEM_DEF, (t_u8 **)&pbeacon_buf);
@@ -7356,7 +7358,8 @@ static void wlan_gen_non_trans_bssid_profile(mlan_private *pmpriv,
 
 		/** Generate the NonTx BSSID Beacon buffer */
 		/* Safe: ie_len matches allocated pbeacon_buf size,
-		 * wlan_gen_new_ie performs bounds checking */
+		 * wlan_gen_new_ie performs bounds checking
+		 */
 		// coverity[overflow_sink:SUPPRESS]
 		copied_len = wlan_gen_new_ie(
 			pmpriv, pbss_entry->pbeacon_buf + BEACON_FIX_SIZE,
@@ -7374,7 +7377,8 @@ static void wlan_gen_non_trans_bssid_profile(mlan_private *pmpriv,
 
 		/** Update NonTx BSS descriptor entries */
 		/* Safe: copied_len is validated return value from
-		 * wlan_gen_new_ie, pbeacon_buf size is controlled */
+		 * wlan_gen_new_ie, pbeacon_buf size is controlled
+		 */
 		// coverity[overflow_sink:SUPPRESS]
 		if (wlan_update_nonTx_bss_desc(
 			    pmadapter, pbss_entry, bss_new_entry, &pbeacon_buf,
@@ -7553,7 +7557,8 @@ wlan_merge_nontx_bssid_profile(pmlan_adapter pmadapter,
 
 	/* Check for split nonTxBssid in next MBSSID elem */
 	/* Safe: wlan_get_next_mbssid_profile validates buffer bounds and
-	 * returns valid pointer or NULL */
+	 * returns valid pointer or NULL
+	 */
 	// coverity[overflow_sink:SUPPRESS]
 	while ((pnext_mbssid = wlan_get_next_mbssid_profile(
 			pbss_entry, ie_len, pnext_mbssid, pnext_nontx_bssid)) !=
@@ -7582,7 +7587,8 @@ wlan_merge_nontx_bssid_profile(pmlan_adapter pmadapter,
 
 	LEAVE();
 	/* Safe: copied_len is accumulated from validated length checks
-	 * and never exceeds max_copy_len */
+	 * and never exceeds max_copy_len
+	 */
 	// coverity[overflow_sink:SUPPRESS]
 	return copied_len;
 }
@@ -7626,7 +7632,8 @@ static t_void wlan_parse_multi_bssid_ie(mlan_private *pmpriv,
 
 	/* Allocate memory for the merged profile */
 	/* Safe: max_copy_len is validated beacon buffer size, allocation size
-	 * is controlled and bounded */
+	 * is controlled and bounded
+	 */
 	// coverity[overflow_sink:SUPPRESS]
 	// coverity[overwrite_var:SUPPRESS]
 	ret = pcb->moal_malloc(pmadapter->pmoal_handle, max_copy_len,
@@ -7675,7 +7682,8 @@ static t_void wlan_parse_multi_bssid_ie(mlan_private *pmpriv,
 
 		/* Generate the NonTx BSSID entry and add to the scan table */
 		/* Safe: profile_len is validated by
-		 * wlan_merge_nontx_bssid_profile with bounds checking */
+		 * wlan_merge_nontx_bssid_profile with bounds checking
+		 */
 		// coverity[overflow_sink:SUPPRESS]
 		wlan_gen_non_trans_bssid_profile(
 			pmpriv, pbss_entry, pmerged_profile, profile_len,
@@ -8793,6 +8801,7 @@ mlan_status wlan_cmd_bgscan_config(mlan_private *pmpriv,
 		t_u8 oper_class = 1;
 		t_u32 usr_dot_11n_dev_cap;
 		t_u8 global_oper_class = 0;
+
 		if (pmpriv->media_connected) {
 			if (pmpriv->config_bands & BAND_A)
 				usr_dot_11n_dev_cap =

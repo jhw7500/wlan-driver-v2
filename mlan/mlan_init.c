@@ -5,7 +5,7 @@
  *  and HW.
  *
  *
- *  Copyright 2008-2021, 2025 NXP
+ *  Copyright 2008-2021, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -23,10 +23,9 @@
  */
 
 /********************************************************
- * Change log:
- * 10/13/2008: initial version
- * ******************************************************
- */
+Change log:
+10/13/2008: initial version
+********************************************************/
 
 #include "mlan.h"
 #ifdef STA_SUPPORT
@@ -1600,18 +1599,19 @@ mlan_status wlan_init_fw(pmlan_adapter pmadapter)
 			ret = MLAN_STATUS_FAILURE;
 			goto done;
 		}
-	}
 
-	if (((pmadapter->card_type) & 0xff) == CARD_TYPE_AW693
+		if (((pmadapter->card_type) & 0xff) == CARD_TYPE_AW693
 #ifdef SECURE_HOST
-	    && (!pmadapter->shc_secure_host)
+		    && (!pmadapter->shc_secure_host)
 #endif
-	) {
-		ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
-				       HostCmd_ACT_GEN_SET, 0, MNULL, MNULL);
-		if (ret) {
-			ret = MLAN_STATUS_FAILURE;
-			goto done;
+		) {
+			ret = wlan_prepare_cmd(priv, HostCmd_CMD_FUNC_INIT,
+					       HostCmd_ACT_GEN_SET, 0, MNULL,
+					       MNULL);
+			if (ret) {
+				ret = MLAN_STATUS_FAILURE;
+				goto done;
+			}
 		}
 	}
 #endif /* PCIE */
@@ -1775,8 +1775,10 @@ static void wlan_update_hw_spec(pmlan_adapter pmadapter)
 					user_he_cap_5g_tlv->he_mac_cap[0] &=
 						~HE_MAC_CAP_TWT_REQ_SUPPORT;
 				PRINTM(MERROR,
-				       "LHX|hw_spec=%d, user_2g_he_cap=%p\n", i,
-				       pmadapter->priv[i]->user_2g_he_cap);
+				       "LHX|hw_spec=%d, user_2g_he_cap=%08x\n",
+				       i,
+				       (t_u64)(&pmadapter->priv[i]
+							->user_2g_he_cap));
 				DBG_HEXDUMP(
 					MERROR, "LHX|hw_spec",
 					user_he_cap_2g_tlv->he_phy_cap,

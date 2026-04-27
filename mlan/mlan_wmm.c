@@ -4,7 +4,7 @@
  *  @brief This file contains functions for WMM.
  *
  *
- *  Copyright 2008-2021, 2025 NXP
+ *  Copyright 2008-2021, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -22,10 +22,9 @@
  */
 
 /********************************************************
- * Change log:
- * 10/24/2008: initial version
- * ******************************************************
- */
+Change log:
+10/24/2008: initial version
+********************************************************/
 
 #include "mlan.h"
 #ifdef STA_SUPPORT
@@ -1014,7 +1013,8 @@ static t_bool wlan_wmm_txq_count_donw(mlan_wmm_contention *txq_cont,
 		txq_cont->remaining_backoff -= duration;
 
 	/* Input values are bounded and subtraction logic ensures no integer
-	 * overflow during contention timer update. */
+	 * overflow during contention timer update.
+	 */
 	// coverity[integer_overflow:SUPPRESS]
 	return txq_cont->remaining_backoff == 0 &&
 	       txq_cont->remaining_aifs == 0;
@@ -1530,8 +1530,8 @@ static raListTbl *wlan_wmm_get_next_priolist_ptr(pmlan_adapter pmadapter,
 		ra_list = mlan->wmm.selected_ra_list;
 
 		if (ra_list == MNULL || ra_list->total_pkts == 0 ||
-		    MNULL == util_peek_list_nl(pmoal_handle,
-					       &ra_list->buf_head)) {
+		    util_peek_list_nl(pmoal_handle, &ra_list->buf_head) ==
+			    MNULL) {
 			ra_list = wlan_wmm_get_next_ra_list(pmadapter, mlan);
 		} else if (!wlan_wmm_process_ra_list_quoats(pmadapter, mlan,
 							    ra_list)) {
@@ -4215,7 +4215,8 @@ mlan_status wlan_ret_wmm_addts_req(pmlan_private pmpriv,
 				       S_DS_GEN);
 
 			/* Copy the TSPEC data include any extra IEs after the
-			 * TSPEC */
+			 * TSPEC
+			 */
 			// coverity[cert_arr30_c_violation: SUPPRESS]
 			memcpy_ext(pmpriv->adapter, paddts->ie_data,
 				   presp_addts->tspec_data, paddts->ie_data_len,

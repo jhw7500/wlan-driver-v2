@@ -4,7 +4,7 @@
  * @brief This file contains functions for debug proc file.
  *
  *
- * Copyright 2008-2025 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -22,10 +22,9 @@
  */
 
 /********************************************************
- * Change log:
- * 11/03/2008: initial version
- * ******************************************************
- */
+Change log:
+11/03/2008: initial version
+********************************************************/
 
 #include "moal_main.h"
 #ifdef USB
@@ -869,43 +868,55 @@ static int woal_log_read(struct seq_file *sfp, void *data)
 		seq_printf(sfp, "dot11TransmittedFragmentCount = %u\n",
 			   stats.tx_frag_cnt);
 		seq_puts(sfp, "dot11QosTransmittedFragmentCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_tx_frag_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosFailedCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_failed_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosRetryCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_retry_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosMultipleRetryCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_multi_retry_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosFrameDuplicateCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_frm_dup_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosRTSSuccessCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_rts_suc_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosRTSFailureCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_rts_failure_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosACKFailureCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_ack_failure_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosReceivedFragmentCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_rx_frag_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosTransmittedFrameCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_tx_frm_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosDiscardedFrameCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_discarded_frm_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosMPDUsReceivedCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_mpdus_rx_cnt[i]);
+		}
 		seq_puts(sfp, "\ndot11QosRetriesReceivedCount = ");
-		for (i = 0; i < 8; i++)
+		for (i = 0; i < 8; i++) {
 			seq_printf(sfp, "%u ", stats.qos_retries_rx_cnt[i]);
 		seq_printf(sfp,
 			   "\ndot11RSNAStatsCMACICVErrors = %u\n"

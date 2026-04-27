@@ -89,10 +89,9 @@ static struct ieee80211_rate cfg80211_rates[] = {
 };
 
 /** Kernel picks the min of the register max power and the regulatory max.
- * So to register the max chip capability the default max power for all channels
- * is set to 23 dbm which is the max of the typical max tx pwr out range among
- * all chips
- */
+  So to register the max chip capability the default max power for all channels
+  is set to 23 dbm which is the max of the typical max tx pwr out range among
+  all chips*/
 
 /** Channel definitions for 2 GHz to be advertised to cfg80211 */
 static struct ieee80211_channel cfg80211_channels_2ghz[] = {
@@ -1578,7 +1577,7 @@ int woal_cfg80211_change_virtual_intf(struct wiphy *wiphy,
 			bss_role = MLAN_BSS_ROLE_STA;
 			if (woal_cfg80211_bss_role_cfg(priv, MLAN_ACT_SET,
 						       &bss_role) !=
-			    MLAN_STATUS_SUCCESS)
+			    MLAN_STATUS_SUCCESS) {
 				PRINTM(MERROR,
 				       "%s: WLAN set bss role config failed.\n",
 				       __func__);
@@ -1985,7 +1984,7 @@ int woal_cfg80211_set_default_key(struct wiphy *wiphy,
 	memset(&bss_info, 0, sizeof(mlan_bss_info));
 	if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) {
 		if (woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &bss_info) !=
-		    MLAN_STATUS_SUCCESS)
+		    MLAN_STATUS_SUCCESS) {
 			PRINTM(MERROR, "%s: WLAN get bss info failed.\n",
 			       __func__);
 		if (!bss_info.wep_status) {
@@ -2140,7 +2139,7 @@ int woal_cfg80211_set_rekey_data(struct wiphy *wiphy, struct net_device *dev,
 	}
 
 	if (woal_set_rekey_data(priv, &rekey, MLAN_ACT_SET, MOAL_IOCTL_WAIT) !=
-	    MLAN_STATUS_SUCCESS)
+	    MLAN_STATUS_SUCCESS) {
 		ret = -EFAULT;
 
 	LEAVE();
@@ -2707,7 +2706,7 @@ done:
  * @brief Request the driver to get antenna configuration
  *
  * @param wiphy           A pointer to wiphy structure
- * @param radio_idx 	  Radio index
+ * @param radio_idx	  Radio index
  * @param tx_ant          Bitmaps of allowed antennas to use for TX
  * @param rx_ant          Bitmaps of allowed antennas to use for RX
  *
@@ -2778,7 +2777,7 @@ done:
  * @brief Request the driver to set antenna configuration
  *
  * @param wiphy           A pointer to wiphy structure
- * @param radio_idx 	  Radio index
+ * @param radio_idx	  Radio index
  * @param tx_ant          Bitmaps of allowed antennas to use for TX
  * @param rx_ant          Bitmaps of allowed antennas to use for RX
  *
@@ -3077,15 +3076,25 @@ static int woal_mgmt_tx(moal_private *priv, const u8 *buf, size_t len,
 	/* Remove 11ax IEs and reduce IE length if band support disabled
 	 * and assoc response includes 11ax IEs
 	 */
-	if (chan && ((chan->band == NL80211_BAND_2GHZ &&
-		      !(priv->phandle->fw_bands & BAND_GAX)) ||
-		     (chan->band == NL80211_BAND_5GHZ &&
-		      !(priv->phandle->fw_bands & BAND_AAX))
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-		     || (chan->band == NL80211_BAND_6GHZ &&
-			 !(priv->phandle->fw_bands & BAND_6G))
+	if (chan &&
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
+	    /* Kernel >= 4.7: Use NL80211_BAND_* enum */
+	    ((chan->band == NL80211_BAND_2GHZ &&
+	      !(priv->phandle->fw_bands & BAND_GAX)) ||
+	     (chan->band == NL80211_BAND_5GHZ &&
+	      !(priv->phandle->fw_bands & BAND_AAX))
+#else
+	    /* Kernel < 4.7 (including 4.4): Use IEEE80211_BAND_* enum */
+	    ((chan->band == IEEE80211_BAND_2GHZ &&
+	      !(priv->phandle->fw_bands & BAND_GAX)) ||
+	     (chan->band == IEEE80211_BAND_5GHZ &&
+	      !(priv->phandle->fw_bands & BAND_AAX))
 #endif
-			     )) {
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+	     || (chan->band == NL80211_BAND_6GHZ &&
+		 !(priv->phandle->fw_bands & BAND_6G))
+#endif
+		     )) {
 		fc = le16_to_cpu(
 			((const struct ieee80211_mgmt *)buf)->frame_control);
 		type = fc & IEEE80211_FCTL_FTYPE;
@@ -4596,10 +4605,10 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 			/* filter out EXTCAP */
 			if (wps_flag & IE_MASK_EXTCAP) {
 				ie_len = length + 2;
-				if (MLAN_STATUS_SUCCESS !=
-				    woal_set_get_gen_ie(priv, MLAN_ACT_SET, pos,
+				if (woal_set_get_gen_ie(priv, MLAN_ACT_SET, pos,
 							NULL, &ie_len,
-							MOAL_IOCTL_WAIT))
+							MOAL_IOCTL_WAIT) !=
+				    MLAN_STATUS_SUCCESS)
 					PRINTM(MERROR,
 					       "Fail to set EXTCAP IE\n");
 				break;
@@ -4683,7 +4692,7 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 #ifdef UAP_SUPPORT
 	if (enable_11d && !priv->bss_started) {
 		if (woal_set_11d(priv, MOAL_IOCTL_WAIT, MTRUE) !=
-		    MLAN_STATUS_SUCCESS)
+		    MLAN_STATUS_SUCCESS) {
 			PRINTM(MERROR, "woal_set_11d fail\n");
 	}
 #endif
@@ -5047,7 +5056,8 @@ int woal_cfg80211_mgmt_frame_ie(
 				MGMT_MASK_PROBE_RESP;
 			/* woal_filter_beacon_ies() enforces bounds internally
 			 * and output is limited by MAX_IE_SIZE, preventing
-			 * overflow */
+			 * overflow
+			 */
 			// coverity[integer_overflow:SUPPRESS]
 			beacon_ies_data->ie_length = woal_filter_beacon_ies(
 				priv, beacon_ies, beacon_ies_len,
@@ -5513,41 +5523,41 @@ done:
  * ===============
  * Note: bits not mentioned below are set to 0.
 
- * 5G
- * ===
- * HE MAC Cap:
- * Bit0:  1  (+HTC HE Support)
- * Bit1:	1 (TWT requester support)
- * Bit2:	1 (TWT responder support)
- * Bit20:	1 (Broadcast TWT support)
- * Bit25: 1  (OM Control Support. But uAP does not support
- * Tx OM received from the STA, as it does not support UL OFDMA)
- * Bit28-27: Max. A-MPDU Length Exponent Extension
+5G
+===
+HE MAC Cap:
+Bit0:  1  (+HTC HE Support)
+Bit1:	1 (TWT requester support)
+Bit2:	1 (TWT responder support)
+Bit20:	1 (Broadcast TWT support)
+Bit25: 1  (OM Control Support. But uAP does not support
+Tx OM received from the STA, as it does not support UL OFDMA)
+Bit28-27: Max. A-MPDU Length Exponent Extension
 
- * HE PHY Cap:
- * Bit1-7: 0x2 (Supported Channel Width Set.
- * Note it would be changed after 80+80 MHz is supported)
- * Bit8-11: 0x3 (Punctured Preamble Rx.
- * Note: it would be changed after 80+80 MHz is supported)
- * Bit12: 0x0 (Device Class)
- * Bit13: 0x1 (LDPC coding in Payload)
- * Bit17: 0x1 (NDP with 4xHE-LTF+3.2usGI)
- * Bit18: 0x1 (STBC Tx <= 80 MHz)
- * Bit19: 0x1 (STBC Rx <= 80 MHz)
- * Bit20: 0x1 (Doppler Tx)
- * Bit21: 0x1 (Doppler Rx)
- * Bit24-25: 0x1 (DCM Max Constellation Tx)
- * Bit27-28: 0x1 (DCM Max Constellation Rx)
- * Bit31: 0x1 (SU Beamformer)
- * Bit32: 0x1 (SU BeamFormee)
- * Bit34-36: 0x7 (Beamformee STS <= 80 MHz)
- * Bit40-42: 0x1 (Number of Sounding Dimentions <= 80 MHz)
- * Bit53: 0x1 (Partial Bandwidth Extended Range)
- * Bit55: 0x1 (PPE Threshold Present.
- * Note: PPE threshold may have some changes later)
- * Bit58: 0x1 (HE SU PPDU and HE MU PPDU with 4xHE-LTF+0.8usGI)
- * Bit59-61: 0x1 (Max Nc)
- * Bit75: 0x1 (Rx 1024-QAM Support < 242-tone RU)
+HE PHY Cap:
+Bit1-7: 0x2 (Supported Channel Width Set.
+Note it would be changed after 80+80 MHz is supported)
+Bit8-11: 0x3 (Punctured Preamble Rx.
+Note: it would be changed after 80+80 MHz is supported)
+Bit12: 0x0 (Device Class)
+Bit13: 0x1 (LDPC coding in Payload)
+Bit17: 0x1 (NDP with 4xHE-LTF+3.2usGI)
+Bit18: 0x1 (STBC Tx <= 80 MHz)
+Bit19: 0x1 (STBC Rx <= 80 MHz)
+Bit20: 0x1 (Doppler Tx)
+Bit21: 0x1 (Doppler Rx)
+Bit24-25: 0x1 (DCM Max Constellation Tx)
+Bit27-28: 0x1 (DCM Max Constellation Rx)
+Bit31: 0x1 (SU Beamformer)
+Bit32: 0x1 (SU BeamFormee)
+Bit34-36: 0x7 (Beamformee STS <= 80 MHz)
+Bit40-42: 0x1 (Number of Sounding Dimentions <= 80 MHz)
+Bit53: 0x1 (Partial Bandwidth Extended Range)
+Bit55: 0x1 (PPE Threshold Present.
+Note: PPE threshold may have some changes later)
+Bit58: 0x1 (HE SU PPDU and HE MU PPDU with 4xHE-LTF+0.8usGI)
+Bit59-61: 0x1 (Max Nc)
+Bit75: 0x1 (Rx 1024-QAM Support < 242-tone RU)
  */
 
 #define UAP_HE_MAC_CAP0_MASK 0x06
@@ -6725,9 +6735,18 @@ void process_wifi_channel_avoid_list_event(
 				if (!sband)
 					continue;
 
-				PRINTM(MINFO,
-				       "====== Iteration=%d ======", index);
-				/* Clearing NO-IR flags for all channels */
+			PRINTM(MINFO, "====== Iteration=%d ======", index);
+			/* Clearing NO-IR flags for all channels,
+			 * except for the channels marked as INDOOR-ONLY */
+			for (i = 0; i < sband->n_channels; i++) {
+				channel = &sband->channels[i];
+				if (!(channel->flags &
+				      IEEE80211_CHAN_INDOOR_ONLY))
+					channel->flags &= ~IEEE80211_CHAN_NO_IR;
+			}
+
+			/* Setting NO-IR flags as per the channel list */
+			for (j = 0; j < pwifi_chan_info->length; j++) {
 				for (i = 0; i < sband->n_channels; i++) {
 					channel = &sband->channels[i];
 					channel->flags &= ~IEEE80211_CHAN_NO_IR;

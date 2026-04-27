@@ -4,7 +4,7 @@
  * @brief This file contains uap driver specific defines etc.
  *
  *
- * Copyright 2008-2025, NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -22,10 +22,9 @@
  */
 
 /********************************************************
- * Change log:
- * 02/02/2009: initial version
- * ******************************************************
- */
+Change log:
+02/02/2009: initial version
+********************************************************/
 
 #ifndef _MOAL_UAP_H
 #define _MOAL_UAP_H

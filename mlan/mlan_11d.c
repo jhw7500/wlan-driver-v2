@@ -4,7 +4,7 @@
  *  @brief This file contains functions for 802.11D.
  *
  *
- *  Copyright 2008-2022, 2024-2025 NXP
+ *  Copyright 2008-2022, 2024-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -21,10 +21,9 @@
  *
  */
 /********************************************************
- * Change log:
- * 10/21/2008: initial version
- * ******************************************************
- */
+Change log:
+10/21/2008: initial version
+********************************************************/
 
 #include "mlan.h"
 #include "mlan_join.h"
@@ -120,11 +119,10 @@ static chan_freq_power_t channel_freq_power_UN_AJ[] = {
 	{173, 5865, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}},
 	{177, 5885, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}}
 	/*  {240, 4920, TX_PWR_DEFAULT},
-	 * {244, 4940, TX_PWR_DEFAULT},
-	 * {248, 4960, TX_PWR_DEFAULT},
-	 * {252, 4980, TX_PWR_DEFAULT},
-	 * channels for 11J JP 10M channel gap
-	 */
+	    {244, 4940, TX_PWR_DEFAULT},
+	    {248, 4960, TX_PWR_DEFAULT},
+	    {252, 4980, TX_PWR_DEFAULT},
+	    channels for 11J JP 10M channel gap */
 };
 /** Channels for 802.116G */
 static chan_freq_power_t channel_freq_power_UN_6G[] = {
@@ -188,14 +186,12 @@ static chan_freq_power_t channel_freq_power_UN_6G[] = {
 	{229, 7095, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}},
 	{233, 7115, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}}};
 /********************************************************
- * Global Variables
- * ******************************************************
- */
+  Global Variables
+ ********************************************************/
 
 /********************************************************
- * Local Functions
- * ******************************************************
- */
+  Local Functions
+ ********************************************************/
 #ifdef STA_SUPPORT
 /**
  *  @brief This function converts integer code to region string
@@ -1095,6 +1091,7 @@ wlan_cmd_802_11d_custom_bcn_country_ie_info(mlan_private *pmpriv,
 	t_u8 *tlv = MNULL;
 	t_u8 i;
 	mlan_ds_11d_cfg *cfg_11d = MNULL;
+
 	ENTER();
 
 	if (!pioctl_buf) {

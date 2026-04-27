@@ -449,7 +449,33 @@ static int woal_cfg80211_subcmd_set_drvdbg(struct wiphy *wiphy,
 
 	if (data_len) {
 		/* Get the driver debug bit masks from user */
-		drvdbg = *((const t_u32 *)data);
+		old_drvdbg = drvdbg;
+		new_drvdbg = moal_read_unaligned_u32(data);
+
+		/* Check if override flag is provided (data_len >= 8 and second
+		 * u32 = 0xFFFFFFFF) */
+		if (data_len >= 8 &&
+		    moal_read_unaligned_u32(data + 4) == DRVDBG_OVERRIDE_FLAG) {
+			/* OVERRIDE MODE: Allow complete overwrite of drvdbg */
+			drvdbg = new_drvdbg;
+			PRINTM(MMSG,
+			       "WARNING: Overriding bit 19 (MFW_D) protection! drvdbg=0x%08x\n",
+			       drvdbg);
+		} else {
+			/* PROTECTED MODE: Preserve bit 19 if it was previously
+			 * set */
+			if (old_drvdbg & MFW_D) {
+				/* Bit 19 was ON: force it to stay ON */
+				drvdbg = new_drvdbg | MFW_D;
+				PRINTM(MMSG,
+				       "Preserving bit 19 (MFW_D) - MFW_D bit write protected. drvdbg=0x%08x\n",
+				       drvdbg);
+			} else {
+				/* Bit 19 was OFF: allow user to set it normally
+				 */
+				drvdbg = new_drvdbg;
+			}
+		}
 		PRINTM(MIOCTL, "new drvdbg %x\n", drvdbg);
 		/* Set the driver debug bit masks into mlan */
 		if (woal_set_drvdbg(priv, drvdbg)) {
@@ -700,7 +726,7 @@ static int woal_cfg80211_subcmd_get_fw_version(struct wiphy *wiphy,
 	char end_c = '\0';
 	int ret = 0;
 	char fw_ver[100] = {0};
-	t_u8 hotfix_ver = 0;
+	t_u16 hotfix_ver = 0;
 
 	ENTER();
 
@@ -1499,7 +1525,7 @@ static int woal_ring_pull_data(moal_private *priv, int ring_id, void *data,
 	ENTER();
 
 	if (ring_id < 0) {
-		PRINTM(MERROR, "%s(): Invalid ring id\n", __FUNCTION__);
+		PRINTM(MERROR, "%s(): Invalid ring id\n", __func__);
 		LEAVE();
 		return r_len;
 	}
@@ -1717,7 +1743,7 @@ static int woal_ring_push_data(moal_private *priv, int ring_id,
 	ENTER();
 
 	if (ring_id < 0) {
-		PRINTM(MERROR, "%s(): Invalid ring id\n", __FUNCTION__);
+		PRINTM(MERROR, "%s(): Invalid ring id\n", __func__);
 		ret = -EINVAL;
 		goto done;
 	}
@@ -1936,7 +1962,7 @@ int woal_ring_event_logger(moal_private *priv, int ring_id, pmlan_event pmevent)
 	ENTER();
 
 	if (ring_id < 0 || ring_id >= RING_ID_MAX) {
-		PRINTM(MERROR, "Ring_id is invalid \n");
+		PRINTM(MERROR, "Ring_id is invalid\n");
 		goto done;
 	}
 
@@ -2023,7 +2049,8 @@ int woal_ring_event_logger(moal_private *priv, int ring_id, pmlan_event pmevent)
 					    sizeof(connectivity_event->event));
 			/* msg_hdr.entry_size is carefully bounded using MIN
 			 * function and all data fits within the statically
-			 * sized event_buf, ensuring safe access */
+			 * sized event_buf, ensuring safe access
+			 */
 			// coverity[overrun-buffer-arg:SUPPRESS]
 			// coverity[cert_arr30_c_violation:SUPPRESS]
 			// coverity[cert_str31_c_violation:SUPPRESS]
@@ -5786,171 +5813,6 @@ done:
 #endif // STA_CFG80211
 
 /**
- * @brief vendor command to key_mgmt_set_key
- *
- * @param wiphy    A pointer to wiphy struct
- * @param wdev     A pointer to wireless_dev struct
- * @param data     a pointer to data
- * @param  len     data length
- *
- * @return      0: success  fail otherwise
- */
-static int
-woal_cfg80211_subcmd_set_roaming_offload_key(struct wiphy *wiphy,
-					     struct wireless_dev *wdev,
-					     const void *data, int data_len)
-{
-	moal_private *priv;
-	struct net_device *dev;
-	struct sk_buff *skb = NULL;
-	const t_u8 *pos = (const t_u8 *)data;
-	t_u8 *skb_pos = NULL;
-	int ret = MLAN_STATUS_SUCCESS;
-
-	ENTER();
-
-	if (data)
-		DBG_HEXDUMP(MCMD_D, "Vendor pmk", (const t_u8 *)data, data_len);
-
-	if (!wdev || !wdev->netdev) {
-		LEAVE();
-		return -EFAULT;
-	}
-
-	dev = wdev->netdev;
-	priv = (moal_private *)woal_get_netdev_priv(dev);
-	if (!priv || !pos) {
-		LEAVE();
-		return -EFAULT;
-	}
-
-	if (data_len > MLAN_MAX_KEY_LENGTH) {
-		moal_memcpy_ext(priv->phandle, &priv->pmk.pmk_r0, pos,
-				MLAN_MAX_KEY_LENGTH, MLAN_MAX_KEY_LENGTH);
-		pos += MLAN_MAX_KEY_LENGTH;
-		moal_memcpy_ext(priv->phandle, &priv->pmk.pmk_r0_name, pos,
-				data_len - MLAN_MAX_KEY_LENGTH,
-				MLAN_MAX_PMKR0_NAME_LENGTH);
-	} else {
-		moal_memcpy_ext(priv->phandle, &priv->pmk.pmk, data, data_len,
-				MLAN_MAX_KEY_LENGTH);
-	}
-	priv->pmk_saved = MTRUE;
-
-	/** Allocate skb for cmd reply*/
-	skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy, data_len);
-	if (!skb) {
-		PRINTM(MERROR, "allocate memory fail for vendor cmd\n");
-		LEAVE();
-		return -EFAULT;
-	}
-	skb_pos = skb_put(skb, data_len);
-	moal_memcpy_ext(priv->phandle, skb_pos, data, data_len, data_len);
-	ret = cfg80211_vendor_cmd_reply(skb);
-
-	LEAVE();
-	return ret;
-}
-
-/**
- * @brief vendor command to supplicant to update AP info
- *
- * @param priv     A pointer to moal_private
- * @param data     a pointer to data
- * @param  len     data length
- *
- * @return      0: success  1: fail
- */
-int woal_roam_ap_info(moal_private *priv, t_u8 *data, int len)
-{
-	struct wiphy *wiphy = priv->wdev->wiphy;
-	struct sk_buff *skb = NULL;
-	int ret = MLAN_STATUS_SUCCESS;
-	key_info *pkey = NULL;
-	apinfo *pinfo = NULL;
-	apinfo *req_tlv = NULL;
-	MrvlIEtypesHeader_t *tlv = NULL;
-	t_u16 tlv_type = 0, tlv_len = 0, tlv_buf_left = 0;
-	int event_id = 0;
-	t_u8 authorized = 1;
-
-	ENTER();
-
-	event_id = woal_get_event_id(event_fw_roam_success);
-	if (event_max == event_id) {
-		PRINTM(MERROR, "Not find this event %d\n", event_id);
-		ret = 1;
-		LEAVE();
-		return ret;
-	}
-	/**allocate skb*/
-#if KERNEL_VERSION(4, 1, 0) <= CFG80211_VERSION_CODE
-	skb = cfg80211_vendor_event_alloc(wiphy, priv->wdev, len + 50,
-#else
-	skb = cfg80211_vendor_event_alloc(wiphy, len + 50,
-#endif
-					  event_id, GFP_ATOMIC);
-
-	if (!skb) {
-		PRINTM(MERROR, "allocate memory fail for vendor event\n");
-		ret = 1;
-		LEAVE();
-		return ret;
-	}
-
-	nla_put(skb, MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_BSSID,
-		MLAN_MAC_ADDR_LENGTH, (t_u8 *)data);
-	nla_put(skb, MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_AUTHORIZED,
-		sizeof(authorized), &authorized);
-	tlv = (MrvlIEtypesHeader_t *)(data + MLAN_MAC_ADDR_LENGTH);
-	tlv_buf_left = len - MLAN_MAC_ADDR_LENGTH;
-	while (tlv_buf_left >= sizeof(MrvlIEtypesHeader_t)) {
-		tlv_type = woal_le16_to_cpu(tlv->type);
-		tlv_len = woal_le16_to_cpu(tlv->len);
-
-		if (tlv_buf_left < (tlv_len + sizeof(MrvlIEtypesHeader_t))) {
-			PRINTM(MERROR,
-			       "Error processing firmware roam success TLVs, bytes left < TLV length\n");
-			break;
-		}
-
-		switch (tlv_type) {
-		case TLV_TYPE_APINFO:
-			pinfo = (apinfo *)tlv;
-			nla_put(skb, MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_RESP_IE,
-				pinfo->header.len, pinfo->rsp_ie);
-			break;
-		case TLV_TYPE_ASSOC_REQ_IE:
-			req_tlv = (apinfo *)tlv;
-			nla_put(skb, MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_REQ_IE,
-				req_tlv->header.len, req_tlv->rsp_ie);
-			break;
-		case TLV_TYPE_KEYINFO:
-			pkey = (key_info *)tlv;
-			nla_put(skb,
-				MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_KEY_REPLAY_CTR,
-				MLAN_REPLAY_CTR_LEN, pkey->key.replay_ctr);
-			nla_put(skb, MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_PTK_KCK,
-				MLAN_KCK_LEN, pkey->key.kck);
-			nla_put(skb, MRVL_WLAN_VENDOR_ATTR_ROAM_AUTH_PTK_KEK,
-				MLAN_KEK_LEN, pkey->key.kek);
-			break;
-		default:
-			break;
-		}
-		tlv_buf_left -= tlv_len + sizeof(MrvlIEtypesHeader_t);
-		tlv = (MrvlIEtypesHeader_t *)((t_u8 *)tlv + tlv_len +
-					      sizeof(MrvlIEtypesHeader_t));
-	}
-
-	/**send event*/
-	cfg80211_vendor_event(skb, GFP_ATOMIC);
-
-	LEAVE();
-	return ret;
-}
-
-/**
  * @brief vendor command to enable/disable 11k
  *
  * @param wiphy         A pointer to wiphy struct
@@ -7865,7 +7727,7 @@ static int woal_cfg80211_subcmd_dmcs(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8022,7 +7884,7 @@ static int woal_cfg80211_subcmd_edmac(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8176,7 +8038,7 @@ static int woal_cfg80211_subcmd_aggrpriotbl(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8325,7 +8187,7 @@ static int woal_cfg80211_subcmd_addbareject(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8470,7 +8332,7 @@ static int woal_cfg80211_subcmd_tx_ampdu_prot_mode(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8499,6 +8361,7 @@ t_u16 extractNumericVal(char *str, t_u32 str_len, char *substr, t_u8 substr_len)
 	t_u8 i = 0, j = substr_len - 1;
 	t_u16 finalVal = 0;
 	char *findStr = strstr(str, substr);
+
 	if (findStr == NULL)
 		return finalVal;
 
@@ -8509,7 +8372,8 @@ t_u16 extractNumericVal(char *str, t_u32 str_len, char *substr, t_u8 substr_len)
 	while ((j < str_len) && (findStr[j] != '\0') && isdigit(findStr[j])) {
 		/* Loop bounds protected by str_len check and isdigit()
 		 * validation. Buffer overflow prevented by result[6] sizing for
-		 * maximum expected value */
+		 * maximum expected value
+		 */
 		// coverity[overflow_sink:SUPPRESS]
 		result[i++] = findStr[j];
 		j++;
@@ -8538,7 +8402,7 @@ void asciiToString(t_u8 *raw_data, t_u32 len, char *str, t_u32 *str_len)
 
 	for (i = 0, j = 0; i < len; i++) {
 		// Ignore Spaces and new line character.
-		if ((0x20 == raw_data[i]) || (0x0a == raw_data[i]))
+		if ((0x20 == raw_data[i]) || (raw_data[i] == 0x0a))
 			continue;
 
 		if (j < len)
@@ -8687,7 +8551,7 @@ static int woal_cfg80211_subcmd_twt_setup(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8804,7 +8668,7 @@ static int woal_cfg80211_subcmd_twt_teardown(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -8849,6 +8713,7 @@ static int woal_cfg80211_subcmd_btwt_ap_config_set(struct wiphy *wiphy,
 		Ap_Bcast_Exponent[5], nominalwake[5];
 	t_u16 Ap_Bcast_Offset, Ap_Bcast_Mantissa[5];
 	t_u8 i;
+
 	ENTER();
 
 	if ((len < 1) || (len + 1) < 0) {
@@ -9001,7 +8866,7 @@ static int woal_cfg80211_subcmd_btwt_ap_config_set(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -9122,7 +8987,7 @@ static int woal_cfg80211_subcmd_btwt_ap_config_get(struct wiphy *wiphy,
 
 	ret = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(ret))
-		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d \n", ret);
+		PRINTM(MERROR, "vendor cmd: reply failed with ret:%d\n", ret);
 
 done:
 	if (data_buff)
@@ -9217,8 +9082,7 @@ static int woal_cfg80211_subcmd_get_usable_channels(struct wiphy *wiphy,
 	max_size = nla_get_u32(tb[ATTR_USABLE_CHANNEL_MAX_SIZE]);
 
 	PRINTM(MCMND,
-	       "get usable channels for - band: %d, iface_mode: %d, filter: %d,"
-	       " max_size: %d",
+	       "get usable channels for - band: %d, iface_mode: %d, filter: %d, max_size: %d",
 	       band, iface_mode, filter, max_size);
 
 	channels = kzalloc(sizeof(wifi_usable_channel) *
@@ -9254,8 +9118,7 @@ static int woal_cfg80211_subcmd_get_usable_channels(struct wiphy *wiphy,
 			}
 			if (cnt >= MIN(MAX_CHANNEL_NUM, max_size)) {
 				PRINTM(MERROR,
-				       "cnt=%d exceeds %d, hence ignore remaining channels. "
-				       "cur ch = %dMHz",
+				       "cnt=%d exceeds %d, hence ignore remaining channels. cur ch = %dMHz",
 				       cnt, MIN(MAX_CHANNEL_NUM, max_size),
 				       ch->center_freq);
 				break;
@@ -9477,18 +9340,6 @@ static const struct wiphy_vendor_command vendor_commands[] = {
 #endif
 	},
 #endif
-	{
-		.info = {
-				.vendor_id = MRVL_VENDOR_ID,
-				.subcmd = sub_cmd_set_roaming_offload_key,
-			},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-			 WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = woal_cfg80211_subcmd_set_roaming_offload_key,
-#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
-		.policy = VENDOR_CMD_RAW_DATA,
-#endif
-	},
 	{
 		.info = {
 				.vendor_id = MRVL_VENDOR_ID,
@@ -9950,61 +9801,61 @@ static const struct wiphy_vendor_command vendor_commands[] = {
 		.policy = VENDOR_CMD_RAW_DATA,
 #endif
 	},
-    {
-        .info = {
-                .vendor_id = MRVL_VENDOR_ID,
-                .subcmd = subcmd_twt_setup,
-            },
-        .flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-            WIPHY_VENDOR_CMD_NEED_NETDEV,
-        .doit = &woal_cfg80211_subcmd_twt_setup,
-#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
-        .policy = VENDOR_CMD_RAW_DATA,
-#endif
-    },
-    {
-        .info = {
-                .vendor_id = MRVL_VENDOR_ID,
-                .subcmd = subcmd_twt_teardown,
-            },
-        .flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-            WIPHY_VENDOR_CMD_NEED_NETDEV,
-        .doit = &woal_cfg80211_subcmd_twt_teardown,
-#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
-        .policy = VENDOR_CMD_RAW_DATA,
-#endif
-    },
-    {
-        .info = {
-                .vendor_id = MRVL_VENDOR_ID,
-                .subcmd = subcmd_btwt_ap_config_set,
-            },
-        .flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-            WIPHY_VENDOR_CMD_NEED_NETDEV,
-        .doit = &woal_cfg80211_subcmd_btwt_ap_config_set,
-#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
-        .policy = VENDOR_CMD_RAW_DATA,
-#endif
-    },
-    {
-        .info = {
-                .vendor_id = MRVL_VENDOR_ID,
-                .subcmd = subcmd_btwt_ap_config_get,
-        },
-        .flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-            WIPHY_VENDOR_CMD_NEED_NETDEV,
-        .doit = &woal_cfg80211_subcmd_btwt_ap_config_get,
-#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
-        .policy = VENDOR_CMD_RAW_DATA,
-#endif
-    },
 	{
 		.info = {
-				.vendor_id = MRVL_VENDOR_ID,
-				.subcmd = subcmd_get_usable_channels,
-			},
+			.vendor_id = MRVL_VENDOR_ID,
+			.subcmd = subcmd_twt_setup,
+		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
-			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+			WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.doit = &woal_cfg80211_subcmd_twt_setup,
+#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
+	},
+	{
+		.info = {
+			.vendor_id = MRVL_VENDOR_ID,
+			.subcmd = subcmd_twt_teardown,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+			WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.doit = &woal_cfg80211_subcmd_twt_teardown,
+#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
+	},
+	{
+		.info = {
+			.vendor_id = MRVL_VENDOR_ID,
+			.subcmd = subcmd_btwt_ap_config_set,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+			WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.doit = &woal_cfg80211_subcmd_btwt_ap_config_set,
+#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
+	},
+	{
+		.info = {
+			.vendor_id = MRVL_VENDOR_ID,
+			.subcmd = subcmd_btwt_ap_config_get,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+			WIPHY_VENDOR_CMD_NEED_NETDEV,
+		.doit = &woal_cfg80211_subcmd_btwt_ap_config_get,
+#if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
+	},
+	{
+		.info = {
+			.vendor_id = MRVL_VENDOR_ID,
+			.subcmd = subcmd_get_usable_channels,
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+			WIPHY_VENDOR_CMD_NEED_NETDEV,
 		.doit = woal_cfg80211_subcmd_get_usable_channels,
 #if KERNEL_VERSION(5, 3, 0) <= CFG80211_VERSION_CODE
 		.policy = woal_usable_channel_policy,

@@ -4,7 +4,7 @@
  *  @brief This file contains functions for 802.11H.
  *
  *
- *  Copyright 2008-2021, 2024-2025 NXP
+ *  Copyright 2008-2021, 2024-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -22,10 +22,9 @@
  */
 
 /*************************************************************
- * Change Log:
- * 03/26/2009: initial version
- * **********************************************************
- */
+Change Log:
+03/26/2009: initial version
+************************************************************/
 
 #include "mlan.h"
 #include "mlan_join.h"

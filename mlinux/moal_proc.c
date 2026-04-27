@@ -943,7 +943,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
 
 	if (!woal_secure_add(&count, 1, &tmp_count, TYPE_UINT32)) {
-		PRINTM(MERROR, "%s:count param overflow \n", __func__);
+		PRINTM(MERROR, "%s:count param overflow\n", __func__);
 		LEAVE();
 		return -EINVAL;
 	}
@@ -1154,7 +1154,9 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		     strlen("set_debug_temperature=")) &&
 	    count > strlen("set_debug_temperature="))
 		cmd = MFG_CMD_SET_DEBUG_TEMPERATURE;
-
+	if (!strncmp(databuf, "generic_cmd=", strlen("generic_cmd=")) &&
+	    count > strlen("generic_cmd="))
+		cmd = MFG_CMD_CONFIG_GENERIC_CMD;
 	if (cmd && handle->rf_test_mode &&
 	    (woal_process_rf_test_mode_cmd(
 		     handle, cmd, (const char *)databuf, (size_t)count,
@@ -1408,7 +1410,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[4],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[5]);
 
-		seq_printf(sfp, "\n");
+		seq_puts(sfp, "\n");
 		seq_printf(sfp, "set_debug_temperature=%u,",
 			   handle->rf_data->mfg_debug_temp.simulation_enable);
 		seq_printf(sfp, "%d,",
@@ -1420,7 +1422,15 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			handle->rf_data->mfg_debug_temp.rfu_temperature[1][0],
 			handle->rf_data->mfg_debug_temp.rfu_temperature[1][1]);
 
-		seq_printf(sfp, "\n");
+		seq_puts(sfp, "\n");
+
+		seq_puts(sfp, "\n");
+		seq_puts(sfp, "generic_cmd=");
+		seq_printf(sfp, " %u",
+			   handle->rf_data->mfg_InternalTest_t.opcode);
+		for (i = 0; i < 10; i++)
+			seq_printf(sfp, " %u",
+				   handle->rf_data->mfg_InternalTest_t.data[i]);
 	}
 
 	// Read current antcfg configuration

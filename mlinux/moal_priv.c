@@ -22,10 +22,9 @@
  */
 
 /************************************************************************
- * Change log:
- * 10/30/2008: initial version
- * **********************************************************************
- */
+Change log:
+10/30/2008: initial version
+************************************************************************/
 
 #include "moal_main.h"
 #ifdef SDIO
@@ -131,7 +130,8 @@ static int woal_associate_ssid_bssid(moal_private *priv, struct iwreq *wrq)
 			if (mac_idx < ETH_ALEN) {
 				/* Data inside buf is copied from user space and
 				 * its length is bounded and validated before
-				 * use */
+				 * use
+				 */
 				// coverity[misra_c_2012_directive_4_14_violation:SUPPRESS]
 				ssid_bssid->bssid[mac_idx] =
 					(t_u8)woal_atox(buf + i);
