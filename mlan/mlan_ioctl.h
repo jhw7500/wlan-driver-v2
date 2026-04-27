@@ -4,7 +4,7 @@
  *  @brief This file declares the IOCTL data structures and APIs.
  *
  *
- *  Copyright 2008-2025 NXP
+ *  Copyright 2008-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -411,8 +411,11 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_MISC_AGCS_CONFIG = 0x002000A0,
 #endif /* UAP_SUPPORT */
 	MLAN_OID_SEC_CFG_SSID_PROTECTION = 0x002000A1,
-	MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE = 0x002000A2
+	MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE = 0x002000A2,
 
+	MLAN_OID_MISC_GENERIC_CMD = 0x002000A4,
+
+	MLAN_OID_MISC_CHAN_SWITCH_CNT_CONFIG = 0x002000A5
 };
 
 /** Sub command size */
@@ -3014,7 +3017,6 @@ typedef struct _mlan_ds_sec_cfg {
 #ifdef UAP_SUPPORT
 		t_u8 sta_mac[MLAN_MAC_ADDR_LENGTH];
 #endif
-		mlan_ds_passphrase roam_passphrase[MAX_SEC_SSID_NUM];
 		t_u32 ssid_protection;
 	} param;
 } mlan_ds_sec_cfg, *pmlan_ds_sec_cfg;
@@ -5514,7 +5516,8 @@ typedef struct _mlan_ds_misc_tdls_ies {
 } mlan_ds_misc_tdls_ies;
 
 /** Type definition of mlan_ds_misc_lte_coex_band_cfg
- * for MLAN_OID_MISC_LTE_COEX_CFG */
+ * for MLAN_OID_MISC_LTE_COEX_CFG
+ */
 typedef struct _mlan_ds_misc_lte_coex_band_cfg {
 	/** LTE COEX BAND */
 	t_u8 band;
@@ -6338,6 +6341,24 @@ typedef MLAN_PACK_START struct _mfg_cmd_set_debug_temperature {
 	t_s32 rfu_temperature[MAX_RFUS][MAX_PATHS];
 } MLAN_PACK_END mfg_CmdDebugTemperature_Cfg_t;
 
+#define GENERIC_CMD_BUFFER 10
+typedef MLAN_PACK_START struct _mfg_Cmd_InternalTest_t {
+	/** MFG command code */
+	t_u32 mfg_cmd;
+	/** Action */
+	t_u16 action;
+	/** Device ID */
+	t_u16 device_id;
+	/** MFG Error code */
+	t_u32 error;
+	/** Generic cmd Opcode */
+	t_u32 opcode;
+	/** Input value */
+	t_u32 data_num;
+	/** Input values to perform tasks */
+	t_u32 data[GENERIC_CMD_BUFFER];
+} MLAN_PACK_END mfg_Cmd_InternalTest_t;
+
 typedef struct _mlan_ds_misc_chnrgpwr_cfg {
 	/** length */
 	t_u16 length;
@@ -6577,6 +6598,10 @@ typedef struct _mlan_ds_agcs_cfg {
 } mlan_ds_agcs_cfg;
 #endif /* UAP_SUPPORT */
 
+typedef struct _mlan_ds_ecsa_cfg {
+	t_u8 chan_switch_cnt;
+} mlan_ds_ecsa_cfg;
+
 /** Type definition of mlan_ds_misc_cfg for MLAN_IOCTL_MISC_CFG */
 typedef struct _mlan_ds_misc_cfg {
 	/** Sub-command */
@@ -6739,6 +6764,7 @@ typedef struct _mlan_ds_misc_cfg {
 		mfg_cmd_otp_mac_addr_rd_wr_t mfg_otp_mac_addr_rd_wr;
 		mfg_cmd_otp_cal_data_rd_wr_t mfg_otp_cal_data_rd_wr;
 		mfg_CmdDebugTemperature_Cfg_t mfg_debug_temp;
+		mfg_Cmd_InternalTest_t mfg_InternalTest_t;
 		mlan_ds_misc_arb_cfg arb_cfg;
 		mlan_ds_misc_cfp_tbl cfp;
 		t_u8 range_ext_mode;
@@ -6768,6 +6794,8 @@ typedef struct _mlan_ds_misc_cfg {
 		/** config AGCS for MLAN_OID_MISC_AGCS_CONFIG */
 		mlan_ds_agcs_cfg agcs_cfg;
 #endif /* UAP_SUPPORT */
+		/** Channel switch cnt cfg */
+		mlan_ds_ecsa_cfg ecsa_cfg;
 	} param;
 } mlan_ds_misc_cfg, *pmlan_ds_misc_cfg;
 
@@ -6806,6 +6834,7 @@ typedef struct _mlan_cfpinfo {
 #define MLAN_REASON_CLASS3_FRAME_FROM_NOASSOC_STA 7
 #define MLAN_REASON_DISASSOC_STA_HAS_LEFT 8
 #define MLAN_REASON_STA_REQ_ASSOC_WITHOUT_AUTH 9
+#define MLAN_REASON_CURRENT_BSS_NULL_POSTPONED_DEAUTH 10
 
 #ifdef UAP_SUPPORT
 /* Processing AGCS report */

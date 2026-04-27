@@ -5166,6 +5166,7 @@ static mlan_status wlan_cmd_apcmd_agcs_cfg(pmlan_private pmpriv,
 	HostCmd_DS_AGCS_CFG *pcmd_agcs_cfg =
 		(HostCmd_DS_AGCS_CFG *)&cmd->params.agcs_cfg;
 	mlan_ds_agcs_cfg *pagcs_cfg = (mlan_ds_agcs_cfg *)pdata_buf;
+
 	ENTER();
 
 	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_APCMD_AGCS_CFG);
@@ -5354,6 +5355,69 @@ done:
 
 	LEAVE();
 	return status;
+}
+
+static mlan_status wlan_ret_chan_switch_cnt_config(pmlan_private pmpriv,
+						   HostCmd_DS_COMMAND *resp,
+						   mlan_ioctl_req *pioctl_buf)
+{
+	HostCmd_DS_CHAN_SWITCH_CNT_CFG *pchan_switch_cnt_cfg =
+		(HostCmd_DS_CHAN_SWITCH_CNT_CFG *)&resp->params
+			.chan_switch_cnt_cfg;
+	mlan_ds_misc_cfg *misc = MNULL;
+
+	ENTER();
+
+	if (pioctl_buf) {
+		misc = (mlan_ds_misc_cfg *)pioctl_buf->pbuf;
+		misc->param.ecsa_cfg.chan_switch_cnt =
+			(t_u8)pchan_switch_cnt_cfg->chan_switch_cnt;
+		PRINTM(MIOCTL, "Received SWITCH CNT = %d",
+		       misc->param.ecsa_cfg.chan_switch_cnt);
+	}
+
+	LEAVE();
+	return MLAN_STATUS_SUCCESS;
+}
+
+static mlan_status wlan_cmd_chan_switch_cnt_config(pmlan_private pmpriv,
+						   HostCmd_DS_COMMAND *cmd,
+						   t_u16 cmd_action,
+						   t_void *pdata_buf)
+{
+	HostCmd_DS_CHAN_SWITCH_CNT_CFG *pchan_switch_cnt_cfg =
+		(HostCmd_DS_CHAN_SWITCH_CNT_CFG *)&cmd->params
+			.chan_switch_cnt_cfg;
+	mlan_ds_ecsa_cfg *ecsa_cfg = MNULL;
+
+	ENTER();
+
+	if (!pdata_buf) {
+		LEAVE();
+		return MLAN_STATUS_FAILURE;
+	}
+
+	ecsa_cfg = (mlan_ds_ecsa_cfg *)pdata_buf;
+
+	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG);
+	cmd->size = wlan_cpu_to_le16(
+		sizeof(HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG) + S_DS_GEN +
+		sizeof(HostCmd_DS_CHAN_SWITCH_CNT_CFG));
+
+	pchan_switch_cnt_cfg->action = wlan_cpu_to_le16(cmd_action);
+	if (cmd_action == HostCmd_ACT_GEN_SET) {
+		if (!ecsa_cfg) {
+			LEAVE();
+			return MLAN_STATUS_FAILURE;
+		}
+		pchan_switch_cnt_cfg->chan_switch_cnt =
+			(ecsa_cfg->chan_switch_cnt);
+	}
+	PRINTM(MIOCTL, "CHAN SWITCH CNT = %d",
+	       pchan_switch_cnt_cfg->chan_switch_cnt);
+
+	LEAVE();
+	return MLAN_STATUS_SUCCESS;
 }
 
 /********************************************************
@@ -5851,6 +5915,11 @@ mlan_status wlan_ops_uap_prepare_cmd(t_void *priv, t_u16 cmd_no,
 					      pdata_buf);
 		break;
 
+	case HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG:
+		ret = wlan_cmd_chan_switch_cnt_config(pmpriv, cmd_ptr,
+						      cmd_action, pdata_buf);
+		break;
+
 	default:
 		PRINTM(MERROR, "PREP_CMD: unknown command- %#x\n", cmd_no);
 		if (pioctl_req)
@@ -6337,6 +6406,10 @@ mlan_status wlan_ops_uap_process_cmdresp(t_void *priv, t_u16 cmdresp_no,
 
 	case HostCmd_CMD_APCMD_AGCS_CFG:
 		ret = wlan_uap_ret_agcs_cfg(pmpriv, resp, pioctl_buf);
+		break;
+
+	case HostCmd_CMD_APCMD_CHAN_SWITCH_CNT_CFG:
+		ret = wlan_ret_chan_switch_cnt_config(pmpriv, resp, pioctl_buf);
 		break;
 
 	default:

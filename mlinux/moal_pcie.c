@@ -2281,7 +2281,7 @@ static void woal_pcie_dump_fw_info_v1(moal_handle *phandle)
 					PRINTM(MINFO,
 					       "pre-allocced buf is not enough\n");
 			}
-			if (RDWR_STATUS_DONE == stat) {
+			if (stat == RDWR_STATUS_DONE) {
 				PRINTM(MMSG, "%s done: size=0x%lx\n",
 				       mem_type_mapping_tbl[idx].mem_name,
 				       (dbg_ptr -
@@ -3059,7 +3059,7 @@ static void woal_pcie_work(struct work_struct *work)
 	woal_free_module_param(handle);
 	woal_init_module_param(handle);
 
-	if (MLAN_STATUS_SUCCESS == woal_do_flr(handle, false, true))
+	if (woal_do_flr(handle, false, true) == MLAN_STATUS_SUCCESS)
 		handle->fw_reseting = MFALSE;
 	else {
 		handle = NULL;
@@ -3072,7 +3072,7 @@ static void woal_pcie_work(struct work_struct *work)
 		woal_free_module_param(ref_handle);
 		woal_init_module_param(ref_handle);
 
-		if (MLAN_STATUS_SUCCESS == woal_do_flr(ref_handle, false, true))
+		if (woal_do_flr(ref_handle, false, true) == MLAN_STATUS_SUCCESS)
 			ref_handle->fw_reseting = MFALSE;
 	}
 	card->work_flags = MFALSE;

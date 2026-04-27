@@ -8,7 +8,7 @@
  *  to the firmware.
  *
  *
- *  Copyright 2008-2025 NXP
+ *  Copyright 2008-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -321,7 +321,8 @@ static mlan_status wlan_get_common_rates(mlan_private *pmpriv, t_u8 *rate1,
 
 	if (!pmpriv->is_data_rate_auto) {
 		/* rate1_size is decremented in sync with ptr++ and loop exits
-		 * when rate1_size becomes 0 ensures no overflow */
+		 * when rate1_size becomes 0 ensures no overflow
+		 */
 		// coverity[integer_overflow:SUPPRESS]
 		while (rate1_size && *ptr) {
 			/* loop exits when rate1_size becomes 0 */
@@ -1225,6 +1226,7 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 	if (pbss_desc->prsnx_ie != MNULL && pbss_desc->prsnx_ie->ieee_hdr.len) {
 		IEEEtypes_rsnx_ie_t *rsnx_tlv;
 		t_u16 len = 0;
+
 		rsnx_tlv = (IEEEtypes_rsnx_ie_t *)pos;
 		rsnx_tlv->header.type = wlan_cpu_to_le16(TLV_TYPE_RSNX);
 		rsnx_tlv->data[0] = rsnx_tlv->data[1] = rsnx_tlv->data[2] = 0;
@@ -1526,7 +1528,7 @@ mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 				    pbss_desc->phy_param_set.ds_param_set
 					    .current_chan,
 				    pbss_desc->curr_bandwidth, &oper_class,
-				    &global_oper_class))
+				    &global_oper_class) == MLAN_STATUS_SUCCESS)
 				wlan_add_supported_oper_class_ie(pmpriv, &pos,
 								 oper_class);
 		}
@@ -1937,6 +1939,15 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 	} else
 		passoc_rsp = (IEEEtypes_AssocRsp_t *)&resp->params;
 	passoc_rsp->status_code = wlan_le16_to_cpu(passoc_rsp->status_code);
+	if (mlan_drvdbg & MDAT_D) {
+		/* Send assoc req frame to android packet fate monitor as at
+		 * this point driver knows TX assoc request frame ack status.
+		 * passoc_rsp->status_code 0 meaning assoc request is acked.
+		 */
+		prepare_and_send_tx_assoc_req_frame(pmpriv,
+						    passoc_rsp->status_code);
+	}
+
 	pmpriv->delay_link_lost = MFALSE;
 	if (pmpriv->media_connected == MTRUE)
 		memcpy_ext(pmpriv->adapter, cur_mac,

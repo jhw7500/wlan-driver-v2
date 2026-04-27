@@ -1405,6 +1405,8 @@ typedef struct _mlan_private {
 	t_u8 assoc_req_buf[ASSOC_RSP_BUF_SIZE];
 	/** Length of the data stored in assoc_rsp_buf */
 	t_u32 assoc_req_size;
+	/** Assoc request capability */
+	t_u16 assoc_req_cap;
 	/** delay link lost flag */
 	t_u8 delay_link_lost;
 	/** prev_bssid */

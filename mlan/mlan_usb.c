@@ -4,7 +4,7 @@
  *  @brief This file contains USB specific code
  *
  *
- *  Copyright 2008-2021, 2024-2025 NXP
+ *  Copyright 2008-2021, 2024-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -36,8 +36,8 @@ Change log:
 #include "mlan_main.h"
 
 /********************************************************
-			Local Variables
-********************************************************/
+  Local Variables
+ ********************************************************/
 #ifdef USB8897
 static const struct _mlan_card_info mlan_card_info_usb8897 = {
 	.max_tx_buf_size = MLAN_TX_DATA_BUF_SIZE_4K,
@@ -281,7 +281,8 @@ static mlan_status wlan_usb_prog_fw_w_helper(pmlan_adapter pmadapter,
 			DataLength = 0;
 		} else {
 			/* reset length and Copy the header of the firmware data
-			 * to get the length */
+			 * to get the length
+			 */
 			fwdata->fw_header.data_length = 0;
 			if (firmware)
 				memcpy_ext(pmadapter, &fwdata->fw_header,
@@ -724,6 +725,7 @@ static inline t_void wlan_usb_tx_send_aggr(pmlan_adapter pmadapter,
 	} else if (pusb_tx_aggr->aggr_ctrl.aggr_mode ==
 		   MLAN_USB_AGGR_MODE_LEN_V2) {
 		t_u8 *payload = pmbuf_aggr->pbuf + pmbuf_aggr->data_offset;
+
 		write_u16_unaligned(pmadapter, &payload[0],
 				    wlan_cpu_to_le16(pmbuf_aggr->data_len));
 		write_u16_unaligned(pmadapter, &payload[2],
@@ -936,7 +938,8 @@ mlan_status wlan_usb_deaggr_rx_pkt(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 
 		/* make new buffer and copy packet to it (including RxPD).
 		 * Also, reserve headroom so that there must have space
-		 * to change RxPD to TxPD for bridge packet in uAP mode */
+		 * to change RxPD to TxPD for bridge packet in uAP mode
+		 */
 		/* pdeaggr_buf is freed in moal_recv_complete(), therefore
 		 * Overwriting pdeaggr_buf is not harmful.
 		 */

@@ -1550,6 +1550,8 @@ struct rf_test_mode_data {
 	/* OTP CAL data */
 	mfg_cmd_otp_cal_data_rd_wr_t mfg_otp_cal_data_rd_wr;
 	mfg_CmdDebugTemperature_Cfg_t mfg_debug_temp;
+	/*Generic CMD*/
+	mfg_Cmd_InternalTest_t mfg_InternalTest_t;
 };
 
 /** Number of samples in histogram (/proc/mwlan/adapterX/mlan0/histogram).*/
@@ -2634,7 +2636,8 @@ struct radiotap_body {
 	t_u8 flags; /* 8th byte */
 	/** rate for LG pkt, RATE flag will be present, it shows datarate in
 	 * 500Kbps. For HT/VHT pkt, RATE flag will not be present, it is not
-	 * used. */
+	 * used.
+	 */
 	t_u8 rate; /* 9th byte */
 	/** channel */
 	struct channel_field channel; /* 10~13 bytes */
@@ -3115,10 +3118,11 @@ struct _moal_handle {
 	const struct firmware *txpwr_data;
 	/** Operation Mode PSD String */
 	char mode_psd_string[64];
-	/** Operation Mode PSD RU String */
-	char mode_psd_ru_string[64];
 	/** Load time file name */
 	char mode_psd_file[64];
+	/** RU String */
+	char ru_string[64];
+	char pwr_offset_string[64];
 	/** Hotplug device */
 	struct device *hotplug_device;
 	/** STATUS variables */
@@ -4006,6 +4010,7 @@ static inline moal_private *woal_get_priv(moal_handle *handle,
 					  mlan_bss_role bss_role)
 {
 	int i;
+
 	for (i = 0; i < MIN(handle->priv_num, MLAN_MAX_BSS_NUM); i++) {
 		if (handle->priv[i]) {
 			if (bss_role == MLAN_BSS_ROLE_ANY ||
@@ -4803,6 +4808,10 @@ t_u8 woal_find_mcast_node_tx(moal_private *priv, struct sk_buff *skb);
 
 mlan_status woal_request_country_power_table(moal_private *priv, char *region,
 					     t_u8 wait_option, t_u8 psd_mode);
+mlan_status woal_dnld_tx_pwr_offset_table(moal_private *priv, char *country,
+					  t_u8 wait_option);
+mlan_status woal_dnld_ru_power_table(moal_private *priv, char *country,
+				     t_u8 wait_option);
 mlan_status woal_mc_policy_cfg(moal_private *priv, t_u16 *enable,
 			       t_u8 wait_option, t_u8 action);
 #ifdef UAP_SUPPORT
@@ -4989,6 +4998,7 @@ extern void woal_process_ch_sel_and_switch(moal_private *priv,
 extern mlan_status moal_agcs_trans_state(moal_private *priv,
 					 agcs_state next_state);
 extern void woal_agcs_event(moal_private *priv, pagcs_event pacs_start_event);
+extern agcs_state moal_agcs_get_state(moal_private *priv);
 #endif /* UAP_SUPPORT */
 
 #if defined(USB)

@@ -276,6 +276,10 @@ mlan_status moal_malloc_cached(t_void *pmoal, t_u32 size, t_u8 **ppbuf,
 	dma_addr_t dma;
 	gfp_t flag;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
+	DEFINE_DMA_ATTRS(attrs);
+#endif
+
 	*pbuf_pa = 0;
 
 	if (unlikely(!card))
@@ -285,11 +289,18 @@ mlan_status moal_malloc_cached(t_void *pmoal, t_u32 size, t_u8 **ppbuf,
 	       irqs_disabled() ? GFP_ATOMIC :
 				 GFP_KERNEL;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+	/* Kernel 5.10+: Use dma_alloc_noncoherent with 5 params */
 	*ppbuf = dma_alloc_noncoherent(&card->dev->dev, size, &dma,
 				       DMA_BIDIRECTIONAL, flag);
-#else
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+	/* Kernel 4.8-5.9: Use dma_alloc_attrs with unsigned long attrs */
 	*ppbuf = dma_alloc_attrs(&card->dev->dev, size, &dma, flag,
 				 DMA_ATTR_NON_CONSISTENT);
+#else
+	/* Kernel < 4.8 (including 4.4): Use dma_alloc_attrs with struct
+	 * dma_attrs * */
+	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
+	*ppbuf = dma_alloc_attrs(&card->dev->dev, size, &dma, flag, &attrs);
 #endif
 
 	if (unlikely(*ppbuf == NULL)) {
@@ -321,15 +332,26 @@ mlan_status moal_mfree_cached(t_void *pmoal, t_u32 size, t_u8 *pbuf,
 	moal_handle *handle = (moal_handle *)pmoal;
 	pcie_service_card *card = handle->card;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 8, 0)
+	DEFINE_DMA_ATTRS(attrs);
+#endif
+
 	if (unlikely(!pbuf || !card))
 		return MLAN_STATUS_FAILURE;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+	/* Kernel 5.10+: Use dma_free_noncoherent with 5 params */
 	dma_free_noncoherent(&card->dev->dev, size, pbuf, buf_pa,
 			     DMA_BIDIRECTIONAL);
-#else
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)
+	/* Kernel 4.8-5.9: Use dma_free_attrs with unsigned long attrs */
 	dma_free_attrs(&card->dev->dev, size, pbuf, buf_pa,
 		       DMA_ATTR_NON_CONSISTENT);
+#else
+	/* Kernel < 4.8 (including 4.4): Use dma_free_attrs with struct
+	 * dma_attrs * */
+	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
+	dma_free_attrs(&card->dev->dev, size, pbuf, buf_pa, &attrs);
 #endif
 
 	atomic_dec(&handle->malloc_cons_count);
@@ -1121,7 +1143,8 @@ mlan_status moal_get_hw_spec_complete(t_void *pmoal, mlan_status status,
 #ifdef PCIE9098
 		/** Special/Temporary handling to manage the driver version
 		 * string to identify AW690/AW590/AW592 (skyhawk based) based on
-		 * fw_cap_ext value set by Fw */
+		 * fw_cap_ext value set by Fw
+		 */
 		if (phw->fw_cap_ext & (MBIT(31) | MBIT(30) | MBIT(29)) &&
 		    IS_PCIE9098(handle->card_type)) {
 			if (phw->fw_cap_ext & MBIT(29)) {
@@ -1174,16 +1197,50 @@ mlan_status moal_get_hw_spec_complete(t_void *pmoal, mlan_status status,
 		}
 #endif
 #ifdef PCIEAW693
-		/**
-		 *  Special/Temporary handling to manage the driver version
-		 * string to identify AW693/IW623 based on fw_cap value set by
-		 * Fw
-		 */
-		if ((phw->fw_cap_ext & MBIT(23)) &&
-		    IS_PCIEAW693(handle->card_type)) {
-			moal_memcpy_ext(handle, driver_version, CARD_PCIEIW623,
-					strlen(CARD_PCIEIW623),
-					strlen(driver_version));
+		if (IS_PCIEAW693(handle->card_type)) {
+			if (phw->fw_cap_ext & MBIT(23)) {
+				/**
+				 *  Special/Temporary handling to manage the
+				 * driver version string to identify AW693/IW623
+				 * based on fw_cap value set by Fw
+				 */
+				if (strlen(CARD_PCIEIW623) <
+				    sizeof(driver_version)) {
+					// coverity[overrun-buffer-arg:SUPPRESS]
+					moal_memcpy_ext(handle, driver_version,
+							CARD_PCIEIW623,
+							strlen(CARD_PCIEIW623),
+							strlen(driver_version));
+				} else {
+					PRINTM(MERROR,
+					       "chip ID (%s) len(%zu) is > (%zu)",
+					       CARD_PCIEIW623,
+					       strlen(CARD_PCIEIW623),
+					       sizeof(driver_version));
+				}
+			} else if (!(phw->fw_cap_ext & MBIT(14))) {
+				/**
+				 *  Special/Temporary handling to manage the
+				 * driver version string to identify AW693/692
+				 * based on fw_cap value set by Fw. Note: 692 is
+				 * the same as 693 but w/o 6G support
+				 */
+				if (strlen(CARD_PCIEAW692) <
+				    sizeof(driver_version)) {
+					// coverity[overrun-buffer-arg:SUPPRESS]
+					moal_memcpy_ext(handle, driver_version,
+							CARD_PCIEAW692,
+							strlen(CARD_PCIEAW692),
+							strlen(driver_version));
+				} else {
+					PRINTM(MERROR,
+					       "chip ID (%s) len(%zu) is > (%zu)",
+					       CARD_PCIEAW692,
+					       strlen(CARD_PCIEAW692),
+					       sizeof(driver_version));
+				}
+			}
+
 			if (drv_ver_len >= MLAN_MAX_VER_STR_LEN - 1) {
 				drv_ver_len = MLAN_MAX_VER_STR_LEN - 1;
 			}
@@ -1867,6 +1924,9 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 				       5;
 				format = (rt_info.rate_info.rate_info & 0x18) >>
 					 3;
+				preamble_type =
+					(rt_info.rate_info.rate_info & 0xC0) >>
+					6;
 				bw = (rt_info.rate_info.rate_info & 0x06) >> 1;
 				dcm = rt_info.rate_info.dcm;
 				if (format == MLAN_RATE_FORMAT_HE)
@@ -1947,7 +2007,8 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 					   RADIOTAP_FLAGS_WEP_ENCRYPTION |
 					   RADIOTAP_FLAGS_FAILED_FCS_CHECK));
 				/** reverse fail fcs, 1 means pass FCS in FW,
-				 * but means fail FCS in radiotap */
+				 * but means fail FCS in radiotap
+				 */
 				rth_body->flags |=
 					(~rt_info.extra_info.flags) &
 					RADIOTAP_FLAGS_FAILED_FCS_CHECK;
@@ -2236,155 +2297,176 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 						he->data3 |=
 							HE_CODING_LDPC_USER0;
 					he->data1 |= (HE_BW_KNOWN);
-					if (he_sig1)
-						he->data1 |= (HE_MU_DATA);
-					if (bw == 1) {
-						he->data5 |= RX_HE_BW_40;
-						if (he_sig2) {
-							MLAN_DECODE_RU_SIGNALING_CH1(
-								out, he_sig1,
-								he_sig2);
-							MLAN_DECODE_RU_TONE(
-								out, usr_idx,
-								tone);
-							if (!tone) {
-								MLAN_DECODE_RU_SIGNALING_CH3(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (tone != 0) {
-								he->data5 &=
-									~RX_HE_BW_40;
-								he->data5 |=
-									tone;
-							}
-						}
-					} else if (bw == 2) {
-						he->data5 |= RX_HE_BW_80;
-						if (he_sig2) {
-							MLAN_DECODE_RU_SIGNALING_CH1(
-								out, he_sig1,
-								he_sig2);
-							MLAN_DECODE_RU_TONE(
-								out, usr_idx,
-								tone);
-							if (!tone) {
-								MLAN_DECODE_RU_SIGNALING_CH2(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (!tone) {
-								if ((he_sig2 &
-								     MLAN_80_CENTER_RU) &&
-								    !usr_idx) {
-									tone = RU_TONE_26;
-								} else {
-									usr_idx--;
-								}
-							}
-							if (!tone) {
-								MLAN_DECODE_RU_SIGNALING_CH3(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (!tone) {
-								MLAN_DECODE_RU_SIGNALING_CH4(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (tone != 0) {
-								he->data5 &=
-									~RX_HE_BW_80;
-								he->data5 |=
-									tone;
-							}
-						}
-					} else if (bw == 3) {
-						he->data5 |= RX_HE_BW_160;
-						if (he_sig2) {
-							MLAN_DECODE_RU_SIGNALING_CH1(
-								out, he_sig1,
-								he_sig2);
-							MLAN_DECODE_RU_TONE(
-								out, usr_idx,
-								tone);
-							if (!tone) {
-								MLAN_DECODE_RU_SIGNALING_CH2(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (!tone) {
-								if ((he_sig2 &
-								     MLAN_160_CENTER_RU) &&
-								    !usr_idx) {
-									tone = RU_TONE_26;
-								} else {
-									usr_idx--;
-								}
-							}
-							if (!tone) {
-								MLAN_DECODING_160_RU_CH3(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (!tone) {
-								MLAN_DECODING_160_RU_CH3(
-									out,
-									he_sig1,
-									he_sig2);
-								MLAN_DECODE_RU_TONE(
-									out,
-									usr_idx,
-									tone);
-							}
-							if (tone != 0) {
-								he->data5 &=
-									~RX_HE_BW_160;
-								he->data5 |=
-									tone;
-							}
-						}
+					if (preamble_type == 1) { // 106 RU
+						he->data1 =
+							(he->data1 & (~0x3)) +
+							preamble_type;
+						he->data5 =
+							(he->data5 & (~0xF)) +
+							(bw ? 6 : 0);
 					} else {
-						if (he_sig2) {
-							MLAN_DECODE_RU_SIGNALING_CH1(
-								out, he_sig1,
-								he_sig2);
-							MLAN_DECODE_RU_TONE(
-								out, usr_idx,
-								tone);
-							if (tone) {
-								he->data5 |=
-									tone;
+						if (he_sig1)
+							he->data1 |=
+								(HE_MU_DATA);
+						if (bw == 1) {
+							he->data5 |=
+								RX_HE_BW_40;
+							if (he_sig2) {
+								MLAN_DECODE_RU_SIGNALING_CH1(
+									out,
+									he_sig1,
+									he_sig2);
+								MLAN_DECODE_RU_TONE(
+									out,
+									usr_idx,
+									tone);
+								if (!tone) {
+									MLAN_DECODE_RU_SIGNALING_CH3(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (tone != 0) {
+									he->data5 &=
+										~RX_HE_BW_40;
+									he->data5 |=
+										tone;
+								}
+							}
+						} else if (bw == 2) {
+							he->data5 |=
+								RX_HE_BW_80;
+							if (he_sig2) {
+								MLAN_DECODE_RU_SIGNALING_CH1(
+									out,
+									he_sig1,
+									he_sig2);
+								MLAN_DECODE_RU_TONE(
+									out,
+									usr_idx,
+									tone);
+								if (!tone) {
+									MLAN_DECODE_RU_SIGNALING_CH2(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (!tone) {
+									if ((he_sig2 &
+									     MLAN_80_CENTER_RU) &&
+									    !usr_idx) {
+										tone = RU_TONE_26;
+									} else {
+										usr_idx--;
+									}
+								}
+								if (!tone) {
+									MLAN_DECODE_RU_SIGNALING_CH3(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (!tone) {
+									MLAN_DECODE_RU_SIGNALING_CH4(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (tone != 0) {
+									he->data5 &=
+										~RX_HE_BW_80;
+									he->data5 |=
+										tone;
+								}
+							}
+						} else if (bw == 3) {
+							he->data5 |=
+								RX_HE_BW_160;
+							if (he_sig2) {
+								MLAN_DECODE_RU_SIGNALING_CH1(
+									out,
+									he_sig1,
+									he_sig2);
+								MLAN_DECODE_RU_TONE(
+									out,
+									usr_idx,
+									tone);
+								if (!tone) {
+									MLAN_DECODE_RU_SIGNALING_CH2(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (!tone) {
+									if ((he_sig2 &
+									     MLAN_160_CENTER_RU) &&
+									    !usr_idx) {
+										tone = RU_TONE_26;
+									} else {
+										usr_idx--;
+									}
+								}
+								if (!tone) {
+									MLAN_DECODING_160_RU_CH3(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (!tone) {
+									MLAN_DECODING_160_RU_CH3(
+										out,
+										he_sig1,
+										he_sig2);
+									MLAN_DECODE_RU_TONE(
+										out,
+										usr_idx,
+										tone);
+								}
+								if (tone != 0) {
+									he->data5 &=
+										~RX_HE_BW_160;
+									he->data5 |=
+										tone;
+								}
+							}
+						} else {
+							if (he_sig2) {
+								MLAN_DECODE_RU_SIGNALING_CH1(
+									out,
+									he_sig1,
+									he_sig2);
+								MLAN_DECODE_RU_TONE(
+									out,
+									usr_idx,
+									tone);
+								if (tone) {
+									he->data5 |=
+										tone;
+								}
 							}
 						}
 					}
@@ -2394,10 +2476,10 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 					he->data1 |= (HE_MCS_KNOWN);
 
 					he->data3 |= (mcs << 8);
+					he->data3 |= (dcm << 12);
 					he->data6 |= nss;
 					he->data1 |= (HE_DCM_KNOWN);
 					he->data1 = cpu_to_le16(he->data1);
-					he->data5 |= (dcm << 12);
 					he->data5 = cpu_to_le16(he->data5);
 					he->data3 = cpu_to_le16(he->data3);
 
@@ -2956,6 +3038,9 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				       "\n",
 				       priv->netdev->name,
 				       MAC2STR(ethh->h_source));
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+				priv->deauth_evt_cnt = 0;
+#endif
 			} else if (ntohs(ethh->h_proto) == NXP_ETH_P_WAPI) {
 				PRINTM(MEVENT,
 				       "wlan: %s Rx WAPI pkt from " MACSTR "\n",
@@ -3096,16 +3181,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 			priv->stats.rx_packets++;
 			priv->rx_pkt_ac[moal_user_priority_to_qos(
 				pmbuf->priority)]++;
-#if defined(STA_CFG80211) || defined(UAP_CFG80211)
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
-			if (drvdbg & MDAT_D)
-				woal_packet_fate_monitor(priv, PACKET_TYPE_RX,
-							 RX_PKT_FATE_SUCCESS,
-							 FRAME_TYPE_ETHERNET_II,
-							 0, 0, skb->data,
-							 skb->len);
-#endif
-#endif
 #ifdef ANDROID_KERNEL
 			if (handle->params.wakelock_timeout) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
@@ -3358,6 +3433,7 @@ static void woal_rx_mgmt_pkt_event(moal_private *priv, t_u8 *pkt, t_u16 len)
 static void woal_process_csi_status_report(pmlan_event pmevent)
 {
 	csi_status_info *pcsi_status = (csi_status_info *)pmevent->event_buf;
+
 	if (pcsi_status->status == CSI_STATUS_ENABLED) {
 		PRINTM(MEVENT,
 		       "csi status report: enable and start csi on channel %d \r\n",
@@ -3715,16 +3791,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	t_u8 chan_num = 0;
 #endif
 #ifdef STA_CFG80211
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
-	t_u8 enable = 1;
-#endif
-	t_u8 *req_ie = NULL;
-	t_u16 ie_len = 0;
-	apinfo *pinfo = NULL, *req_tlv = NULL;
-	MrvlIEtypesHeader_t *tlv = NULL;
-	t_u16 tlv_type = 0, tlv_len = 0, tlv_buf_left = 0;
-#endif
-#ifdef STA_CFG80211
 	t_u8 hw_test;
 #endif
 	int cfg80211_wext;
@@ -3759,8 +3825,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	addba_timeout_event *evtbuf = NULL;
 
 	t_u8 auto_fw_dump = MFALSE;
-	static int fw_reset_cnt = 0;
+	static int fw_reset_cnt;
 	t_u8 fw_reset_time = 0;
+
 	ENTER();
 	if (pmevent->event_id == MLAN_EVENT_ID_FW_DUMP_INFO) {
 		if (!handle->is_fw_dump_timer_set) {
@@ -3825,7 +3892,20 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 			memset(wrqu.ap_addr.sa_data, 0x00, ETH_ALEN);
 			moal_memcpy_ext(priv->phandle, wrqu.ap_addr.sa_data,
 					pmevent->event_buf, ETH_ALEN,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80)
+#ifndef ANDROID_KERNEL
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 211) && /* Backported         \
+							    from 6.1.80        \
+							    to 5.10 LTS */     \
+     LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)) ||                         \
+	(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 150) && /* Backported     \
+								from 6.1.80    \
+								to 5.15 LTS */ \
+	 LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)) ||                     \
+	(LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80) && /* Original change  \
+							      introduced here  \
+							      in mainline */   \
+	 LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)) /* Reverted here in    \
+							   mainline */
 					sizeof(wrqu.ap_addr.sa_data_min));
 #else
 					sizeof(wrqu.ap_addr.sa_data));
@@ -3993,13 +4073,14 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 	case MLAN_EVENT_ID_FW_DISCONNECTED:
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 		/* 6E Indoor/Outdoor, download the default power table
-		 * after disconnect/link-loss */
+		 * after disconnect/link-loss
+		 */
 		if ((priv->phandle->fw_bands & BAND_6G) &&
 		    (priv->sme_current.channel) &&
 		    (priv->sme_current.channel->band == NL80211_BAND_6GHZ)) {
 			PRINTM(MEVENT, "Downloading default 6E table!!\n");
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_dnld_default_6e_psd_table(priv))
+			if (woal_dnld_default_6e_psd_table(priv) !=
+			    MLAN_STATUS_SUCCESS)
 				PRINTM(MERROR,
 				       "Default 6E table download failed!!\n");
 		}
@@ -5191,7 +5272,8 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		break;
 	case MLAN_EVENT_ID_DRV_MGMT_FRAME:
 		/** We use the event_id field to pass the band_config and
-		 * chan_num */
+		 * chan_num
+		 */
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 		band_config = pmevent->event_buf[0];
 		chan_num = pmevent->event_buf[1];
@@ -5337,7 +5419,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						       priv->netdev->name);
 						priv->plinkstats
 							.num_evt_deauth_rx++;
-#if ((CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 19, 2)) ||                    \
+#if ((KERNEL_VERSION(5, 19, 2) <= CFG80211_VERSION_CODE) ||                    \
      (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 31))
 						if (!priv->wdev->connected) {
 #else
@@ -5751,95 +5833,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 #endif
 #endif
 		break;
-	case MLAN_EVENT_ID_FW_ROAM_OFFLOAD_RESULT:
-#ifdef STA_CFG80211
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
-		woal_cfg80211_vendor_event(priv, event_set_key_mgmt_offload,
-					   &enable, sizeof(enable));
-#endif
-		moal_memcpy_ext(priv->phandle, priv->cfg_bssid,
-				pmevent->event_buf, ETH_ALEN, ETH_ALEN);
-		tlv = (MrvlIEtypesHeader_t *)((t_u8 *)pmevent->event_buf +
-					      MLAN_MAC_ADDR_LENGTH);
-		tlv_buf_left = pmevent->event_len - MLAN_MAC_ADDR_LENGTH;
-		while (tlv_buf_left >= sizeof(MrvlIEtypesHeader_t)) {
-			tlv_type = woal_le16_to_cpu(tlv->type);
-			tlv_len = woal_le16_to_cpu(tlv->len);
-
-			if (tlv_buf_left <
-			    (tlv_len + sizeof(MrvlIEtypesHeader_t))) {
-				PRINTM(MERROR,
-				       "Error processing firmware roam success TLVs, bytes left < TLV length\n");
-				break;
-			}
-
-			switch (tlv_type) {
-			case TLV_TYPE_APINFO:
-				pinfo = (apinfo *)tlv;
-				break;
-			case TLV_TYPE_ASSOC_REQ_IE:
-				req_tlv = (apinfo *)tlv;
-				break;
-			default:
-				break;
-			}
-			tlv_buf_left -= tlv_len + sizeof(MrvlIEtypesHeader_t);
-			tlv = (MrvlIEtypesHeader_t
-				       *)((t_u8 *)tlv + tlv_len +
-					  sizeof(MrvlIEtypesHeader_t));
-		}
-		if (!pinfo) {
-			PRINTM(MERROR,
-			       "ERROR:AP info in roaming event buffer is NULL\n");
-			goto done;
-		}
-		if (req_tlv) {
-			req_ie = req_tlv->rsp_ie;
-			ie_len = req_tlv->header.len;
-		}
-		woal_inform_bss_from_scan_result(priv, NULL, MOAL_NO_WAIT);
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
-		roam_info =
-			kzalloc(sizeof(struct cfg80211_roam_info), GFP_ATOMIC);
-		if (roam_info) {
-#if ((CFG80211_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)) ||                     \
-     (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 31))
-			roam_info->links[0].bssid = priv->cfg_bssid;
-#else
-			roam_info->bssid = priv->cfg_bssid;
-#endif
-			roam_info->req_ie = req_ie;
-			roam_info->req_ie_len = ie_len;
-			roam_info->resp_ie = pinfo->rsp_ie;
-			roam_info->resp_ie_len = pinfo->header.len;
-#if (CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 19, 0) ||                      \
-     (defined(ANDROID_SDK_VERSION) && ANDROID_SDK_VERSION >= 33))
-			if (priv->wdev->u.client.ssid_len)
-#else
-			if (priv->wdev->ssid_len)
-#endif
-				cfg80211_roamed(priv->netdev, roam_info,
-						GFP_KERNEL);
-			kfree(roam_info);
-		}
-#else
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 0, 0)
-		cfg80211_roamed(priv->netdev, NULL, priv->cfg_bssid, req_ie,
-				ie_len, pinfo->rsp_ie, pinfo->header.len,
-				GFP_KERNEL);
-#else
-		cfg80211_roamed(priv->netdev, priv->cfg_bssid, req_ie, ie_len,
-				pinfo->rsp_ie, pinfo->header.len, GFP_KERNEL);
-#endif
-#endif
-
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
-		woal_roam_ap_info(priv, pmevent->event_buf, pmevent->event_len);
-#endif
-#endif
-		PRINTM(MMSG, "FW Roamed to bssid " MACSTR " successfully\n",
-		       MAC2STR(pmevent->event_buf));
-		break;
 	case MLAN_EVENT_ID_DRV_RTT_RESULT:
 		DBG_HEXDUMP(MEVT_D, "RTT result", pmevent->event_buf,
 			    pmevent->event_len);
@@ -6189,6 +6182,7 @@ inline t_u16 moal_read_unaligned_u16(const void *src)
 	return *((const t_u16 *)src);
 #else
 	t_u16 val = 0;
+
 	memcpy(&val, src, sizeof(t_u16));
 	return val;
 #endif
@@ -6200,6 +6194,7 @@ inline t_u32 moal_read_unaligned_u32(const void *src)
 	return *((const t_u32 *)src);
 #else
 	t_u32 val = 0;
+
 	memcpy(&val, src, sizeof(t_u32));
 	return val;
 #endif

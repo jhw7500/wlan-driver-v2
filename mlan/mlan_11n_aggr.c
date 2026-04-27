@@ -190,6 +190,7 @@ static t_u16 wlan_form_amsdu_txpd(mlan_private *priv, mlan_buffer *pmbuf,
 	t_u32 data_len = pmbuf->data_len;
 	t_u16 len = 0;
 	t_s32 offset = 0;
+
 	ENTER();
 
 	head_ptr = pmbuf->pbuf + pmbuf->data_offset - Tx_PD_SIZEOF(pmadapter) -

@@ -61,7 +61,7 @@ typedef struct {
 /** Name of the USB driver */
 static const char usbdriver_name[] = "usbxxx";
 
-static struct usb_device_id *woal_usb_table_ext = NULL;
+static struct usb_device_id *woal_usb_table_ext;
 static usb_config_t customer_usb_config = {0x0};
 
 /** This structure contains the device signature */
@@ -2310,7 +2310,7 @@ static int parse_config_line(char *line, usb_config_entry_t *entry,
 			     t_u16 *current_entry_idx)
 {
 	char *token, *value;
-	static usb_config_entry_t *current_entry = NULL;
+	static usb_config_entry_t *current_entry;
 
 	/* Remove whitespace and newlines */
 	line = strim(line);
@@ -2436,6 +2436,7 @@ static int parse_config_line(char *line, usb_config_entry_t *entry,
 static t_size parse_cfg_get_line(t_u8 *data, t_size size, t_u8 *line_pos)
 {
 	t_u8 *src, *dest;
+
 	static t_s32 pos;
 
 	ENTER();
@@ -2520,6 +2521,7 @@ static int parse_usb_config_file(const char *config_path, usb_config_t *config)
 
 	if (ret >= 0) {
 		int i, j;
+
 		config->total_entries = entry_idx;
 
 		/* Count total valid VID/PID pairs */
@@ -2674,6 +2676,7 @@ int woal_usb_init_extended_table(const char *config_path)
 
 	/* Count original table size */
 	struct usb_device_id *entry = woal_usb_table;
+
 	while (entry->idVendor != 0 || entry->idProduct != 0) {
 		original_size++;
 		entry++;
@@ -2703,7 +2706,6 @@ int woal_usb_init_extended_table(const char *config_path)
 
 	return 0;
 }
-
 /**
  * check_usb_ext_table_info - Check USB extended table for device information
  * @device_name: Buffer to store the device name (can be NULL)

@@ -101,7 +101,7 @@ static int wifi_reset_config = 5;
 static int tx_budget = 2600;
 static int mclient_scheduling = 1;
 
-static int copy_policy = 0;
+static int copy_policy;
 
 static int ext_scan;
 
@@ -110,7 +110,7 @@ static int bootup_cal_ctrl;
 /** IEEE PS mode */
 static int ps_mode;
 /** plinkstats parameter */
-static char *plinkstats = NULL;
+static char *plinkstats;
 /** tcpackenh parameter */
 static int tcpackenh = 1;
 /** passive to active scan */
@@ -142,7 +142,7 @@ static int wacp_mode = WACP_MODE_DEFAULT;
 #ifdef XDP_SUPPORT
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 /** XDP(express datapath) mode */
-static int xdp = 0;
+static int xdp;
 #endif
 #endif
 
@@ -206,13 +206,13 @@ static int rps = 0x0F;
  * EDMAC for EU adaptivity
  * Default value of 0 keeps edmac disabled by default
  */
-static int edmac_ctrl = 0;
+static int edmac_ctrl;
 static int tx_skb_clone = 1;
 
 #ifdef IMX_SUPPORT
 static int pmqos = 1;
 #else
-static int pmqos = 0;
+static int pmqos;
 #endif
 
 static int chan_track;
@@ -371,11 +371,6 @@ static int tpe_ie_ignore;
 
 static int amsdu_8k_rx;
 
-/** ignore TPE IE configuration from ex-AP*/
-static int tpe_ie_ignore = 0;
-
-static int amsdu_8k_rx = 0;
-
 #ifdef DEBUG_LEVEL1
 #ifdef DEBUG_LEVEL2
 #define DEFAULT_DEBUG_MASK (0xffffffff)
@@ -459,49 +454,12 @@ static card_type_entry card_type_map_tbl[] = {
 static int dfs53cfg = DFS_W53_DEFAULT_FW;
 
 static int keep_previous_scan = 1;
-static int make_before_break = 0;
+static int make_before_break;
 static int auto_11ax = 1;
 static int reject_addba_req;
 
 /** bandctrl */
 static int bandctrl;
-
-#if defined(USB)
-/**
- *  @brief This function checks if a device name exists in the card type mapping
- * table
- *
- *  @param device_name  A pointer to the device name string to search for
- *  @param card_type    A pointer to store the corresponding card type if found
- *  @return             MLAN_STATUS_SUCCESS if device name is found,
- * MLAN_STATUS_FAILURE otherwise
- */
-mlan_status check_device_name_info(char *device_name, t_u16 *card_type)
-{
-	t_u32 tbl_size =
-		sizeof(card_type_map_tbl) / sizeof(card_type_map_tbl[0]);
-	t_u32 i;
-
-	for (i = 0; i < tbl_size; i++) {
-		if (strcmp(card_type_map_tbl[i].name, device_name) == 0) {
-			if (card_type != NULL)
-				*card_type = card_type_map_tbl[i].card_type;
-
-			return MLAN_STATUS_SUCCESS;
-		}
-	}
-
-	return MLAN_STATUS_FAILURE;
-}
-#endif
-
-#ifdef SECURE_HOST
-/** secure host mode support */
-int secure_host = 0;
-#endif
-
-/** bandctrl */
-static int bandctrl = 0;
 
 #if defined(USB)
 /**
@@ -817,7 +775,7 @@ static mlan_status parse_cfg_slot_id_info(t_u8 *data, t_u32 size, t_s32 cur_pos,
 		pos++;
 		*dest = '\0';
 
-		PRINTM(MINFO, "get line %s \n", line);
+		PRINTM(MINFO, "get line %s\n", line);
 
 		if (line[0] == '#' || strstr(line, "={")) {
 			memset(line, 0, MAX_LINE_LEN);
@@ -843,19 +801,19 @@ static mlan_status parse_cfg_slot_id_info(t_u8 *data, t_u32 size, t_s32 cur_pos,
 					    card_info->func->card->host->index) {
 						ret = MLAN_STATUS_FAILURE;
 						PRINTM(MINFO,
-						       "incorrect conf slot id %d, device slot id %d \n",
+						       "incorrect conf slot id %d, device slot id %d\n",
 						       out_data,
 						       card_info->func->card
 							       ->host->index);
 					} else {
 						PRINTM(MINFO,
-						       "correct conf slot id %d \n",
+						       "correct conf slot id %d\n",
 						       out_data);
 					}
 					break;
 				} else {
 					ret = MLAN_STATUS_FAILURE;
-					PRINTM(MERROR, "negative value \n");
+					PRINTM(MERROR, "negative value\n");
 					break;
 				}
 			} else {
@@ -2030,6 +1988,7 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 {
 	t_u8 addr[ETH_ALEN];
 	bool is_valid_mac_addr = false;
+
 	if (hw_test)
 		moal_extflg_set(handle, EXT_HW_TEST);
 #ifdef CONFIG_OF
@@ -3204,6 +3163,7 @@ static mlan_status parse_skip_cfg_block(t_u8 *data, t_u32 size)
 {
 	int end = 0;
 	t_u8 line[MAX_LINE_LEN];
+
 	while ((int)parse_cfg_get_line(data, size, line, NULL) != -1) {
 		if (strncmp(line, "}", strlen("}")) == 0) {
 			end = 1;
@@ -3393,7 +3353,6 @@ mlan_status woal_get_c_vidpid(char **c_vidpid)
 	t_u8 line[MAX_LINE_LEN], *data = NULL;
 	t_u32 size, i, tbl_size;
 	char *card_type = NULL, *blk_id = NULL, *out_str = NULL;
-	;
 
 	if (mod_para == NULL) {
 		PRINTM(MMSG, "No module param cfg file specified\n");
@@ -3474,7 +3433,8 @@ err:
 
 /* Register module parameter 'plinkstats' for runtime configuration.
  * Accepts string input via sysfs or kernel command line.
- * Format: "0" to disable, "1" to enable, "2" to reset. */
+ * Format: "0" to disable, "1" to enable, "2" to reset.
+ */
 module_param(plinkstats, charp, 0);
 MODULE_PARM_DESC(plinkstats, "0: Disable; 1: Enable; 2: Reset");
 module_param(mod_para, charp, 0);

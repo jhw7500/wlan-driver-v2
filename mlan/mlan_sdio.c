@@ -1954,11 +1954,14 @@ tx_curr_single:
 				mp_aggr_pkt_limit],
 		       0, sizeof(t_u16) * mp_aggr_pkt_limit);
 		/* CID 24721242: (#1 of 1): CERT-C Array (CERT ARR30-C)
-		 * Fix for array bounds violation */
+		 * Fix for array bounds violation
+		 */
 		/* CID 48066770: (#1 of 1):
-		 * Negative array index read (REVERSE_NEGATIVE) */
+		 * Negative array index read (REVERSE_NEGATIVE)
+		 */
 		/* CID 48066772 48066773 48066774: (#1 of 1):
-		 * Out-of-bounds write (OVERRUN) */
+		 * Out-of-bounds write (OVERRUN)
+		 */
 		if (mp_index < SDIO_MP_DBG_NUM) {
 			t_u16 index = mp_index * mp_aggr_pkt_limit;
 
@@ -2807,9 +2810,9 @@ static mlan_status wlan_process_sdio_int_status(mlan_adapter *pmadapter,
 				goto done;
 			}
 			PRINTM(MINFO, "rx_len = %d\n", rx_len);
-			if (MLAN_STATUS_SUCCESS !=
-			    wlan_sdio_card_to_host_mp_aggr(pmadapter, pmbuf,
-							   port, rx_len)) {
+			if (wlan_sdio_card_to_host_mp_aggr(pmadapter, pmbuf,
+							   port, rx_len) !=
+			    MLAN_STATUS_SUCCESS) {
 				pmadapter->dbg.num_rx_card_to_host_failure++;
 
 				PRINTM(MERROR,
@@ -3262,6 +3265,7 @@ mlan_status wlan_re_alloc_sdio_rx_mpa_buffer(mlan_adapter *pmadapter)
 	t_u32 buf_size = 0;
 	t_u32 mpa_rx_buf_size = pmadapter->pcard_sd->mp_rx_aggr_buf_size;
 	t_u8 mp_aggr_pkt_limit = pmadapter->pcard_sd->mp_aggr_pkt_limit;
+
 	mpa_rx_buf_size =
 		MIN(pmadapter->pcard_sd->max_seg_size, mpa_rx_buf_size);
 

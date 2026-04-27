@@ -5,7 +5,7 @@
  * @brief This file contains definition for private IOCTL call.
  *
  *
- * Copyright 2008-2025 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -918,5 +918,7 @@ typedef struct {
 #ifdef UAP_SUPPORT
 #define PRIV_CMD_AGCS "agcs"
 #endif
+
+#define PRIV_CMD_ECSA_CNT_CFG "ecsacntcfg"
 
 #endif /* _WOAL_ETH_PRIV_H_ */

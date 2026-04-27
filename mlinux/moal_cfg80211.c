@@ -2706,7 +2706,7 @@ done:
  * @brief Request the driver to get antenna configuration
  *
  * @param wiphy           A pointer to wiphy structure
- * @param radio_idx 	  Radio index
+ * @param radio_idx	  Radio index
  * @param tx_ant          Bitmaps of allowed antennas to use for TX
  * @param rx_ant          Bitmaps of allowed antennas to use for RX
  *
@@ -2777,7 +2777,7 @@ done:
  * @brief Request the driver to set antenna configuration
  *
  * @param wiphy           A pointer to wiphy structure
- * @param radio_idx 	  Radio index
+ * @param radio_idx	  Radio index
  * @param tx_ant          Bitmaps of allowed antennas to use for TX
  * @param rx_ant          Bitmaps of allowed antennas to use for RX
  *
@@ -3076,15 +3076,25 @@ static int woal_mgmt_tx(moal_private *priv, const u8 *buf, size_t len,
 	/* Remove 11ax IEs and reduce IE length if band support disabled
 	 * and assoc response includes 11ax IEs
 	 */
-	if (chan && ((chan->band == NL80211_BAND_2GHZ &&
-		      !(priv->phandle->fw_bands & BAND_GAX)) ||
-		     (chan->band == NL80211_BAND_5GHZ &&
-		      !(priv->phandle->fw_bands & BAND_AAX))
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
-		     || (chan->band == NL80211_BAND_6GHZ &&
-			 !(priv->phandle->fw_bands & BAND_6G))
+	if (chan &&
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
+	    /* Kernel >= 4.7: Use NL80211_BAND_* enum */
+	    ((chan->band == NL80211_BAND_2GHZ &&
+	      !(priv->phandle->fw_bands & BAND_GAX)) ||
+	     (chan->band == NL80211_BAND_5GHZ &&
+	      !(priv->phandle->fw_bands & BAND_AAX))
+#else
+	    /* Kernel < 4.7 (including 4.4): Use IEEE80211_BAND_* enum */
+	    ((chan->band == IEEE80211_BAND_2GHZ &&
+	      !(priv->phandle->fw_bands & BAND_GAX)) ||
+	     (chan->band == IEEE80211_BAND_5GHZ &&
+	      !(priv->phandle->fw_bands & BAND_AAX))
 #endif
-			     )) {
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
+	     || (chan->band == NL80211_BAND_6GHZ &&
+		 !(priv->phandle->fw_bands & BAND_6G))
+#endif
+		     )) {
 		fc = le16_to_cpu(
 			((const struct ieee80211_mgmt *)buf)->frame_control);
 		type = fc & IEEE80211_FCTL_FTYPE;
@@ -4595,10 +4605,10 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 			/* filter out EXTCAP */
 			if (wps_flag & IE_MASK_EXTCAP) {
 				ie_len = length + 2;
-				if (MLAN_STATUS_SUCCESS !=
-				    woal_set_get_gen_ie(priv, MLAN_ACT_SET, pos,
+				if (woal_set_get_gen_ie(priv, MLAN_ACT_SET, pos,
 							NULL, &ie_len,
-							MOAL_IOCTL_WAIT))
+							MOAL_IOCTL_WAIT) !=
+				    MLAN_STATUS_SUCCESS)
 					PRINTM(MERROR,
 					       "Fail to set EXTCAP IE\n");
 				break;
@@ -5046,7 +5056,8 @@ int woal_cfg80211_mgmt_frame_ie(
 				MGMT_MASK_PROBE_RESP;
 			/* woal_filter_beacon_ies() enforces bounds internally
 			 * and output is limited by MAX_IE_SIZE, preventing
-			 * overflow */
+			 * overflow
+			 */
 			// coverity[integer_overflow:SUPPRESS]
 			beacon_ies_data->ie_length = woal_filter_beacon_ies(
 				priv, beacon_ies, beacon_ies_len,
@@ -6741,10 +6752,13 @@ void process_wifi_channel_avoid_list_event(
 				continue;
 
 			PRINTM(MINFO, "====== Iteration=%d ======", index);
-			/* Clearing NO-IR flags for all channels */
+			/* Clearing NO-IR flags for all channels,
+			 * except for the channels marked as INDOOR-ONLY */
 			for (i = 0; i < sband->n_channels; i++) {
 				channel = &sband->channels[i];
-				channel->flags &= ~IEEE80211_CHAN_NO_IR;
+				if (!(channel->flags &
+				      IEEE80211_CHAN_INDOOR_ONLY))
+					channel->flags &= ~IEEE80211_CHAN_NO_IR;
 			}
 
 			/* Setting NO-IR flags as per the channel list */

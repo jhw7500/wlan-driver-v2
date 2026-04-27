@@ -831,7 +831,7 @@ t_void wlan_wakeup_card_timeout_func(void *function_context)
 
 	ENTER();
 
-	PRINTM(MCMND, "%s: ps_state=%d\n", __FUNCTION__, pmadapter->ps_state);
+	PRINTM(MCMND, "%s: ps_state=%d\n", __func__, pmadapter->ps_state);
 	if (pmadapter->ps_state != PS_STATE_AWAKE) {
 		PRINTM_NETINTF(MCMND, pmpriv);
 		PRINTM(MCMND, "Wakeup card timeout(%d)!\n",
@@ -2777,7 +2777,8 @@ static void wlan_get_ap_ext_cap(mlan_private *pmpriv, ExtCap_t *ext_cap)
 	if (pbss_desc->pext_cap) {
 		/* pointer arithmetic is safely bounded and offset is validated
 		 * against structure size before use, ensuring no invalid
-		 * pointer dereference. */
+		 * pointer dereference.
+		 */
 		// coverity[cert_exp34_c_violation:SUPPRESS]
 		memcpy_ext(pmadapter, (t_u8 *)ext_cap,
 			   (t_u8 *)pbss_desc->pext_cap +
@@ -4560,7 +4561,7 @@ t_u8 *wlan_get_specific_ie(pmlan_private priv, t_u8 *ie_buf, t_u16 ie_len,
 		/*In case of 11AI, Assoc Req/Reassoc Req contains encrypted
 		 TLV's after FILS_SESSION. To avoid InterpretIE: error skipping
 		 TLV's after FILS_SESSION*/
-		if (FILS_SESSION == element_id) {
+		if (element_id == FILS_SESSION) {
 			break;
 		}
 		pcurrent_ptr += element_len + 2;
@@ -6837,8 +6838,7 @@ mlan_status wlan_misc_ioctl_mef_flt_cfg(pmlan_adapter pmadapter,
 				pmef->num_mdns_entry = 0;
 				memset(pmadapter, &pmef->entry[8], 0,
 				       sizeof(mef_entry_t));
-				if (MLAN_STATUS_SUCCESS !=
-				    wlan_process_mef_cfg_cmd(
+				if (wlan_process_mef_cfg_cmd(
 					    pmadapter
 						    ->priv[pioctl_req->bss_index],
 					    pmadapter) != MLAN_STATUS_SUCCESS)
@@ -7367,7 +7367,7 @@ mlan_status wlan_misc_ioctl_foundry_type(pmlan_adapter pmadapter,
 	if (pioctl_req->action == MLAN_ACT_GET)
 		cmd_action = HostCmd_ACT_GEN_GET;
 	else {
-		PRINTM(MERROR, " foundry_type  only support get operation \n");
+		PRINTM(MERROR, " foundry_type  only support get operation\n");
 		LEAVE();
 		return MLAN_STATUS_FAILURE;
 	}
@@ -8319,6 +8319,20 @@ mlan_status wlan_misc_ioctl_rf_test_cfg(pmlan_adapter pmadapter,
 				       cmd_action, 0, (t_void *)pioctl_req,
 				       &(pmisc->param.mfg_otp_cal_data_rd_wr));
 		break;
+
+	case MLAN_OID_MISC_GENERIC_CMD:
+		if (pioctl_req->action == MLAN_ACT_SET)
+			cmd_action = HostCmd_ACT_GEN_SET;
+		else {
+			PRINTM(MERROR, "Unsupported cmd_action\n");
+			ret = MLAN_STATUS_FAILURE;
+			goto done;
+		}
+		ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_MFG_COMMAND,
+				       cmd_action, 0, (t_void *)pioctl_req,
+				       &(pmisc->param.mfg_InternalTest_t));
+		break;
+
 	case MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE:
 		if (pioctl_req->action == MLAN_ACT_SET)
 			cmd_action = HostCmd_ACT_GEN_SET;
@@ -8330,7 +8344,7 @@ mlan_status wlan_misc_ioctl_rf_test_cfg(pmlan_adapter pmadapter,
 			goto done;
 		}
 		/* Send request to firmware */
-		PRINTM(MERROR, " sending request to FW mlan_misc \n");
+		PRINTM(MERROR, " sending request to FW mlan_misc\n");
 		ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_MFG_COMMAND,
 				       cmd_action, 0, (t_void *)pioctl_req,
 				       (&(pmisc->param.mfg_debug_temp)));

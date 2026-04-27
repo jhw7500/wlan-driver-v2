@@ -3027,6 +3027,7 @@ mlan_status wlan_ret_mfg_debug_temperature(pmlan_private pmpriv,
 	mfg_CmdDebugTemperature_Cfg_t *cfg = MNULL;
 	t_u8 rfu = 0;
 	t_u8 rpath = 0;
+
 	ENTER();
 	if (!pioctl_buf) {
 		LEAVE();
@@ -3226,6 +3227,9 @@ mlan_status wlan_ret_mfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 		goto cmd_mfg_done;
 	case MFG_CMD_OTP_CAL_DATA:
 		ret = wlan_ret_mfg_otp_cal_data_rw(pmpriv, resp, pioctl_buf);
+		goto cmd_mfg_done;
+	case MFG_CMD_CONFIG_GENERIC_CMD:
+		ret = wlan_ret_mfg_generic_cmd(pmpriv, resp, pioctl_buf);
 		goto cmd_mfg_done;
 	case MFG_CMD_SET_DEBUG_TEMPERATURE:
 		ret = wlan_ret_mfg_debug_temperature(pmpriv, resp, pioctl_buf);

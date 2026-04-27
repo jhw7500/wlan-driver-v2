@@ -4,7 +4,7 @@
  * @brief This file contains ioctl function to MLAN
  *
  *
- * Copyright 2008-2025 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -354,6 +354,7 @@ static inline void woal_copy_mc_addr(mlan_multicast_list *mlist,
 static inline int woal_copy_nan_mcast_addr(mlan_multicast_list *mlist)
 {
 	t_u8 nan_network_addr[6] = {0x51, 0x6f, 0x9a, 0x01, 0, 0};
+
 	ENTER();
 
 	woal_copy_mc_addr(mlist, nan_network_addr);
@@ -787,7 +788,8 @@ mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req,
 			       "CAC check is on going... Blocking Command %ld seconds\n",
 			       cac_left_jiffies / HZ);
 			/* blocking timeout set to 1.5 * CAC checking period
-			 * left time */
+			 * left time
+			 */
 			// coverity error raised for kernel's API
 			// coverity[check_return:SUPPRESS]
 			wait_rv = wait_event_interruptible_timeout(
@@ -4428,7 +4430,7 @@ done:
  */
 void woal_get_version(moal_handle *handle, char *version, int max_len)
 {
-	t_u8 hotfix_ver = 0, copied_len = 0;
+	t_u16 hotfix_ver = 0, copied_len = 0;
 	char fw_ver[100];
 
 	ENTER();
@@ -6301,7 +6303,8 @@ mlan_status woal_cancel_scan(moal_private *priv, t_u8 wait_option)
 	 */
 	woal_sched_timeout(300);
 	/* scan_priv is cleared after scan completion in a controlled context
-	 * where concurrent access is not expected */
+	 * where concurrent access is not expected
+	 */
 	// coverity[LOCK_EVASION:SUPPRESS]
 	handle->scan_priv = NULL;
 done:
@@ -6902,7 +6905,7 @@ done:
  *  @brief Set FILS PSK
  *
  *  @param priv                 A pointer to moal_private structure
- *  @param data          	 A pointer to a buffer
+ *  @param data		 A pointer to a buffer
  *
  *  @return                     MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING --
  * success, otherwise fail
@@ -7414,11 +7417,11 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 		if (priv->media_connected && !priv->cfg_disconnect) {
 			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
 			       MAC2STR(priv->cfg_bssid));
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+			if (woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
 					    priv->cfg_bssid,
-					    DEF_DEAUTH_REASON_CODE)) {
-				PRINTM(MERROR, "%s: woal_disconnect failed \n",
+					    DEF_DEAUTH_REASON_CODE) !=
+			    MLAN_STATUS_SUCCESS) {
+				PRINTM(MERROR, "%s: woal_disconnect failed\n",
 				       __func__);
 			}
 		}
@@ -7430,11 +7433,11 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 		    (priv->channel > 14)) {
 			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
 			       MAC2STR(priv->cfg_bssid));
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+			if (woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
 					    priv->cfg_bssid,
-					    DEF_DEAUTH_REASON_CODE)) {
-				PRINTM(MERROR, "%s: woal_disconnect failed \n",
+					    DEF_DEAUTH_REASON_CODE) !=
+			    MLAN_STATUS_SUCCESS) {
+				PRINTM(MERROR, "%s: woal_disconnect failed\n",
 				       __func__);
 			}
 		}
@@ -8567,7 +8570,7 @@ void woal_ioctl_get_misc_conf(moal_private *priv, mlan_ds_misc_cfg *info)
 #define MAX_RADIO_MODE 21
 #define OTP_RDWR_LEN 50
 #define MAX_THERMAL_SIMULATION_LEN 100
-
+#define GENERIC_CMD 10
 /*
  *  @brief Parse mfg cmd radio mode string
  *
@@ -9533,6 +9536,63 @@ done:
 	return ret;
 }
 
+/*
+ *  @brief Parse mfg cmd Generic cmd string
+ *
+ *  @param s        A pointer to user buffer
+ *  @param len      Length of user buffer
+ *  @param d        A pointer to mfg_Cmd_InternalTest_t struct
+ *  @return         0 on success, -EINVAL otherwise
+ */
+static int parse_generic_cmd_string(const char *s, size_t len,
+				    mfg_Cmd_InternalTest_t *d)
+{
+	int ret = MLAN_STATUS_SUCCESS;
+	char *string = NULL;
+	char *pos = NULL;
+	char *tmp = NULL;
+	gfp_t flag;
+	int i;
+	int irqs_are_disabled;
+
+	ENTER();
+	if (!s || !d) {
+		LEAVE();
+		return -EINVAL;
+	}
+	irqs_are_disabled = irqs_disabled();
+	flag = (in_atomic() || irqs_are_disabled) ? GFP_ATOMIC : GFP_KERNEL;
+	string = kzalloc(GENERIC_CMD, flag);
+	if (string == NULL) {
+		LEAVE();
+		return -ENOMEM;
+	}
+
+	moal_memcpy_ext(NULL, string, s + strlen("generic_cmd="),
+			len - strlen("generic_cmd="), GENERIC_CMD - 1);
+
+	tmp = string;
+	pos = strsep(&string, " \t");
+	d->action = (t_u16)woal_string_to_number(pos);
+	if (d->action == MFALSE)
+		goto done;
+	pos = strsep(&string, " \t");
+	if (pos)
+		d->opcode = (t_u32)woal_string_to_number(pos);
+
+	for (i = 0; i < GENERIC_CMD_BUFFER; i++) {
+		pos = strsep(&string, " \t"); // Get next token each iteration
+		if (pos) {
+			d->data[i] = (t_u32)woal_string_to_number(pos);
+		} else
+			break; // No more tokens
+	}
+done:
+	kfree(tmp);
+	LEAVE();
+	return ret;
+}
+
 /**
  *  @brief This function sends RF test mode command in firmware
  *
@@ -9637,6 +9697,13 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 		misc->sub_command = MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE;
 		if (parse_set_debug_temperature(buffer, len,
 						&misc->param.mfg_debug_temp)) {
+			err = MTRUE;
+		}
+		break;
+	case MFG_CMD_CONFIG_GENERIC_CMD:
+		misc->sub_command = MLAN_OID_MISC_GENERIC_CMD;
+		if (parse_generic_cmd_string(buffer, len,
+					     &misc->param.mfg_InternalTest_t)) {
 			err = MTRUE;
 		}
 		break;
@@ -9824,6 +9891,14 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 					.rfu_temperature[mac][rpath] =
 					misc->param.mfg_debug_temp
 						.rfu_temperature[mac][rpath];
+		}
+		break;
+	case MFG_CMD_CONFIG_GENERIC_CMD:
+		handle->rf_data->mfg_InternalTest_t.opcode =
+			misc->param.mfg_InternalTest_t.opcode;
+		for (i = 0; i < GENERIC_CMD_BUFFER; i++) {
+			handle->rf_data->mfg_InternalTest_t.data[i] =
+				misc->param.mfg_InternalTest_t.data[i];
 		}
 		break;
 	}

@@ -405,8 +405,7 @@ typedef enum _WLAN_802_11_WEP_STATUS {
 
 /** Default 11n capability mask for 2.4GHz */
 #define DEFAULT_11N_CAP_MASK_BG                                                \
-	(HWSPEC_SHORTGI20_SUPP | HWSPEC_RXSTBC_SUPP | HWSPEC_LDPC_SUPP |       \
-	 HWSPEC_CHANBW40_SUPP | HWSPEC_SHORTGI40_SUPP)
+	(HWSPEC_SHORTGI20_SUPP | HWSPEC_RXSTBC_SUPP | HWSPEC_LDPC_SUPP)
 /** Default 11n capability mask for 5GHz */
 #define DEFAULT_11N_CAP_MASK_A                                                 \
 	(HWSPEC_CHANBW40_SUPP | HWSPEC_SHORTGI20_SUPP |                        \
@@ -662,13 +661,6 @@ typedef enum _WLAN_802_11_WEP_STATUS {
 /** ExtCap : Reset support TDLS wider bandwidth */
 #define RESET_EXTCAP_TDLS_WIDER_BANDWIDTH(ext_cap)                             \
 	(ext_cap.TDLSWildBandwidth = 0)
-
-/** ExtCap : Check 20/40 BSS Coexistence support */
-#define ISSUPP_EXTCAP_2040_BSS_COEXIST(ext_cap) (ext_cap.BSS_CoexistSupport)
-/** ExtCap : Set 20/40 BSS Coexistence support */
-#define SET_EXTCAP_2040_BSS_COEXIST(ext_cap) (ext_cap.BSS_CoexistSupport = 1)
-/** ExtCap: Reset 20/40 BSS Coexistence support */
-#define RESET_EXTCAP_2040_BSS_COEXIST(ext_cap) (ext_cap.BSS_CoexistSupport = 0)
 
 /** ExtCap : Support for extend channel switch */
 #define ISSUPP_EXTCAP_EXT_CHANNEL_SWITCH(ext_cap) (ext_cap.ExtChanSwitching)
@@ -957,6 +949,8 @@ enum host_cmd_id {
 #define FW_CAPINFO_ALLOW_ADDBA_RESP_ON_SCAN MBIT(22)
 /** FW cap info bit 23: MAC2 is not available */
 #define FW_CAPINFO_EXT_NO_MAC2 MBIT(23)
+/** FW cap info bit 24: BE support */
+#define FW_CAPINFO_EXT_802_11BE MBIT(24)
 
 /** Check if 5G 1x1 only is supported by firmware */
 #define IS_FW_SUPPORT_5G_1X1_ONLY(_adapter)                                    \
@@ -4785,6 +4779,7 @@ typedef MLAN_PACK_START struct _HostCmd_DS_SET_DEBUG_TEMPERATURE {
 	/** RFU temperature to set */
 	t_s32 rf_temp[MAX_RFUS][MAX_PATHS];
 } MLAN_PACK_END HostCmd_DS_SET_DEBUG_TEMPERATURE;
+
 /** Type definition of hostcmd_twt_information */
 typedef struct MLAN_PACK_START _hostcmd_twt_information {
 	/** TWT Flow Identifier. Range: [0-7] */
@@ -7675,6 +7670,14 @@ typedef MLAN_PACK_START struct _HostCmd_DS_AGCS_CFG {
 } MLAN_PACK_END HostCmd_DS_AGCS_CFG;
 #endif /* UAP_SUPPORT */
 
+typedef MLAN_PACK_START struct _HostCmd_DS_CHAN_SWITCH_CNT_CFG {
+	/** action - get/set */
+	t_u16 action;
+
+	/** Chan switch count */
+	t_u8 chan_switch_cnt;
+} MLAN_PACK_END HostCmd_DS_CHAN_SWITCH_CNT_CFG;
+
 /** HostCmd_DS_COMMAND */
 typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 	/** Command Header : Command */
@@ -7953,6 +7956,7 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		mfg_cmd_otp_mac_addr_rd_wr_t mfg_otp_mac_addr_rd_wr;
 		mfg_cmd_otp_cal_data_rd_wr_t mfg_otp_cal_data_rd_wr;
 		mfg_CmdDebugTemperature_Cfg_t mfg_debug_temp;
+		mfg_Cmd_InternalTest_t mfg_InternalTest_t;
 		HostCmd_DS_CMD_ARB_CONFIG arb_cfg;
 		HostCmd_DS_CMD_DOT11MC_UNASSOC_FTM_CFG dot11mc_unassoc_ftm_cfg;
 		HostCmd_DS_HAL_PHY_CFG hal_phy_cfg_params;
@@ -7988,6 +7992,9 @@ typedef struct MLAN_PACK_START _HostCmd_DS_COMMAND {
 		/** Agiled channel switch configuration */
 		HostCmd_DS_AGCS_CFG agcs_cfg;
 #endif /* UAP_SUPPORT */
+
+		/** Channel switch count configuration */
+		HostCmd_DS_CHAN_SWITCH_CNT_CFG chan_switch_cnt_cfg;
 	} params;
 } MLAN_PACK_END HostCmd_DS_COMMAND, *pHostCmd_DS_COMMAND;
 

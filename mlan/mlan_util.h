@@ -5,7 +5,7 @@
  *  spinlock and timer defines.
  *
  *
- *  Copyright 2008-2021, 2025 NXP
+ *  Copyright 2008-2021, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -547,11 +547,6 @@ static INLINE t_void util_scalar_decrement(
  *  @return			Value after offset or 0 if (scalar_value + offset)
  * overflows
  */
-
-#ifndef INT_MAX
-#define INT_MAX 2147483647
-#endif
-
 static INLINE t_s32 util_scalar_offset(
 	t_void *pmoal_handle, pmlan_scalar pscalar, t_s32 offset,
 	mlan_status (*moal_spin_lock)(t_void *handle, t_void *plock),

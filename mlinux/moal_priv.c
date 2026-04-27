@@ -4,7 +4,7 @@
  * @brief This file contains standard ioctl functions
  *
  *
- * Copyright 2008-2025 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -130,7 +130,8 @@ static int woal_associate_ssid_bssid(moal_private *priv, struct iwreq *wrq)
 			if (mac_idx < ETH_ALEN) {
 				/* Data inside buf is copied from user space and
 				 * its length is bounded and validated before
-				 * use */
+				 * use
+				 */
 				// coverity[misra_c_2012_directive_4_14_violation:SUPPRESS]
 				ssid_bssid->bssid[mac_idx] =
 					(t_u8)woal_atox(buf + i);

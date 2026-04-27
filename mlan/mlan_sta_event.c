@@ -734,7 +734,7 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 	chan_band_info *pchan_band_info = MNULL;
 	t_u8 radar_chan;
 	t_u8 bandwidth;
-	chan_band_reginfo_t *psta_info = MNULL;
+	MrvlIEtypes_chan_band_reginfo_t *psta_info = MNULL;
 	chan_band_reginfo_t *psta_reg_info = MNULL;
 	t_u16 enable = 0;
 	Event_Link_Lost *link_lost_evt = MNULL;
@@ -1597,16 +1597,17 @@ mlan_status wlan_ops_sta_process_event(t_void *priv)
 	case EVENT_CHANNEL_SWITCH_REGINFO:
 		PRINTM(MEVENT, "EVENT: Channel Switch Reginfo (%#x)\n",
 		       eventcause);
-		psta_info = (chan_band_reginfo_t *)(pmadapter->event_body);
+		psta_info = (MrvlIEtypes_chan_band_reginfo_t
+				     *)(pmadapter->event_body);
 		DBG_HEXDUMP(MCMD_D, "chan band reginfo", (t_u8 *)psta_info,
-			    sizeof(chan_band_reginfo_t));
+			    sizeof(MrvlIEtypes_chan_band_reginfo_t));
 		/* Setup event buffer */
 		pevent->bss_index = pmpriv->bss_index;
 		pevent->event_id = MLAN_EVENT_ID_FW_CHAN_SWITCH_REGINFO;
 		pevent->event_len = sizeof(chan_band_reginfo_t);
 		psta_reg_info = (chan_band_reginfo_t *)pevent->event_buf;
 		/* Copy event data */
-		if (psta_reg_info->bandcfg.chanBand == BAND_6GHZ) {
+		if (psta_info->bandcfg.chanBand == BAND_6GHZ) {
 			memcpy_ext(pmadapter, (t_u8 *)&psta_reg_info->bandcfg,
 				   (t_u8 *)&psta_info->bandcfg,
 				   sizeof(psta_info->bandcfg),

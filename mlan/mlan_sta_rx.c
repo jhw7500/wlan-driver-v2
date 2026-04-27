@@ -5,7 +5,7 @@
  *  module.
  *
  *
- *  Copyright 2008-2022, 2024-2025 NXP
+ *  Copyright 2008-2022, 2024-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -577,7 +577,7 @@ mlan_status wlan_process_rx_packet(pmlan_adapter pmadapter, pmlan_buffer pmbuf)
 	 */
 	if (pmbuf->data_len < hdr_chop) {
 		PRINTM(MERROR, "%s(): invalid eth/eth803 header len\n",
-		       __FUNCTION__);
+		       __func__);
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}

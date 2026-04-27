@@ -4,7 +4,7 @@
  * @brief This file contains wireless extension standard ioctl functions
  *
  *
- * Copyright 2008-2025 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -314,6 +314,7 @@ static int woal_set_nick(struct net_device *dev, struct iw_request_info *info,
 {
 	moal_private *priv = (moal_private *)netdev_priv(dev);
 	struct iw_point *dwrq = &wrqu->data;
+
 	ENTER();
 	/*
 	 * Check the size of the string
@@ -344,6 +345,7 @@ static int woal_get_nick(struct net_device *dev, struct iw_request_info *info,
 {
 	moal_private *priv = (moal_private *)netdev_priv(dev);
 	struct iw_point *dwrq = &wrqu->data;
+
 	ENTER();
 	/*
 	 * Get the Nick Name saved
@@ -591,7 +593,20 @@ static int woal_get_wap(struct net_device *dev, struct iw_request_info *info,
 
 	if (bss_info.media_connected == MTRUE)
 		moal_memcpy_ext(priv->phandle, awrq->sa_data, &bss_info.bssid,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80)
+#ifndef ANDROID_KERNEL
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 211) && /* Backported         \
+							    from 6.1.80        \
+							    to 5.10 LTS */     \
+     LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)) ||                         \
+	(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 150) && /* Backported     \
+								from 6.1.80    \
+								to 5.15 LTS */ \
+	 LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)) ||                     \
+	(LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80) && /* Original change  \
+							      introduced here  \
+							      in mainline */   \
+	 LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)) /* Reverted here in    \
+							   mainline */
 				MLAN_MAC_ADDR_LENGTH,
 				sizeof(awrq->sa_data_min));
 #else
@@ -1506,9 +1521,8 @@ static int woal_get_gen_ie(struct net_device *dev, struct iw_request_info *info,
 
 	ENTER();
 
-	if (MLAN_STATUS_SUCCESS != woal_set_get_gen_ie(priv, MLAN_ACT_GET, NULL,
-						       ie, &ie_len,
-						       MOAL_IOCTL_WAIT)) {
+	if (woal_set_get_gen_ie(priv, MLAN_ACT_GET, NULL, ie, &ie_len,
+				MOAL_IOCTL_WAIT) != MLAN_STATUS_SUCCESS) {
 		ret = -EFAULT;
 		goto done;
 	}
@@ -1571,9 +1585,9 @@ static int woal_set_gen_ie(struct net_device *dev, struct iw_request_info *info,
 		}
 	}
 
-	if (MLAN_STATUS_SUCCESS !=
-	    woal_set_get_gen_ie(priv, MLAN_ACT_SET, (t_u8 *)extra, NULL,
-				&ie_len, MOAL_IOCTL_WAIT)) {
+	if (woal_set_get_gen_ie(priv, MLAN_ACT_SET, (t_u8 *)extra, NULL,
+				&ie_len,
+				MOAL_IOCTL_WAIT) != MLAN_STATUS_SUCCESS) {
 		ret = -EFAULT;
 		goto done;
 	}
@@ -3086,7 +3100,20 @@ static int woal_get_scan(struct net_device *dev, struct iw_request_info *info,
 		iwe.u.ap_addr.sa_family = ARPHRD_ETHER;
 		moal_memcpy_ext(priv->phandle, iwe.u.ap_addr.sa_data,
 				&scan_table[i].mac_address, ETH_ALEN,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80)
+#ifndef ANDROID_KERNEL
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 211) && /* Backported         \
+							    from 6.1.80        \
+							    to 5.10 LTS */     \
+     LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)) ||                         \
+	(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 150) && /* Backported     \
+								from 6.1.80    \
+								to 5.15 LTS */ \
+	 LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)) ||                     \
+	(LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 80) && /* Original change  \
+							      introduced here  \
+							      in mainline */   \
+	 LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)) /* Reverted here in    \
+							   mainline */
 				sizeof(iwe.u.ap_addr.sa_data_min));
 #else
 				sizeof(iwe.u.ap_addr.sa_data));
