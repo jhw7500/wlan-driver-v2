@@ -1335,6 +1335,10 @@ mlan_status moal_recv_complete(t_void *pmoal, pmlan_buffer pmbuf, t_u32 port,
 		priv = woal_bss_index_to_priv(handle, pmbuf->bss_index);
 		if (priv && (pmbuf->buf_type == MLAN_BUF_TYPE_DATA) &&
 		    (status == MLAN_STATUS_FAILURE)) {
+			/* [DBG-RXDROP] ratelimited marker — remove after triage */
+			pr_info_ratelimited("[DBG-RXDROP] usb_recv_complete fail bss=%d @%s:%d\n",
+					    pmbuf ? pmbuf->bss_index : -1,
+					    __func__, __LINE__);
 			priv->stats.rx_dropped++;
 		}
 		/* Reuse the buffer in case of command/event */
@@ -2029,6 +2033,9 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 	if (pmbuf->flags & MLAN_BUF_FLAG_EASYMESH) {
 		aid = (pmbuf->priority & 0xFF000000) >> 24;
 		if (!priv->vlan_sta_list[(aid - 1) % MAX_STA_COUNT]->is_valid) {
+			/* [DBG-RXDROP] ratelimited marker — remove after triage */
+			pr_info_ratelimited("[DBG-RXDROP] easymesh_invalid_pre_skb aid=%u @%s:%d\n",
+					    aid, __func__, __LINE__);
 			priv->stats.rx_dropped++;
 			goto done;
 		}
@@ -2260,6 +2267,11 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					       skb_tailroom(skb),
 					       pmbuf->data_len);
 					status = MLAN_STATUS_FAILURE;
+					/* [DBG-RXDROP] ratelimited marker — remove after triage */
+					pr_info_ratelimited("[DBG-RXDROP] skb_overflow tail=%d len=%d @%s:%d\n",
+							    skb_tailroom(skb),
+							    pmbuf->data_len,
+							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -2313,6 +2325,9 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					       "%s Drop packet without skb\n",
 					       __func__);
 					status = MLAN_STATUS_FAILURE;
+					/* [DBG-RXDROP] ratelimited marker — remove after triage */
+					pr_info_ratelimited("[DBG-RXDROP] mon_no_skb @%s:%d\n",
+							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -2324,6 +2339,10 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					PRINTM(MERROR, "%s fail to alloc skb\n",
 					       __func__);
 					status = MLAN_STATUS_FAILURE;
+					/* [DBG-RXDROP] ratelimited marker — remove after triage */
+					pr_info_ratelimited("[DBG-RXDROP] alloc_skb_fail len=%d @%s:%d\n",
+							    pmbuf->data_len,
+							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
@@ -2376,6 +2395,9 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 							 MAX_STA_COUNT]
 					     ->is_valid) {
 					status = MLAN_STATUS_FAILURE;
+					/* [DBG-RXDROP] ratelimited marker — remove after triage */
+					pr_info_ratelimited("[DBG-RXDROP] easymesh_invalid_post_skb aid=%u @%s:%d\n",
+							    aid, __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -2467,6 +2489,10 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				PRINTM(MEVENT, "drop filtered packet %s\n",
 				       priv->netdev->name);
 				status = MLAN_STATUS_FAILURE;
+				/* [DBG-RXDROP] ratelimited marker — remove after triage */
+				pr_info_ratelimited("[DBG-RXDROP] filter_reject len=%u proto=0x%04x @%s:%d\n",
+						    skb->len, ntohs(skb->protocol),
+						    __func__, __LINE__);
 				priv->stats.rx_dropped++;
 				if (drvdbg & MDAT_D)
 					woal_packet_fate_monitor(

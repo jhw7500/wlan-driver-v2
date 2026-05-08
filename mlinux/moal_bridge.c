@@ -20,6 +20,7 @@ static atomic_t bridge_instance_active = ATOMIC_INIT(0);
 
 /** bridge_debug: runtime-changeable via /sys/module/moal/parameters/bridge_debug */
 extern int bridge_debug;
+extern int bridge_consume_link_local;
 /** bridge_keepalive_ms: module param default copied into handle->params at init */
 extern int bridge_keepalive_ms;
 #define BR_DBG(fmt, ...) do { \
@@ -391,8 +392,19 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */
 	if (moal_bridge_is_link_local(eth->h_dest)) {
 		atomic_long_inc(&br->wlan_to_peer.dropped);
+		/* [DBG-RXDROP] dst MAC + proto + len + consume toggle 상태 dump.
+		 * ratelimited (default ~10 msg/5s) — LLDP 30s 주기는 모두 잡힘. */
+		pr_info_ratelimited("[DBG-RXDROP] w2p link-local dst=%pM proto=0x%04x len=%u consume=%d\n",
+				    eth->h_dest, ntohs(proto), skb->len,
+				    bridge_consume_link_local);
 		BR_DBG("w2p link-local drop dst=" MACSTR "\n",
 		       MAC2STR(eth->h_dest));
+		if (bridge_consume_link_local) {
+			/* driver 내 명시적 폐기: kernel stack 으로 안 보내므로
+			 * dev->rx_nohandler 자동 증가 path 차단 → mlan0_rx_dropped 0 */
+			kfree_skb(skb);
+			return 1;
+		}
 		return 0;
 	}
 
@@ -514,6 +526,10 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */
 	if (moal_bridge_is_link_local(eth->h_dest)) {
 		atomic_long_inc(&br->peer_to_wlan.dropped);
+		/* [DBG-RXDROP] dst MAC + proto + len dump (p2w 방향). */
+		pr_info_ratelimited("[DBG-RXDROP] p2w link-local dst=%pM proto=0x%04x len=%u\n",
+				    eth->h_dest, ntohs(skb->protocol),
+				    skb->len);
 		BR_DBG("p2w link-local drop dst=" MACSTR "\n",
 		       MAC2STR(eth->h_dest));
 		return RX_HANDLER_PASS;

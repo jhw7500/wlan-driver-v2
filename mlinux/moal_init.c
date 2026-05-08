@@ -93,6 +93,10 @@ char *bridge_peer = "eth0";
 int bridge_wlan_idx;
 int bridge_debug;
 int bridge_keepalive_ms = 1;
+/* [DBG-RXDROP] Toggle: 1 = link-local frame을 driver에서 consume(kfree+return 1).
+ * 0 (default) = 기존 동작 (return 0, kernel stack으로 deliver → ptype handler 부재 시
+ * dev->rx_nohandler 자동 증가하여 sysfs rx_dropped 에 합산). */
+int bridge_consume_link_local;
 /** amsdu deaggr mode */
 static int amsdu_deaggr = 1;
 
@@ -3159,6 +3163,8 @@ module_param(bridge_debug, int, 0644);
 MODULE_PARM_DESC(bridge_debug, "Bridge debug log: 0=off(default), 1=on (runtime changeable)");
 module_param(bridge_keepalive_ms, int, 0644);
 MODULE_PARM_DESC(bridge_keepalive_ms, "Bridge keepalive timer interval ms: 0=off, 1=1ms(default). Keeps SDIO processing loop warm.");
+module_param(bridge_consume_link_local, int, 0644);
+MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,
