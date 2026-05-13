@@ -1777,7 +1777,8 @@ static void wlan_update_hw_spec(pmlan_adapter pmadapter)
 				PRINTM(MERROR,
 				       "LHX|hw_spec=%d, user_2g_he_cap=%p\n",
 				       i,
-				       pmadapter->priv[i]->user_2g_he_cap);
+				       &pmadapter->priv[i]
+							->user_2g_he_cap);
 				DBG_HEXDUMP(
 					MERROR, "LHX|hw_spec",
 					user_he_cap_2g_tlv->he_phy_cap,
