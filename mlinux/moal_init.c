@@ -88,6 +88,8 @@ static int auto_ds;
 
 /** net_rx mode */
 static int net_rx = 1;
+/** mgmt_hex_dump: 0=off, 1=full IE hex dump to /proc/mwlan/adapterN/mgmt_dump */
+static int mgmt_hex_dump = 0;
 int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
@@ -886,6 +888,14 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				goto err;
 			params->net_rx = out_data;
 			PRINTM(MMSG, "net_rx = %d\n", params->net_rx);
+		} else if (strncmp(line, "mgmt_hex_dump",
+				   strlen("mgmt_hex_dump")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->mgmt_hex_dump = out_data;
+			PRINTM(MMSG, "mgmt_hex_dump = %d\n",
+			       params->mgmt_hex_dump);
 		} else if (strncmp(line, "bridge_mode",
 				   strlen("bridge_mode")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1835,6 +1845,10 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.net_rx = net_rx;
 	if (params)
 		handle->params.net_rx = params->net_rx;
+
+	handle->params.mgmt_hex_dump = mgmt_hex_dump;
+	if (params)
+		handle->params.mgmt_hex_dump = params->mgmt_hex_dump;
 
 	handle->params.bridge_mode = bridge_mode;
 	strncpy(handle->params.bridge_peer, bridge_peer,
@@ -3153,6 +3167,10 @@ module_param(net_rx, int, 0);
 MODULE_PARM_DESC(
 	net_rx,
 	"0: netif_rx_ni; 1: netif_receive_skb; 2: 1+roaming RX log; 3: 1+all RX log; +4: TX log (e.g. 6=roaming RX+TX, 7=all RX+TX)");
+module_param(mgmt_hex_dump, int, 0);
+MODULE_PARM_DESC(
+	mgmt_hex_dump,
+	"Mgmt frame full IE hex dump in /proc/mwlan/adapter*/mgmt_dump: 0=off (default), 1=on. Per-adapter via wifi_init_conf.json (mlanN.mgmt_hex_dump_enable). Requires net_rx>=2 (RX) and/or net_rx&0x4 (TX). Module reload required to change.");
 module_param(bridge_mode, int, 0);
 MODULE_PARM_DESC(bridge_mode, "L2 bridge: 0=off(default), 1=on");
 module_param(bridge_peer, charp, 0);

@@ -4523,7 +4523,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					     _sub == 8))
 						_do_log = MFALSE;
 				}
-				if (_do_log)
+				if (_do_log) {
 					mgmt_log_printf(
 					       &priv->phandle->mgmt_log,
 					       "[%s] MGMT[RX] %s(%2d) : SA=%pM DA=%pM RSSI=%4d NF=%4d SNR=%4d Retry=%d Seq=%4u\n",
@@ -4532,6 +4532,42 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					       (int)((int)rx_snr - (int)rx_nf),
 					       -(int)rx_nf, (int)rx_snr,
 					       _retry, _seq);
+					if (priv->phandle->params.mgmt_hex_dump) {
+						t_u32 _ie_off = 0;
+						mgmt_log_printf(
+						       &priv->phandle->mgmt_dump,
+						       "[%s] MGMT[RX] %s(%2d) : SA=%pM DA=%pM RSSI=%4d NF=%4d SNR=%4d Retry=%d Seq=%4u\n",
+						       priv->netdev->name, _ts, _sub,
+						       _mgmt->sa, _mgmt->da,
+						       (int)((int)rx_snr - (int)rx_nf),
+						       -(int)rx_nf, (int)rx_snr,
+						       _retry, _seq);
+						/* NXP RX path inserts 6-byte vendor
+						 * metadata after mgmt header before
+						 * mgmt body fixed-fields.
+						 */
+						{
+						const t_u32 _vp = 6;
+						switch (_sub) {
+						case 0:  _ie_off = 24 + _vp + 4;  break;
+						case 1:  _ie_off = 24 + _vp + 6;  break;
+						case 2:  _ie_off = 24 + _vp + 10; break;
+						case 3:  _ie_off = 24 + _vp + 6;  break;
+						case 4:  _ie_off = 24 + _vp;      break;
+						case 5:  _ie_off = 24 + _vp + 12; break;
+						case 8:  _ie_off = 24 + _vp + 12; break;
+						case 11: _ie_off = 24 + _vp + 6;  break;
+						default: _ie_off = 0;             break;
+						}
+						}
+						if (_ie_off &&
+						    (t_u32)_buf_len > _ie_off)
+							mgmt_dump_append_ies(
+							       &priv->phandle->mgmt_dump,
+							       _pkt + _ie_off,
+							       (t_u32)_buf_len - _ie_off);
+					}
+				}
 			}
 		}
 

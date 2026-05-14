@@ -2655,6 +2655,7 @@ typedef struct _moal_mod_para {
 	int max_nan_bss;
 	int auto_ds;
 	int net_rx;
+	int mgmt_hex_dump;
 	int amsdu_deaggr;
 	int tx_budget;
 	int mclient_scheduling;
@@ -2822,16 +2823,26 @@ typedef struct _moal_tp_acnt_t {
 #define MGMT_LOG_BUF_SIZE   (64 * 1024) /* 64KB ring buffer */
 #define MGMT_LOG_LINE_MAX   256
 
+/** mgmt_hex_dump: full IE hex dump ring buffer (per adapter) */
+#define MGMT_DUMP_BUF_SIZE  (256 * 1024) /* 256KB ring buffer */
+#define MGMT_DUMP_LINE_MAX  1024
+
 struct mgmt_log_ring {
 	char *buf;
 	unsigned int head;  /* next write position */
 	unsigned int count; /* bytes stored */
+	unsigned int size;  /* ring buffer total size */
 	spinlock_t lock;
 };
 
 void mgmt_log_ring_init(struct mgmt_log_ring *ring);
 void mgmt_log_ring_free(struct mgmt_log_ring *ring);
 void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...);
+
+/** mgmt_dump helpers (separate ring, larger buffer, IE hex bytes) */
+void mgmt_dump_ring_init(struct mgmt_log_ring *ring);
+void mgmt_dump_append_ies(struct mgmt_log_ring *ring,
+			  const t_u8 *ies, t_u32 ies_len);
 
 /** Handle data structure for MOAL */
 struct _moal_handle {
@@ -2855,6 +2866,8 @@ struct _moal_handle {
 	t_u8 mac_addr[ETH_ALEN];
 	/** net_rx mgmt frame log ring buffer */
 	struct mgmt_log_ring mgmt_log;
+	/** mgmt_hex_dump: full IE hex dump ring buffer */
+	struct mgmt_log_ring mgmt_dump;
 	/** L2 bridge context (NULL when bridge_mode=0) */
 	struct moal_bridge *bridge;
 #ifdef CONFIG_PROC_FS

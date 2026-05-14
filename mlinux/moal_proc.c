@@ -46,13 +46,24 @@ Change log:
 #define MWLAN_PROC "mwlan"
 #define WLAN_PROC "adapter%d"
 #define MGMT_LOG_PROC "mgmt_log"
+#define MGMT_DUMP_PROC "mgmt_dump"
 
 /********************************************************
 		net_rx mgmt frame log ring buffer
 ********************************************************/
 void mgmt_log_ring_init(struct mgmt_log_ring *ring)
 {
-	ring->buf = vmalloc(MGMT_LOG_BUF_SIZE);
+	ring->size = MGMT_LOG_BUF_SIZE;
+	ring->buf = vmalloc(ring->size);
+	ring->head = 0;
+	ring->count = 0;
+	spin_lock_init(&ring->lock);
+}
+
+void mgmt_dump_ring_init(struct mgmt_log_ring *ring)
+{
+	ring->size = MGMT_DUMP_BUF_SIZE;
+	ring->buf = vmalloc(ring->size);
 	ring->head = 0;
 	ring->count = 0;
 	spin_lock_init(&ring->lock);
@@ -68,7 +79,7 @@ void mgmt_log_ring_free(struct mgmt_log_ring *ring)
 
 void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...)
 {
-	char line[MGMT_LOG_LINE_MAX];
+	char line[MGMT_DUMP_LINE_MAX];
 	struct timespec64 ts;
 	unsigned long flags;
 	int prefix_len, msg_len, total;
@@ -102,14 +113,62 @@ void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...)
 		int i;
 		for (i = 0; i < total; i++) {
 			ring->buf[ring->head] = line[i];
-			ring->head = (ring->head + 1) % MGMT_LOG_BUF_SIZE;
+			ring->head = (ring->head + 1) % ring->size;
 		}
-		if (ring->count + total > MGMT_LOG_BUF_SIZE)
-			ring->count = MGMT_LOG_BUF_SIZE;
+		if (ring->count + total > ring->size)
+			ring->count = ring->size;
 		else
 			ring->count += total;
 	}
 	spin_unlock_irqrestore(&ring->lock, flags);
+}
+
+/* Walk IE list (TLV) and emit one line per IE in hex form.
+ * Tag 255 (Extension): "  IE[255] ext=0xNN len=N : hex bytes"
+ * Other tags         : "  IE[NNN]         len=N : hex bytes"
+ */
+void mgmt_dump_append_ies(struct mgmt_log_ring *ring,
+			  const t_u8 *ies, t_u32 ies_len)
+{
+	t_u32 off = 0;
+	char hex[768];
+	int p, i, n;
+
+	if (!ring || !ring->buf || !ies)
+		return;
+
+	while (off + 2 <= ies_len) {
+		t_u8 tag = ies[off];
+		t_u8 elen = ies[off + 1];
+
+		if (off + 2 + elen > ies_len)
+			break;
+
+		if (tag == 255 && elen >= 1) {
+			n = (int)elen - 1;
+			p = 0;
+			hex[0] = '\0';
+			for (i = 0; i < n && p < (int)sizeof(hex) - 4; i++)
+				p += snprintf(hex + p, sizeof(hex) - p,
+					      "%02x ", ies[off + 3 + i]);
+			hex[p] = '\0';
+			mgmt_log_printf(ring,
+				"  IE[255] ext=0x%02x len=%d : %s\n",
+				ies[off + 2], n, hex);
+		} else {
+			n = (int)elen;
+			p = 0;
+			hex[0] = '\0';
+			for (i = 0; i < n && p < (int)sizeof(hex) - 4; i++)
+				p += snprintf(hex + p, sizeof(hex) - p,
+					      "%02x ", ies[off + 2 + i]);
+			hex[p] = '\0';
+			mgmt_log_printf(ring,
+				"  IE[%3u]         len=%d : %s\n",
+				tag, n, hex);
+		}
+		off += 2 + elen;
+	}
 }
 
 /** Snapshot taken on proc open for consistent multi-read access */
@@ -146,7 +205,7 @@ static int mgmt_log_proc_open(struct inode *inode, struct file *file)
 	if (!snap)
 		return -ENOMEM;
 
-	snap->buf = vmalloc(MGMT_LOG_BUF_SIZE);
+	snap->buf = vmalloc(ring->size);
 	if (!snap->buf) {
 		kfree(snap);
 		return -ENOMEM;
@@ -155,13 +214,13 @@ static int mgmt_log_proc_open(struct inode *inode, struct file *file)
 	spin_lock_irqsave(&ring->lock, flags);
 	snap->len = ring->count;
 	if (snap->len > 0) {
-		if (snap->len == MGMT_LOG_BUF_SIZE)
+		if (snap->len == ring->size)
 			start = ring->head;
 		else
-			start = (ring->head + MGMT_LOG_BUF_SIZE - snap->len) %
-				MGMT_LOG_BUF_SIZE;
+			start = (ring->head + ring->size - snap->len) %
+				ring->size;
 
-		first_chunk = MGMT_LOG_BUF_SIZE - start;
+		first_chunk = ring->size - start;
 		if (first_chunk >= snap->len) {
 			memcpy(snap->buf, ring->buf + start, snap->len);
 		} else {
@@ -170,7 +229,7 @@ static int mgmt_log_proc_open(struct inode *inode, struct file *file)
 			       snap->len - first_chunk);
 		}
 
-		was_full = (ring->count == MGMT_LOG_BUF_SIZE);
+		was_full = (ring->count == ring->size);
 	}
 	spin_unlock_irqrestore(&ring->lock, flags);
 
@@ -1757,6 +1816,26 @@ void woal_proc_init(moal_handle *handle)
 			PRINTM(MERROR, "Fail to create proc mgmt_log\n");
 	}
 
+	/* Create mgmt_dump proc entry for mgmt_hex_dump (full IE hex) */
+	mgmt_dump_ring_init(&handle->mgmt_dump);
+	if (handle->mgmt_dump.buf) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+		r = proc_create_data(MGMT_DUMP_PROC, 0644, handle->proc_wlan,
+				     &mgmt_log_proc_ops, &handle->mgmt_dump);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
+		r = proc_create_data(MGMT_DUMP_PROC, 0644, handle->proc_wlan,
+				     &mgmt_log_proc_fops, &handle->mgmt_dump);
+#else
+		r = create_proc_entry(MGMT_DUMP_PROC, 0644, handle->proc_wlan);
+		if (r) {
+			r->data = &handle->mgmt_dump;
+			r->proc_fops = &mgmt_log_proc_fops;
+		}
+#endif
+		if (!r)
+			PRINTM(MERROR, "Fail to create proc mgmt_dump\n");
+	}
+
 done:
 	LEAVE();
 }
@@ -1780,6 +1859,8 @@ void woal_proc_exit(moal_handle *handle)
 
 	PRINTM(MINFO, "Remove Proc Interface %s\n", handle->proc_wlan_name);
 	if (handle->proc_wlan) {
+		remove_proc_entry(MGMT_DUMP_PROC, handle->proc_wlan);
+		mgmt_log_ring_free(&handle->mgmt_dump);
 		remove_proc_entry(MGMT_LOG_PROC, handle->proc_wlan);
 		mgmt_log_ring_free(&handle->mgmt_log);
 

@@ -3266,7 +3266,7 @@ int woal_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			    (_sub == 4 || _sub == 5 || _sub == 8))
 				_do_log = MFALSE;
 
-			if (_do_log && len >= 24)
+			if (_do_log && len >= 24) {
 				mgmt_log_printf(
 				       &priv->phandle->mgmt_log,
 				       "[%s] MGMT[TX] %s(%2d) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
@@ -3274,6 +3274,33 @@ int woal_cfg80211_mgmt_tx(struct wiphy *wiphy,
 				       _ts, _sub,
 				       ((const struct ieee80211_mgmt *)buf)->sa,
 				       ((const struct ieee80211_mgmt *)buf)->da);
+				if (priv->phandle->params.mgmt_hex_dump) {
+					t_u32 _ie_off = 0;
+					mgmt_log_printf(
+					       &priv->phandle->mgmt_dump,
+					       "[%s] MGMT[TX] %s(%2d) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
+					       dev->name,
+					       _ts, _sub,
+					       ((const struct ieee80211_mgmt *)buf)->sa,
+					       ((const struct ieee80211_mgmt *)buf)->da);
+					switch (_sub) {
+					case 0:  _ie_off = 24 + 4;  break;
+					case 1:  _ie_off = 24 + 6;  break;
+					case 2:  _ie_off = 24 + 10; break;
+					case 3:  _ie_off = 24 + 6;  break;
+					case 4:  _ie_off = 24;      break;
+					case 5:  _ie_off = 24 + 12; break;
+					case 8:  _ie_off = 24 + 12; break;
+					case 11: _ie_off = 24 + 6;  break;
+					default: _ie_off = 0;       break;
+					}
+					if (_ie_off && len > _ie_off)
+						mgmt_dump_append_ies(
+						       &priv->phandle->mgmt_dump,
+						       (const t_u8 *)buf + _ie_off,
+						       len - _ie_off);
+				}
+			}
 		}
 	}
 

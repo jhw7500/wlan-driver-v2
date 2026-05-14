@@ -516,7 +516,12 @@ int wlan_cmd_append_11ax_tlv(mlan_private *pmpriv, BSSDescriptor_t *pbss_desc,
 		/** not support 160Mhz now, if support,not reset bit3 */
 		phecap->he_phy_cap[0] &= ~(MBIT(3) | MBIT(4));
 	}
-	DBG_HEXDUMP(MCMD_D, "append_11ax_tlv", (t_u8 *)phecap, len);
+	/* TX HE Cap hex dump for cross-check with /proc/mwlan mgmt_dump RX
+	 * AssocResp IE[255] ext=0x23 lines. Uses MMSG bit so it's always
+	 * emitted (assoc/reassoc only, so noise is minimal).
+	 */
+	DBG_HEXDUMP(MMSG, "TX HE Cap (assoc append_11ax_tlv)",
+		    (t_u8 *)phecap, len);
 
 	LEAVE();
 	return len;

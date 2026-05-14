@@ -2826,11 +2826,22 @@ static int woal_cfg80211_authenticate(struct wiphy *wiphy,
 
 	PRINTM(MMSG, "wlan: HostMlme %s send auth to bssid " MACSTR "\n",
 	       dev->name, MAC2STR(req->bss->bssid));
-	if (priv->phandle->params.net_rx & 0x4)
+	if (priv->phandle->params.net_rx & 0x4) {
 		mgmt_log_printf(
 		       &priv->phandle->mgmt_log,
 		       "[%s] MGMT[TX] Auth          (11) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
 		       dev->name, dev->dev_addr, req->bss->bssid);
+		if (priv->phandle->params.mgmt_hex_dump) {
+			mgmt_log_printf(
+			       &priv->phandle->mgmt_dump,
+			       "[%s] MGMT[TX] Auth          (11) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
+			       dev->name, dev->dev_addr, req->bss->bssid);
+			if (req->ie && req->ie_len)
+				mgmt_dump_append_ies(
+				       &priv->phandle->mgmt_dump,
+				       req->ie, req->ie_len);
+		}
+	}
 	DBG_HEXDUMP(MDAT_D, "Auth:", pbuf,
 		    HEADER_SIZE + packet_len + sizeof(packet_len));
 	if (priv->phandle->cmd_tx_data) {
@@ -3407,7 +3418,7 @@ static int woal_cfg80211_associate(struct wiphy *wiphy, struct net_device *dev,
 
 	PRINTM(MCMND, "wlan: HostMlme %s send assoicate to bssid " MACSTR "\n",
 	       priv->netdev->name, MAC2STR(req->bss->bssid));
-	if (priv->phandle->params.net_rx & 0x4)
+	if (priv->phandle->params.net_rx & 0x4) {
 		mgmt_log_printf(
 		       &priv->phandle->mgmt_log,
 		       "[%s] MGMT[TX] %s(%2d) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
@@ -3415,6 +3426,20 @@ static int woal_cfg80211_associate(struct wiphy *wiphy, struct net_device *dev,
 		       req->prev_bssid ? "Reassoc Req   " : "Assoc Request ",
 		       req->prev_bssid ? 2 : 0,
 		       priv->netdev->dev_addr, req->bss->bssid);
+		if (priv->phandle->params.mgmt_hex_dump) {
+			mgmt_log_printf(
+			       &priv->phandle->mgmt_dump,
+			       "[%s] MGMT[TX] %s(%2d) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
+			       priv->netdev->name,
+			       req->prev_bssid ? "Reassoc Req   " : "Assoc Request ",
+			       req->prev_bssid ? 2 : 0,
+			       priv->netdev->dev_addr, req->bss->bssid);
+			if (req->ie && req->ie_len)
+				mgmt_dump_append_ies(
+				       &priv->phandle->mgmt_dump,
+				       req->ie, req->ie_len);
+		}
+	}
 	if (MLAN_STATUS_SUCCESS !=
 	    woal_bss_start(priv, MOAL_IOCTL_WAIT_TIMEOUT, ssid_bssid)) {
 		PRINTM(MERROR, "HostMlme %s: bss_start Fails\n",
@@ -5272,11 +5297,17 @@ done:
 		spin_unlock_irqrestore(&priv->phandle->scan_req_lock, flags);
 	} else {
 		PRINTM(MMSG, "wlan: %s START SCAN\n", dev->name);
-		if (priv->phandle->params.net_rx & 0x4)
+		if (priv->phandle->params.net_rx & 0x4) {
 			mgmt_log_printf(
 			       &priv->phandle->mgmt_log,
 			       "[%s] MGMT[TX] Probe Request ( 4) : SA=%pM DA=ff:ff:ff:ff:ff:ff RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
 			       dev->name, dev->dev_addr);
+			if (priv->phandle->params.mgmt_hex_dump)
+				mgmt_log_printf(
+				       &priv->phandle->mgmt_dump,
+				       "[%s] MGMT[TX] Probe Request ( 4) : SA=%pM DA=ff:ff:ff:ff:ff:ff RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0\n",
+				       dev->name, dev->dev_addr);
+		}
 		queue_delayed_work(
 			priv->phandle->evt_workqueue,
 			&priv->phandle->scan_timeout_work,
@@ -6152,12 +6183,19 @@ static int woal_cfg80211_deauthenticate(struct wiphy *wiphy,
 	}
 #endif
 
-	if (priv->phandle->params.net_rx & 0x4)
+	if (priv->phandle->params.net_rx & 0x4) {
 		mgmt_log_printf(
 		       &priv->phandle->mgmt_log,
 		       "[%s] MGMT[TX] Deauth        (12) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0 reason=%d\n",
 		       dev->name, dev->dev_addr, req->bssid,
 		       req->reason_code);
+		if (priv->phandle->params.mgmt_hex_dump)
+			mgmt_log_printf(
+			       &priv->phandle->mgmt_dump,
+			       "[%s] MGMT[TX] Deauth        (12) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0 reason=%d\n",
+			       dev->name, dev->dev_addr, req->bssid,
+			       req->reason_code);
+	}
 	ret = woal_cfg80211_disconnect(wiphy, dev, req->reason_code);
 #if CFG80211_VERSION_CODE < KERNEL_VERSION(3, 11, 0)
 	if (priv->wdev->iftype == NL80211_IFTYPE_STATION ||
@@ -6211,12 +6249,19 @@ static int woal_cfg80211_disassociate(struct wiphy *wiphy,
 	}
 #endif
 
-	if (priv->phandle->params.net_rx & 0x4)
+	if (priv->phandle->params.net_rx & 0x4) {
 		mgmt_log_printf(
 		       &priv->phandle->mgmt_log,
 		       "[%s] MGMT[TX] Disassoc      (10) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0 reason=%d\n",
 		       dev->name, dev->dev_addr, req->ap_addr,
 		       req->reason_code);
+		if (priv->phandle->params.mgmt_hex_dump)
+			mgmt_log_printf(
+			       &priv->phandle->mgmt_dump,
+			       "[%s] MGMT[TX] Disassoc      (10) : SA=%pM DA=%pM RSSI=   0 NF=   0 SNR=   0 Retry=0 Seq=   0 reason=%d\n",
+			       dev->name, dev->dev_addr, req->ap_addr,
+			       req->reason_code);
+	}
 	ret = woal_cfg80211_disconnect(wiphy, dev, req->reason_code);
 #if CFG80211_VERSION_CODE < KERNEL_VERSION(3, 11, 0)
 	if (priv->wdev->iftype == NL80211_IFTYPE_STATION ||
