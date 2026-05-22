@@ -36,3 +36,6 @@ docs/*.report.md
 docs/*.report.v*.md
 docs/plans/
 docs/superpowers/
+
+# Per-target object cache (obj_cache_swap.sh)
+.build-cache/

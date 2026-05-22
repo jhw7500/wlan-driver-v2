@@ -52,12 +52,14 @@ if [ "$1" = "mlanutl" ]; then
     make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANUTL_CFLAGS}" $@
 elif [ "$1" = "all" ]; then
     shift
+    "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx93
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
     make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX}
 else
+    "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx93
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} ${@:-build}

@@ -1,4 +1,5 @@
 #!/bin/bash
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 [ "$SDK_LOC" ] || SDK_LOC=/shared/fsl-imx-xwayland/6.6-nanbield
 #[ "$SDK_NAME" ] || SDK_NAME=cortexa53-crypto-poky-linux
 [ "$SDK_NAME" ] || SDK_NAME=armv8a-poky-linux
@@ -30,12 +31,14 @@ if [ "$1" = "mlanutl" ]; then
     make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANUTL_CFLAGS}" $@
 elif [ "$1" = "all" ]; then
     shift
+    "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx8
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
     make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanutl INSTALLDIR=../../ MOD_SUFFIX=${MOD_SUFFIX}
 else
+    "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx8
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} ${@:-build}
