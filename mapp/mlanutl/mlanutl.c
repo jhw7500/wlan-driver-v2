@@ -25405,7 +25405,7 @@ static int process_mcstiercfg(int argc, char *argv[])
 			ht_max = 15;
 			vht_max = 9;
 			he_max = 11;
-			he_band = 0x02;
+			he_band = 0x03; /* 2.4G + 5G both */
 			set_ht = TRUE;
 			set_vht = TRUE;
 			set_he = TRUE;
@@ -25470,7 +25470,7 @@ static int process_mcstiercfg(int argc, char *argv[])
 	if (set_vht) {
 		if (get_sta_vht_assoc_cfg(&vhtcfg) != MLAN_STATUS_SUCCESS)
 			return MLAN_STATUS_FAILURE;
-		vhtcfg.band = 2;
+		vhtcfg.band = 0; /* BAND_SELECT_BOTH: 2.4G + 5G */
 		vhtcfg.txrx = 2;
 		vhtcfg.vht_tx_mcs = update_supported_nss_map(
 			(t_u16)(vhtcfg.vht_tx_mcs & 0xFFFF),
