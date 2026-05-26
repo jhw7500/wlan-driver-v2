@@ -2492,6 +2492,92 @@ done:
 	return ret;
 }
 
+/**
+ *  @brief Set/Get per-NSS MCS bitmap config (rate adaptation mask).
+ *
+ *  Wire format (matches mlanutl `ratebitmapcfg` userspace):
+ *   - SET expects exactly MAX_BITMAP_RATES_SIZE (26) hex/decimal values:
+ *       [0]    DSSS bitmap
+ *       [1]    OFDM bitmap
+ *       [2..9] HT bitmap entries
+ *       [10..17] VHT bitmap entries (per NSS)
+ *       [18..25] HE bitmap entries (per NSS)
+ *   - GET returns 26 t_u32 entries (lower 16 bits carry the bitmap).
+ *
+ *  Underlying path: MLAN_IOCTL_RATE + MLAN_OID_RATE_CFG with
+ *  rate_type = MLAN_RATE_BITMAP, shared with the cfg80211
+ *  set_bitrate_mask and uAP tx_rate_cfg paths.
+ */
+static int woal_setget_priv_ratebitmapcfg(moal_private *priv, t_u8 *respbuf,
+					  t_u32 respbuflen)
+{
+	int data[MAX_BITMAP_RATES_SIZE];
+	t_u32 out_data[MAX_BITMAP_RATES_SIZE];
+	mlan_ioctl_req *req = NULL;
+	mlan_ds_rate *rate = NULL;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+	int ret = 0;
+	int user_data_len = 0;
+	int header_len;
+	int i;
+
+	ENTER();
+
+	header_len = strlen(CMD_NXP) + strlen(PRIV_CMD_RATEBITMAPCFG);
+	memset(data, 0, sizeof(data));
+
+	if ((int)strlen(respbuf) > header_len) {
+		/* SET: parse exactly MAX_BITMAP_RATES_SIZE values */
+		parse_arguments(respbuf + header_len, data, ARRAY_SIZE(data),
+				&user_data_len);
+		if (user_data_len != MAX_BITMAP_RATES_SIZE) {
+			PRINTM(MERROR,
+			       "ratebitmapcfg: expected %d values, got %d\n",
+			       MAX_BITMAP_RATES_SIZE, user_data_len);
+			ret = -EINVAL;
+			goto done;
+		}
+	}
+
+	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_rate));
+	if (req == NULL) {
+		ret = -ENOMEM;
+		goto done;
+	}
+	rate = (mlan_ds_rate *)req->pbuf;
+	rate->sub_command = MLAN_OID_RATE_CFG;
+	req->req_id = MLAN_IOCTL_RATE;
+	rate->param.rate_cfg.rate_type = MLAN_RATE_BITMAP;
+
+	if (user_data_len == 0) {
+		req->action = MLAN_ACT_GET;
+	} else {
+		req->action = MLAN_ACT_SET;
+		for (i = 0; i < MAX_BITMAP_RATES_SIZE; i++)
+			rate->param.rate_cfg.bitmap_rates[i] =
+				(t_u16)(data[i] & 0xFFFF);
+	}
+
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (status != MLAN_STATUS_SUCCESS) {
+		ret = -EFAULT;
+		goto done;
+	}
+
+	/* Return current bitmap to userspace as 26 × t_u32. */
+	for (i = 0; i < MAX_BITMAP_RATES_SIZE; i++)
+		out_data[i] = (t_u32)rate->param.rate_cfg.bitmap_rates[i];
+	moal_memcpy_ext(priv->phandle, respbuf, out_data, sizeof(out_data),
+			respbuflen);
+	ret = sizeof(out_data);
+
+done:
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+	LEAVE();
+	return ret;
+}
+
 #if defined(STA_SUPPORT) || defined(UAP_SUPPORT)
 /**
  *  @brief Get statistics information
@@ -20967,6 +21053,13 @@ int woal_android_priv_cmd(struct net_device *dev, struct ifreq *req)
 			/* Set/Get tx rate cfg */
 			len = woal_setget_priv_txratecfg(priv, buf,
 							 priv_cmd.total_len);
+			goto handled;
+		} else if (strnicmp(buf + strlen(CMD_NXP),
+				    PRIV_CMD_RATEBITMAPCFG,
+				    strlen(PRIV_CMD_RATEBITMAPCFG)) == 0) {
+			/* Set/Get per-NSS MCS bitmap (ratemaxcfg backend) */
+			len = woal_setget_priv_ratebitmapcfg(
+				priv, buf, priv_cmd.total_len);
 			goto handled;
 #if defined(STA_SUPPORT) || defined(UAP_SUPPORT)
 		} else if (strnicmp(buf + strlen(CMD_NXP), PRIV_CMD_GETLOG,

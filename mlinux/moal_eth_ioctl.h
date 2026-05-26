@@ -73,6 +73,7 @@ Change log:
 #define PRIV_CMD_OPERMODECFG "opermodecfg"
 #define PRIV_CMD_DATARATE "getdatarate"
 #define PRIV_CMD_TXRATECFG "txratecfg"
+#define PRIV_CMD_RATEBITMAPCFG "ratebitmapcfg"
 #define PRIV_CMD_GETLOG "getlog"
 #define PRIV_CMD_ESUPPMODE "esuppmode"
 #define PRIV_CMD_PASSPHRASE "passphrase"
