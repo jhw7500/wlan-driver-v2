@@ -1,0 +1,40 @@
+name: opencode
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  check-enabled:
+    name: Check if enabled
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github
+
+      - name: Check workflow config
+        id: check
+        uses: ./.github/actions/check-workflow-enabled
+        with:
+          workflow-name: opencode
+
+  opencode:
+    needs: check-enabled
+    if: >-
+      needs.check-enabled.outputs.enabled == 'true' &&
+      contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+      issues: read
+    uses: jhw7500/automation/.github/workflows/opencode.yml@v1.29
+    secrets: inherit
