@@ -1680,10 +1680,9 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 			format_result = snprintf(dw_string, sizeof(dw_string),
 						 "%08x ", current_word);
 		}
-		if (format_result <= 0 || format_result >= sizeof(dw_string)) {
+		if (format_result <= 0 || format_result >= sizeof(dw_string))
 			PRINTM(MERROR, "String formatting failed at word %u\n",
 			       i);
-		}
 
 		moal_memcpy_ext(handle, sfpbuf, dw_string, 9, 9);
 		sfpbuf += 9;

@@ -42,8 +42,9 @@
 #include "mlan_11ax.h"
 
 /********************************************************
-			Global Variables
-********************************************************/
+ * Global Variables
+ * ******************************************************
+ */
 extern mlan_status wlan_sec_ioctl_passphrase(pmlan_adapter pmadapter,
 					     pmlan_ioctl_req pioctl_req);
 
@@ -2019,43 +2020,6 @@ static mlan_status wlan_uap_snmp_mib_chan_track(pmlan_adapter pmadapter,
 	else
 		cmd_action = HostCmd_ACT_GEN_GET;
 
-	/* Send command to firmware */
-	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_802_11_SNMP_MIB, cmd_action,
-			       ChanTrackParam_i, (t_void *)pioctl_req,
-			       &mib->param.chan_track);
-
-	if (ret == MLAN_STATUS_SUCCESS)
-		ret = MLAN_STATUS_PENDING;
-
-	LEAVE();
-	return ret;
-}
-
-/**
- *  @brief get/set Agiled channel switch cfg
- *
- *  @param pmadapter    A pointer to mlan_adapter structure
- *  @param pioctl_req   Pointer to the IOCTL request buffer
- *
- *  @return             MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
- */
-static mlan_status wlan_uap_agcs_cfg(pmlan_adapter pmadapter,
-				     pmlan_ioctl_req pioctl_req)
-{
-	mlan_private *pmpriv = pmadapter->priv[pioctl_req->bss_index];
-	mlan_status ret = MLAN_STATUS_SUCCESS;
-	t_u16 cmd_action = 0;
-	mlan_ds_misc_cfg *misc = MNULL;
-
-	ENTER();
-
-	misc = (mlan_ds_misc_cfg *)pioctl_req->pbuf;
-	if (pioctl_req->action == MLAN_ACT_SET) {
-		cmd_action = HostCmd_ACT_GEN_SET;
-	} else {
-		cmd_action = HostCmd_ACT_GEN_GET;
-	}
-
 	/* Send request to firmware */
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_APCMD_AGCS_CFG, cmd_action,
 			       0, (t_void *)pioctl_req,
@@ -2124,11 +2088,10 @@ static mlan_status wlan_uap_agcs_cfg(pmlan_adapter pmadapter,
 	ENTER();
 
 	misc = (mlan_ds_misc_cfg *)pioctl_req->pbuf;
-	if (pioctl_req->action == MLAN_ACT_SET) {
+	if (pioctl_req->action == MLAN_ACT_SET)
 		cmd_action = HostCmd_ACT_GEN_SET;
-	} else {
+	else
 		cmd_action = HostCmd_ACT_GEN_GET;
-	}
 
 	/* Send request to firmware */
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_APCMD_AGCS_CFG, cmd_action,

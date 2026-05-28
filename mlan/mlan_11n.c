@@ -529,7 +529,7 @@ static mlan_status wlan_11n_ioctl_addba_param(pmlan_adapter pmadapter,
 		timeout = pmpriv->add_ba_param.timeout;
 		/* WACP supports the MAX TX ba timeout */
 		if (pmadapter->tx_ba_timeout_support ||
-		    pmadapter->init_para.wacp_mode) {
+		    pmadapter->init_para.wacp_mode)
 			pmpriv->add_ba_param.timeout =
 				cfg->param.addba_param.timeout;
 		else

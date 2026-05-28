@@ -22,9 +22,10 @@
  */
 
 /********************************************************
-Change log:
-10/21/2008: initial version
-********************************************************/
+ * Change log:
+ * 10/21/2008: initial version
+ * ******************************************************
+ */
 
 #include "moal_main.h"
 #include "moal_eth_ioctl.h"
@@ -7409,9 +7410,8 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 		/* Clear the internal BSS list maintained by the cfg80211
 		 * subsystem */
-		if (priv->wdev && priv->wdev->wiphy) {
+		if (priv->wdev && priv->wdev->wiphy)
 			cfg80211_bss_flush(priv->wdev->wiphy);
-		}
 #endif
 		/** deauth ext-ap */
 		if (priv->media_connected && !priv->cfg_disconnect) {
@@ -7445,9 +7445,8 @@ mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 		/* Clear the internal BSS list maintained by the cfg80211
 		 * subsystem */
-		if (priv->wdev && priv->wdev->wiphy) {
+		if (priv->wdev && priv->wdev->wiphy)
 			cfg80211_bss_flush(priv->wdev->wiphy);
-		}
 #endif
 		priv->fake_scan_complete = MFALSE;
 	}
@@ -7496,9 +7495,8 @@ done:
 #ifdef STA_CFG80211
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 		cfg80211_wext = priv->phandle->params.cfg80211_wext;
-		if (IS_STA_CFG80211(cfg80211_wext)) {
+		if (IS_STA_CFG80211(cfg80211_wext))
 			woal_bgscan_stop_event(priv);
-		}
 #endif
 #endif
 	}
@@ -10066,9 +10064,8 @@ mlan_status woal_get_ch_load(moal_private *priv, t_u16 duration)
 	/* Because the duration unit of fw is 10ms, it must be divided by 10 */
 	misc->param.ch_load.duration = (duration / 10);
 	status = woal_request_ioctl(priv, ioctl_req, MOAL_NO_WAIT);
-	if (status != MLAN_STATUS_SUCCESS && status != MLAN_STATUS_PENDING) {
+	if (status != MLAN_STATUS_SUCCESS && status != MLAN_STATUS_PENDING)
 		goto done;
-	}
 
 done:
 	if (status != MLAN_STATUS_PENDING)
@@ -10115,9 +10112,8 @@ mlan_status woal_get_ch_load_results(moal_private *priv, t_u16 *ch_load,
 
 	ioctl_req->action = MLAN_ACT_GET;
 	status = woal_request_ioctl(priv, ioctl_req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS) {
+	if (status != MLAN_STATUS_SUCCESS)
 		goto done;
-	}
 
 	*ch_load = misc->param.ch_load.ch_load_param;
 	*noise = misc->param.ch_load.noise;

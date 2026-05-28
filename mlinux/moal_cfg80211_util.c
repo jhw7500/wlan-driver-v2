@@ -2403,7 +2403,8 @@ static struct woal_apf_ctx *woal_apf_init_ctx(t_u32 ram_len)
 	}
 
 	/* Initialize spinlock (Coverity: this macro has side effects even if
-	 * modeled otherwise) */
+	 * modeled otherwise)
+	 */
 	// coverity[useless_call:SUPPRESS]
 	spin_lock_init(&ctx->lock);
 	ctx->ram = kzalloc(ram_len, GFP_KERNEL);
@@ -2560,7 +2561,8 @@ static int woal_deinit_packet_filter(moal_private *priv)
 
 	vfree(pkt_filter);
 	/* packet_filter is cleared after deinitialization and free, with no
-	 * expected concurrent access, making locking unnecessary */
+	 * expected concurrent access, making locking unnecessary
+	 */
 	// coverity[LOCK_EVASION:SUPPRESS]
 	priv->packet_filter = NULL;
 
@@ -2859,7 +2861,8 @@ woal_cfg80211_subcmd_vendor_read_packet_filter_data(struct wiphy *wiphy,
 		snap[off_age_sec + 3] = (age_s >> 24) & 0xff;
 
 		/* Set endianness marker bytes so CTS decodes counters as LE
-		 * (0x78563412). */
+		 * (0x78563412).
+		 */
 		/* CTS treats marker 0 as BE, so only set it when we are
 		 * actually exposing counters.
 		 * [2](https://android.googlesource.com/platform/packages/modules/Connectivity/+/1372ac214064016be96cbf6de342e636812fe63c%5E%21/)
@@ -3278,7 +3281,7 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 						counter[-(t_s32)imm]++;
 					}
 					return rbit ? APF_V6_DROP : APF_V6_PASS;
-				/* ---- Packet loads ---- */
+					/* ---- Packet loads ---- */
 				case LDB_OPCODE:
 				case LDH_OPCODE:
 				case LDW_OPCODE:
@@ -3307,7 +3310,7 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					break;
 				}
 
-				/* ---- Unconditional jump ---- */
+					/* ---- Unconditional jump ---- */
 				case JMP_OPCODE:
 					if (rbit == 1 && !c->v6_jmpdata_seen) {
 						/* counters are at end of RAM,
@@ -3332,7 +3335,7 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					c->pc += imm;
 					break;
 
-				/* ---- Conditional jumps ---- */
+					/* ---- Conditional jumps ---- */
 				case JEQ_OPCODE:
 				case JNE_OPCODE:
 				case JGT_OPCODE:
@@ -3348,28 +3351,21 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 							     c->prog_u8[c->pc++];
 						cmp = ci;
 					}
-					if (op == JEQ_OPCODE &&
-					    c->R[0] == cmp) {
+					if (op == JEQ_OPCODE && c->R[0] == cmp)
 						c->pc += imm;
-					}
-					if (op == JNE_OPCODE &&
-					    c->R[0] != cmp) {
+					if (op == JNE_OPCODE && c->R[0] != cmp)
 						c->pc += imm;
-					}
-					if (op == JGT_OPCODE && c->R[0] > cmp) {
+					if (op == JGT_OPCODE && c->R[0] > cmp)
 						c->pc += imm;
-					}
-					if (op == JLT_OPCODE && c->R[0] < cmp) {
+					if (op == JLT_OPCODE && c->R[0] < cmp)
 						c->pc += imm;
-					}
 					if (op == JSET_OPCODE &&
-					    (c->R[0] & cmp)) {
+					    (c->R[0] & cmp))
 						c->pc += imm;
-					}
 					break;
 				}
 
-				/* ---- ALU ops ---- */
+					/* ---- ALU ops ---- */
 				case ADD_OPCODE:
 					REG += (t_u32)asimm;
 					break;
@@ -3396,11 +3392,11 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					REG = (t_u32)simm;
 					break;
 
-				/* ========================= NEW CASES START
-				 * ========================= */
+					/* ========================= NEW CASES
+					 * START ========================= */
 
-				/* --- WRITE: write immediate of width ilen
-				 * (1/2/4B) into TX buffer --- */
+					/* --- WRITE: write immediate of width
+					 * ilen (1/2/4B) into TX buffer --- */
 				case WRITE_OPCODE: {
 					V6_ASSERT_RET(rbit == 0);
 					V6_ASSERT_RET(ilen == 1 || ilen == 2 ||
@@ -3415,8 +3411,9 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					break;
 				}
 
-				/* --- PKTDATACOPY: copy from packet (R=0) or
-				 * prog/data region (R=1) --- */
+					/* --- PKTDATACOPY: copy from packet
+					 * (R=0) or prog/data region (R=1) ---
+					 */
 				case PKTDATACOPY_OPCODE: {
 					V6_ASSERT_RET(c->pc <
 						      c->prog_len); /* next
@@ -3452,7 +3449,7 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					break;
 				}
 
-				/* ---- Extended opcodes ---- */
+					/* ---- Extended opcodes ---- */
 				case EXT_OPCODE:
 					if (imm < (LDM_EXT_OPCODE +
 						   V6_MEMORY_ITEMS)) {
@@ -3481,16 +3478,19 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 							REG = OREG;
 							break;
 
-						/* EXCEPTIONBUFFER (EXT 48):
-						 * define exception buffer
-						 * length (program+data trailing
-						 * bytes). Compact port: consume
-						 * imm2 (u16) and ignore
-						 * (no-op); continue
-						 * interpreting. Spec: imm2 is
-						 * present unconditionally after
-						 * the EXT immediate.
-						 */
+							/* EXCEPTIONBUFFER (EXT
+							 * 48): define exception
+							 * buffer length
+							 * (program+data
+							 * trailing bytes).
+							 * Compact port: consume
+							 * imm2 (u16) and ignore
+							 * (no-op); continue
+							 * interpreting. Spec:
+							 * imm2 is present
+							 * unconditionally after
+							 * the EXT immediate.
+							 */
 						case EXCEPTIONBUFFER_EXT_OPCODE: {
 							V6_ASSERT_RET(
 								c->pc + 1 <
@@ -3499,9 +3499,9 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 							break;
 						}
 
-						/* ---------- ALLOCATE (EXT 36):
-						 * allocate TX buffer ----------
-						 */
+							/* ---------- ALLOCATE
+							 * (EXT 36): allocate TX
+							 * buffer ---------- */
 						case ALLOCATE_EXT_OPCODE: {
 							/* Decode requested
 							 * length */
@@ -3572,9 +3572,9 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 							break;
 						}
 
-						/* ----- EWRITE{1,2,4}: write
-						 * register value to TX buffer
-						 * ----- */
+							/* ----- EWRITE{1,2,4}:
+							 * write register value
+							 * to TX buffer ----- */
 						case EWRITE1_EXT_OPCODE:
 						case EWRITE2_EXT_OPCODE:
 						case EWRITE4_EXT_OPCODE: {
@@ -3609,9 +3609,10 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 							break;
 						}
 
-						/* -- EPKTDATACOPY IMM/R1: copy
-						 * from pkt/prog with ofs in R0
-						 * -- */
+							/* -- EPKTDATACOPY
+							 * IMM/R1: copy from
+							 * pkt/prog with ofs in
+							 * R0 -- */
 						case EPKTDATACOPYIMM_EXT_OPCODE:
 						case EPKTDATACOPYR1_EXT_OPCODE: {
 							V6_ASSERT_RET(
@@ -3668,9 +3669,10 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 							break;
 						}
 
-						/* ---------------- TRANSMIT
-						 * (EXT 37): send TX buf
-						 * ---------------- */
+							/* ----------------
+							 * TRANSMIT (EXT 37):
+							 * send TX buf
+							 * ---------------- */
 						case TRANSMIT_EXT_OPCODE: {
 							tx_count++;
 							V6_ASSERT_RET(
@@ -3708,10 +3710,8 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 								const t_u32 tx_len =
 									c->tx_wp;
 
-								if (tx_len ==
-								    0) {
+								if (tx_len == 0)
 									break;
-								}
 
 								/* ---- ICMPv6
 								 * checksum ----
@@ -4023,18 +4023,17 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					} /* EXT_OPCODE handling */
 					break;
 
-				/* ========================== NEW CASES END
-				 * ========================== */
+					/* ========================== NEW CASES
+					 * END ========================== */
 
-				/* ---- JBSMATCH: jump if byte-sequence [not]
-				 * matched ---- */
+					/* ---- JBSMATCH: jump if byte-sequence
+					 * [not] matched ---- */
 				case JBSMATCH_OPCODE: {
 					/* imm1 (already in 'imm') is jump
 					 * target; imm2 packs (cnt-1)*2048 + len
 					 */
-					if (!ilen) {
+					if (!ilen)
 						return APF_V6_EXCEPTION;
-					}
 
 					imm2 = 0;
 					V6_ASSERT_RET(c->pc + ilen - 1 <
@@ -4047,25 +4046,20 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 					len = (imm2 & 2047); /* 0..2047 */
 					bytes = cnt * len;
 
-					if (bytes > 0xFFFF) {
+					if (bytes > 0xFFFF)
 						return APF_V6_EXCEPTION;
-					}
 
-					if (!(c->pc + bytes - 1 <
-					      c->prog_len)) {
+					if (!(c->pc + bytes - 1 < c->prog_len))
 						return APF_V6_EXCEPTION;
-					}
 
-					if (!v6_in_pkt(c, c->R[0])) {
+					if (!v6_in_pkt(c, c->R[0]))
 						return APF_V6_EXCEPTION;
-					}
 
 					if (len) {
 						last = c->R[0] + len - 1;
 						if (!(last >= c->R[0] &&
-						      v6_in_pkt(c, last))) {
+						      v6_in_pkt(c, last)))
 							return APF_V6_EXCEPTION;
-						}
 					}
 
 					/* Compare candidates */
@@ -4087,14 +4081,15 @@ static int apf_v6_exec(struct apf_v6_ctx *c)
 
 					/* R=0: jump if NOT matched; R=1: jump
 					 * if matched */
-					if ((matched ^ !rbit)) {
+					if ((matched ^ !rbit))
 						c->pc += imm;
-					} else {
-					}
-					break;
+					else
+
+						break;
 				}
 
-				/* ---- Data word load/store (counters) ---- */
+					/* ---- Data word load/store (counters)
+					 * ---- */
 				case LDDW_OPCODE:
 				case STDW_OPCODE: {
 					t_s32 rel;
@@ -4682,11 +4677,10 @@ int woal_filter_packet(moal_private *priv, t_u8 *data, t_u32 len,
 		 * -------------------- */
 		/* DA := our interface MAC (so APF can later swap MACs into TX
 		 * DA) */
-		if (ndev && is_valid_ether_addr(ndev->dev_addr)) {
+		if (ndev && is_valid_ether_addr(ndev->dev_addr))
 			memcpy(shim_buf + 0, ndev->dev_addr, ETH_ALEN);
-		} else {
+		else
 			memset(shim_buf + 0, 0x00, ETH_ALEN);
-		}
 
 		/* SA := AP BSSID if known, otherwise fall back to our MAC */
 		if (is_valid_ether_addr(priv->conn_bssid)) {
@@ -5619,9 +5613,8 @@ static int woal_cfg80211_subcmd_link_statistic_get(struct wiphy *wiphy,
 					  iface_stat->peer_info[i].num_rate;
 	}
 
-	for (i = 0; i < MAX_AC_QUEUES; i++) {
+	for (i = 0; i < MAX_AC_QUEUES; i++)
 		iface_stat->ac[i].rx_mpdu = priv->rx_pkt_ac[i];
-	}
 
 	/* Here the length doesn't contain addition 2 attribute header length */
 	length = NLA_HDRLEN * 2 + sizeof(num_radio) + radio_stat_len +
@@ -8628,9 +8621,8 @@ static t_u16 extractNumericVal(char *str, t_u32 str_len, char *substr,
 	res_len = sizeof(result);
 
 	for (i = 0; result[i] != '\0'; i++) {
-		if (result[i] >= '0' && result[i] <= '9') {
+		if (result[i] >= '0' && result[i] <= '9')
 			finalVal = finalVal * 10 + (result[i] - '0');
-		}
 	}
 	return finalVal;
 }

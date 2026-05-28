@@ -5570,7 +5570,7 @@ static t_bool wlan_active_scan_req_for_passive_chan(mlan_private *pmpriv,
 		PRINTM(MCMND, "active scan request for passive channel %d\n",
 		       id);
 		if (wlan_scan_networks(pmpriv, pioctl_buf, user_scan_cfg) !=
-		    MLAN_STATUS_SUCCESS) {
+		    MLAN_STATUS_SUCCESS)
 			goto done;
 		ret = MTRUE;
 	}

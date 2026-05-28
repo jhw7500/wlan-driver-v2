@@ -23,9 +23,10 @@
  */
 
 /*************************************************************
-Change Log:
-05/12/2009: initial version
-************************************************************/
+ * Change Log:
+ * 05/12/2009: initial version
+ * **********************************************************
+ */
 #include "mlan.h"
 #include "mlan_util.h"
 #ifdef STA_SUPPORT
@@ -745,9 +746,8 @@ static t_u32 wlan_parse_cal_cfg(const t_u8 *src, t_size len, t_u8 *dst)
 static int wlan_compare(t_u8 *x, t_u8 *y)
 {
 	while (*x && *y) {
-		if (*x != *y) {
+		if (*x != *y)
 			return 0;
-		}
 		if (!wlan_secure_add(&x, 1, &x, TYPE_PTR)) {
 			PRINTM(MERROR, "%s(): x is invalid\n", __func__);
 			return 0;
@@ -774,12 +774,10 @@ static t_u8 *wlan_strstr(t_u8 *s1, t_u8 *s2)
 	t_u8 *pos = s1;
 
 	while (*pos != '\0') {
-		if ((*pos == *s2) && wlan_compare(pos, s2)) {
+		if ((*pos == *s2) && wlan_compare(pos, s2))
 			return pos;
-		}
-		if (!wlan_secure_add(&pos, 1, &pos, TYPE_PTR)) {
+		if (!wlan_secure_add(&pos, 1, &pos, TYPE_PTR))
 			PRINTM(MERROR, "%s(): pos is invalid\n", __func__);
-		}
 	}
 	return MNULL;
 }
@@ -5582,7 +5580,7 @@ mlan_status wlan_cmd_func_init(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd)
 		pboot_time_tlv->enable = MTRUE;
 	else
 		pboot_time_tlv->enable = MFALSE;
-	}
+
 	tlv_buf += sizeof(MrvlIEtypes_boot_time_cfg_t);
 	prx_buf_size_tlv = (MrvlIEtypes_host_max_rx_buf_size_t *)tlv_buf;
 	prx_buf_size_tlv->type = wlan_cpu_to_le16(TLV_HOST_MAX_RX_BUF_SIZE);
@@ -10222,9 +10220,8 @@ static t_u32 wlan_get_num_radio_supported(pmlan_adapter pmadapter)
 
 	/* Dual-radio SoCs: W9098 (Skyhawk), AW693 (Blackbird) */
 	if (IS_CARD9098(pmadapter->card_type) ||
-	    IS_CARDAW693(pmadapter->card_type)) {
+	    IS_CARDAW693(pmadapter->card_type))
 		num_radio = 2;
-	}
 	/* All other SoCs are single-radio (including 9097, 9177, IW624, IW610,
 	 * legacy) */
 
@@ -11869,6 +11866,7 @@ mlan_status wlan_ret_chan_trpc_config(pmlan_private pmpriv,
 				misc->param.trpc_cfg);
 			cfg->sub_band = wlan_le16_to_cpu(trpc_cfg->sub_band);
 			cfg->length = resp->size;
+			cfg->pt_base_version = pmadapter->pt_base_version;
 			memcpy_ext(pmadapter, cfg->trpc_buf, (t_u8 *)resp,
 				   cfg->length, sizeof(cfg->trpc_buf));
 		}

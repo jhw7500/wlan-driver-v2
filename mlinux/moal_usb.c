@@ -1876,11 +1876,9 @@ mlan_status woal_usb_bus_register(void)
 
 	if (skip_fwdnld)
 		woal_usb_driver.id_table = woal_usb_table_skip_fwdnld;
-	}
 
-	if (woal_usb_table_ext != NULL) {
+	if (woal_usb_table_ext != NULL)
 		woal_usb_driver.id_table = woal_usb_table_ext;
-	}
 	/*
 	 * API registers the NXP USB driver
 	 * to the USB system
@@ -2412,9 +2410,8 @@ static int parse_config_line(char *line, usb_config_entry_t *entry,
 			current_entry->vid_pid_pairs[pair_idx].pid = (__u16)pid;
 
 			/* Update the count to track the highest index + 1 */
-			if (pair_idx >= current_entry->vid_pid_count) {
+			if (pair_idx >= current_entry->vid_pid_count)
 				current_entry->vid_pid_count = pair_idx + 1;
-			}
 
 			PRINTM(MINFO,
 			       "Parsed VID/PID[%d]: 0x%04x:0x%04x for device %s\n",
@@ -2757,10 +2754,9 @@ mlan_status check_usb_ext_table_info(char *device_name, t_u16 *card_type,
 								 1] = '\0';
 						}
 
-						if (card_type != NULL) {
+						if (card_type != NULL)
 							*card_type =
 								get_card_type;
-						}
 
 						return MLAN_STATUS_SUCCESS;
 					}

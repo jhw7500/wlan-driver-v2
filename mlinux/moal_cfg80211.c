@@ -89,9 +89,10 @@ static struct ieee80211_rate cfg80211_rates[] = {
 };
 
 /** Kernel picks the min of the register max power and the regulatory max.
-  So to register the max chip capability the default max power for all channels
-  is set to 23 dbm which is the max of the typical max tx pwr out range among
-  all chips*/
+ * So to register the max chip capability the default max power for all channels
+ * is set to 23 dbm which is the max of the typical max tx pwr out range among
+ * all chips
+ */
 
 /** Channel definitions for 2 GHz to be advertised to cfg80211 */
 static struct ieee80211_channel cfg80211_channels_2ghz[] = {
@@ -1577,7 +1578,7 @@ int woal_cfg80211_change_virtual_intf(struct wiphy *wiphy,
 			bss_role = MLAN_BSS_ROLE_STA;
 			if (woal_cfg80211_bss_role_cfg(priv, MLAN_ACT_SET,
 						       &bss_role) !=
-			    MLAN_STATUS_SUCCESS) {
+			    MLAN_STATUS_SUCCESS)
 				PRINTM(MERROR,
 				       "%s: WLAN set bss role config failed.\n",
 				       __func__);
@@ -1812,7 +1813,8 @@ fail:
  */
 #endif
 int woal_cfg80211_add_key(struct wiphy *wiphy,
-#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+#if defined(ANDROID_SDK_VERSION) && (ANDROID_SDK_VERSION >= 36) ||             \
+	(CFG80211_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
 			  struct wireless_dev *wdev,
 #else
 			  struct net_device *netdev,
@@ -1827,11 +1829,11 @@ int woal_cfg80211_add_key(struct wiphy *wiphy,
 #endif
 			  const t_u8 *mac_addr, struct key_params *params)
 {
-#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(wdev->netdev);
-#else
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(netdev);
+#if defined(ANDROID_SDK_VERSION) && (ANDROID_SDK_VERSION >= 36) ||             \
+	(CFG80211_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+	struct net_device *netdev = wdev->netdev;
 #endif
+	moal_private *priv = (moal_private *)woal_get_netdev_priv(netdev);
 	t_u8 pairwise_key = MFALSE;
 
 	ENTER();
@@ -1898,7 +1900,8 @@ int woal_cfg80211_add_key(struct wiphy *wiphy,
  */
 #endif
 int woal_cfg80211_del_key(struct wiphy *wiphy,
-#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+#if defined(ANDROID_SDK_VERSION) && (ANDROID_SDK_VERSION >= 36) ||             \
+	(CFG80211_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
 			  struct wireless_dev *wdev,
 #else
 			  struct net_device *netdev,
@@ -1913,11 +1916,11 @@ int woal_cfg80211_del_key(struct wiphy *wiphy,
 #endif
 			  const t_u8 *mac_addr)
 {
-#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(wdev->netdev);
-#else
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(netdev);
+#if defined(ANDROID_SDK_VERSION) && (ANDROID_SDK_VERSION >= 36) ||             \
+	(CFG80211_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+	struct net_device *netdev = wdev->netdev;
 #endif
+	moal_private *priv = (moal_private *)woal_get_netdev_priv(netdev);
 
 	ENTER();
 	if (priv->phandle->driver_status) {
@@ -1982,7 +1985,7 @@ int woal_cfg80211_set_default_key(struct wiphy *wiphy,
 	memset(&bss_info, 0, sizeof(mlan_bss_info));
 	if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) {
 		if (woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &bss_info) !=
-		    MLAN_STATUS_SUCCESS) {
+		    MLAN_STATUS_SUCCESS)
 			PRINTM(MERROR, "%s: WLAN get bss info failed.\n",
 			       __func__);
 		if (!bss_info.wep_status) {
@@ -2001,7 +2004,8 @@ int woal_cfg80211_set_default_key(struct wiphy *wiphy,
 
 #if KERNEL_VERSION(2, 6, 30) <= CFG80211_VERSION_CODE
 int woal_cfg80211_set_default_mgmt_key(struct wiphy *wiphy,
-#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+#if defined(ANDROID_SDK_VERSION) && (ANDROID_SDK_VERSION >= 36) ||             \
+	(CFG80211_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
 				       struct wireless_dev *wdev,
 #else
 				       struct net_device *netdev,
@@ -2020,7 +2024,8 @@ int woal_cfg80211_set_default_mgmt_key(struct wiphy *wiphy,
 
 #if KERNEL_VERSION(5, 10, 0) <= CFG80211_VERSION_CODE
 int woal_cfg80211_set_default_beacon_key(struct wiphy *wiphy,
-#if KERNEL_VERSION(7, 0, 0) <= CFG80211_VERSION_CODE
+#if defined(ANDROID_SDK_VERSION) && (ANDROID_SDK_VERSION >= 36) ||             \
+	(CFG80211_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
 					 struct wireless_dev *wdev,
 #else
 					 struct net_device *netdev,
@@ -2135,7 +2140,7 @@ int woal_cfg80211_set_rekey_data(struct wiphy *wiphy, struct net_device *dev,
 	}
 
 	if (woal_set_rekey_data(priv, &rekey, MLAN_ACT_SET, MOAL_IOCTL_WAIT) !=
-	    MLAN_STATUS_SUCCESS) {
+	    MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 
 	LEAVE();
@@ -4688,7 +4693,7 @@ static t_u16 woal_filter_beacon_ies(moal_private *priv, const t_u8 *ie,
 #ifdef UAP_SUPPORT
 	if (enable_11d && !priv->bss_started) {
 		if (woal_set_11d(priv, MOAL_IOCTL_WAIT, MTRUE) !=
-		    MLAN_STATUS_SUCCESS) {
+		    MLAN_STATUS_SUCCESS)
 			PRINTM(MERROR, "woal_set_11d fail\n");
 	}
 #endif
@@ -5519,41 +5524,41 @@ done:
  * ===============
  * Note: bits not mentioned below are set to 0.
 
-5G
-===
-HE MAC Cap:
-Bit0:  1  (+HTC HE Support)
-Bit1:	1 (TWT requester support)
-Bit2:	1 (TWT responder support)
-Bit20:	1 (Broadcast TWT support)
-Bit25: 1  (OM Control Support. But uAP does not support
-Tx OM received from the STA, as it does not support UL OFDMA)
-Bit28-27: Max. A-MPDU Length Exponent Extension
+ * 5G
+ * ===
+ * HE MAC Cap:
+ * Bit0:  1  (+HTC HE Support)
+ * Bit1:	1 (TWT requester support)
+ * Bit2:	1 (TWT responder support)
+ * Bit20:	1 (Broadcast TWT support)
+ * Bit25: 1  (OM Control Support. But uAP does not support
+ * Tx OM received from the STA, as it does not support UL OFDMA)
+ * Bit28-27: Max. A-MPDU Length Exponent Extension
 
-HE PHY Cap:
-Bit1-7: 0x2 (Supported Channel Width Set.
-Note it would be changed after 80+80 MHz is supported)
-Bit8-11: 0x3 (Punctured Preamble Rx.
-Note: it would be changed after 80+80 MHz is supported)
-Bit12: 0x0 (Device Class)
-Bit13: 0x1 (LDPC coding in Payload)
-Bit17: 0x1 (NDP with 4xHE-LTF+3.2usGI)
-Bit18: 0x1 (STBC Tx <= 80 MHz)
-Bit19: 0x1 (STBC Rx <= 80 MHz)
-Bit20: 0x1 (Doppler Tx)
-Bit21: 0x1 (Doppler Rx)
-Bit24-25: 0x1 (DCM Max Constellation Tx)
-Bit27-28: 0x1 (DCM Max Constellation Rx)
-Bit31: 0x1 (SU Beamformer)
-Bit32: 0x1 (SU BeamFormee)
-Bit34-36: 0x7 (Beamformee STS <= 80 MHz)
-Bit40-42: 0x1 (Number of Sounding Dimentions <= 80 MHz)
-Bit53: 0x1 (Partial Bandwidth Extended Range)
-Bit55: 0x1 (PPE Threshold Present.
-Note: PPE threshold may have some changes later)
-Bit58: 0x1 (HE SU PPDU and HE MU PPDU with 4xHE-LTF+0.8usGI)
-Bit59-61: 0x1 (Max Nc)
-Bit75: 0x1 (Rx 1024-QAM Support < 242-tone RU)
+ * HE PHY Cap:
+ * Bit1-7: 0x2 (Supported Channel Width Set.
+ * Note it would be changed after 80+80 MHz is supported)
+ * Bit8-11: 0x3 (Punctured Preamble Rx.
+ * Note: it would be changed after 80+80 MHz is supported)
+ * Bit12: 0x0 (Device Class)
+ * Bit13: 0x1 (LDPC coding in Payload)
+ * Bit17: 0x1 (NDP with 4xHE-LTF+3.2usGI)
+ * Bit18: 0x1 (STBC Tx <= 80 MHz)
+ * Bit19: 0x1 (STBC Rx <= 80 MHz)
+ * Bit20: 0x1 (Doppler Tx)
+ * Bit21: 0x1 (Doppler Rx)
+ * Bit24-25: 0x1 (DCM Max Constellation Tx)
+ * Bit27-28: 0x1 (DCM Max Constellation Rx)
+ * Bit31: 0x1 (SU Beamformer)
+ * Bit32: 0x1 (SU BeamFormee)
+ * Bit34-36: 0x7 (Beamformee STS <= 80 MHz)
+ * Bit40-42: 0x1 (Number of Sounding Dimentions <= 80 MHz)
+ * Bit53: 0x1 (Partial Bandwidth Extended Range)
+ * Bit55: 0x1 (PPE Threshold Present.
+ * Note: PPE threshold may have some changes later)
+ * Bit58: 0x1 (HE SU PPDU and HE MU PPDU with 4xHE-LTF+0.8usGI)
+ * Bit59-61: 0x1 (Max Nc)
+ * Bit75: 0x1 (Rx 1024-QAM Support < 242-tone RU)
  */
 
 #define UAP_HE_MAC_CAP0_MASK 0x06
@@ -6749,7 +6754,8 @@ void process_wifi_channel_avoid_list_event(
 
 			PRINTM(MINFO, "====== Iteration=%d ======", index);
 			/* Clearing NO-IR flags for all channels,
-			 * except for the channels marked as INDOOR-ONLY */
+			 * except for the channels marked as INDOOR-ONLY
+			 */
 			for (i = 0; i < sband->n_channels; i++) {
 				channel = &sband->channels[i];
 				if (!(channel->flags &

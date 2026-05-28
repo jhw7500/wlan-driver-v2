@@ -152,9 +152,9 @@ static void wlan_fill_cap_info(mlan_private *priv, VHT_capa_t *vht_cap,
 
 	RESET_VHTCAP_MAXMPDULEN(vht_cap->vht_cap_info);
 	/*
-	   Set to 0 for 3895 octets.
-	   Set to 1 for 7991 octets.
-	   Set to 2 for 11 454 octets.
+	 * Set to 0 for 3895 octets.
+	 * Set to 1 for 7991 octets.
+	 * Set to 2 for 11 454 octets.
 	 */
 	cfg_value = GET_VHTCAP_MAXMPDULEN(usr_dot_11ac_dev_cap);
 	if (cfg_value &&

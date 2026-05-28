@@ -21,9 +21,10 @@
  *
  */
 /********************************************************
-Change log:
-10/21/2008: initial version
-********************************************************/
+ * Change log:
+ * 10/21/2008: initial version
+ * ******************************************************
+ */
 
 #include "mlan.h"
 #include "mlan_join.h"
@@ -119,10 +120,11 @@ static chan_freq_power_t channel_freq_power_UN_AJ[] = {
 	{173, 5865, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}},
 	{177, 5885, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}}
 	/*  {240, 4920, TX_PWR_DEFAULT},
-	    {244, 4940, TX_PWR_DEFAULT},
-	    {248, 4960, TX_PWR_DEFAULT},
-	    {252, 4980, TX_PWR_DEFAULT},
-	    channels for 11J JP 10M channel gap */
+	 * {244, 4940, TX_PWR_DEFAULT},
+	 * {248, 4960, TX_PWR_DEFAULT},
+	 * {252, 4980, TX_PWR_DEFAULT},
+	 * channels for 11J JP 10M channel gap
+	 */
 };
 /** Channels for 802.116G */
 static chan_freq_power_t channel_freq_power_UN_6G[] = {
@@ -186,12 +188,14 @@ static chan_freq_power_t channel_freq_power_UN_6G[] = {
 	{229, 7095, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}},
 	{233, 7115, TX_PWR_DEFAULT, MFALSE, {0x10, 0, 0}}};
 /********************************************************
-  Global Variables
- ********************************************************/
+ * Global Variables
+ * ******************************************************
+ */
 
 /********************************************************
-  Local Functions
- ********************************************************/
+ * Local Functions
+ * ******************************************************
+ */
 #ifdef STA_SUPPORT
 /**
  *  @brief This function converts integer code to region string
@@ -1779,9 +1783,8 @@ mlan_status wlan_11d_bcn_country_ie_info(pmlan_adapter pmadapter,
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_802_CUSTOM_BEACON_IE,
 			       HostCmd_ACT_GEN_SET, 0, (t_void *)pioctl_req,
 			       MNULL);
-	if (ret) {
+	if (ret)
 		PRINTM(MERROR, "BCN Country IE: Failed to download\n");
-	}
 
 	if (ret == MLAN_STATUS_SUCCESS)
 		ret = MLAN_STATUS_PENDING;

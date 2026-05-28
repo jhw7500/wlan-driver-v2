@@ -22,9 +22,10 @@
  */
 
 /********************************************************
-Change log:
-10/21/2008: initial version
-********************************************************/
+ * Change log:
+ * 10/21/2008: initial version
+ * ******************************************************
+ */
 
 #ifndef _MOAL_MAIN_H
 #define _MOAL_MAIN_H
@@ -884,11 +885,11 @@ out:
 
 #ifdef UAP_SUPPORT
 /** Default watchdog timeout
-  Increase the value to avoid kernel Tx timeout message in case
-  station in PS mode or left.
-  The default value of PS station ageout timer is 40 seconds.
-  Hence, the watchdog timer is set to a value higher than it.
-*/
+ * Increase the value to avoid kernel Tx timeout message in case
+ * station in PS mode or left.
+ * The default value of PS station ageout timer is 40 seconds.
+ * Hence, the watchdog timer is set to a value higher than it.
+ */
 #define MRVDRV_DEFAULT_UAP_WATCHDOG_TIMEOUT (41 * HZ)
 #endif
 
