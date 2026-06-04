@@ -37,9 +37,8 @@ workflows:
     description: "Issue triage and labeling"
 
   gemini-auto-review:
-    enabled: true
-    auto: true
-    description: "Automatic PR review with Gemini"
+    enabled: false
+    description: "Automatic PR review with Gemini (disabled — 키 프로젝트 권한 미해결)"
 
   gemini-scheduled-triage:
     enabled: false
