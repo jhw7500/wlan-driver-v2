@@ -47,7 +47,12 @@ runs:
 
         # yq로 설정 읽기 (없으면 grep/sed로 fallback)
         if command -v yq &> /dev/null; then
-          ENABLED=$(yq ".workflows.${WORKFLOW_NAME}.enabled // true" "$CONFIG_FILE")
+          # 주의: `enabled // true`는 yq/jq의 대체 연산자가 false도 "빈 값"으로
+          # 취급해 true로 뒤집으므로 사용 금지. null/누락일 때만 기본 true 적용.
+          ENABLED=$(yq ".workflows.${WORKFLOW_NAME}.enabled" "$CONFIG_FILE")
+          if [[ "$ENABLED" == "null" || -z "$ENABLED" ]]; then
+            ENABLED="true"
+          fi
           CONFIG_JSON=$(yq -o=json ".workflows.${WORKFLOW_NAME} // {}" "$CONFIG_FILE")
         else
           # yq가 없으면 간단한 grep으로 처리
