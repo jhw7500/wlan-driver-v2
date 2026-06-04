@@ -55,6 +55,15 @@ workflows:
     auto: true
     description: "Claude automatic PR review"
 
+  # OpenCode workflows (코드는 유지하되 미사용 — disable)
+  opencode:
+    enabled: false
+    description: "OpenCode integration (disabled, 코드만 보존)"
+
+  opencode-auto-review:
+    enabled: false
+    description: "OpenCode automatic PR review (disabled, 코드만 보존)"
+
 # === Shared Settings ===
 claude:
   model: "claude-sonnet-4-6"
