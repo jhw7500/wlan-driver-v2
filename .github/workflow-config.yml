@@ -64,6 +64,12 @@ workflows:
     enabled: false
     description: "OpenCode automatic PR review (disabled, 코드만 보존)"
 
+  # auto-rereview-request: 공유 워크플로우 v1.29 버그(checkout 누락 git 실행)로
+  # 실패 + pim-check 미사용. 코드는 보존하되 disable.
+  auto-rereview-request:
+    enabled: false
+    description: "Auto re-review request (disabled — 업스트림 v1.29 버그)"
+
 # === Shared Settings ===
 claude:
   model: "claude-sonnet-4-6"
