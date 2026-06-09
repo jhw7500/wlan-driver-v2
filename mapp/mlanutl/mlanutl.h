@@ -812,6 +812,11 @@ struct eth_priv_tx_rate_cfg {
 #define MLAN_11AXCMD_SET_BSRP_SUBID 0x109
 #define MLAN_11AXCMD_LLDE_SUBID 0x110
 
+/** Thermal management (firmware overheat protection), CmdCode 0x008b */
+#define MLAN_THERMAL_MGMT_CMDCODE 0x008b
+/** Thermal management sub-command id */
+#define MLAN_THERMAL_MGMT_SUBID 0x113
+
 #define MRVL_DOT11AX_ENABLE_SR_TLV_ID (PROPRIETARY_TLV_BASE_ID + 322)
 #define MRVL_DOT11AX_OBSS_PD_OFFSET_TLV_ID (PROPRIETARY_TLV_BASE_ID + 323)
 

@@ -297,6 +297,7 @@ static int process_11h_local_pwr_constraint(int argc, char *argv[]);
 static int process_ht_stream_cfg(int argc, char *argv[]);
 static int process_mimo_switch(int argc, char *argv[]);
 static int process_thermal(int argc, char *argv[]);
+static int process_thermal_mgmt(int argc, char *argv[]);
 static int process_beacon_interval(int argc, char *argv[]);
 static int process_cwmode(int argc, char *argv[]);
 static int process_inactivity_timeout_ext(int argc, char *argv[]);
@@ -543,6 +544,7 @@ struct command_node command_list[] = {
 	{"htstreamcfg", process_ht_stream_cfg},
 	{"mimoswitch", process_mimo_switch},
 	{"thermal", process_thermal},
+	{"thermal_mgmt", process_thermal_mgmt},
 	{"bcninterval", process_beacon_interval},
 	{"cwmode", process_cwmode},
 	{"inactivityto", process_inactivity_timeout_ext},
@@ -758,7 +760,8 @@ static char *usage[] = {
 	"         tdls_link_status", "         tdls_powermode",
 	"         tdls_setinfo", "         tdls_setup",
 	"         tdls_stop_channel_switch", "         tdls_teardown",
-	"         thermal", "         ts_status", "         tsf",
+	"         thermal", "         thermal_mgmt", "         ts_status",
+	"         tsf",
 	"         txaggrctrl", "         txbufcfg", "         txcontrol",
 	"         txpowercfg", "         txwatchdog", "         opermodecfg",
 	"         wakeupreason", "         warmreset", "         wmmcfg",
@@ -17649,6 +17652,153 @@ static int process_thermal(int argc, char *argv[])
 	/* Process result */
 	memcpy(&thermal, buffer, sizeof(thermal));
 	printf("Thermal reading is %d\n", thermal);
+
+done:
+	if (buffer)
+		free(buffer);
+	if (cmd)
+		free(cmd);
+
+	return ret;
+}
+
+/**
+ *  @brief Get/Set firmware thermal management (overheat protection)
+ *
+ *  Reads or toggles the firmware's thermal-management (overheat protection)
+ *  feature.  This builds the same raw host command that the
+ *  enable_thermal_mgmt / disable_thermal_mgmt / get_thermal_mgmt blocks in
+ *  debug.conf produce (CmdCode 0x008b, SUBID 0x113), so no kernel-side
+ *  change is required.
+ *
+ *  Usage:
+ *      mlanutl mlanX thermal_mgmt          -> get current state
+ *      mlanutl mlanX thermal_mgmt <0|1>    -> 0: disable, 1: enable
+ *
+ *  @param argc   Number of arguments
+ *  @param argv   A pointer to arguments array
+ *  @return       MLAN_STATUS_SUCCESS--success, otherwise--fail
+ */
+static int process_thermal_mgmt(int argc, char *argv[])
+{
+	int ret = 0;
+	t_u8 *buffer = NULL, *pos = NULL, *payload = NULL;
+	struct eth_priv_cmd *cmd = NULL;
+	struct ifreq ifr;
+	HostCmd_DS_GEN *hostcmd = NULL;
+	t_u32 hostcmd_size = 0;
+	t_u16 action = HostCmd_ACT_GEN_GET;
+	t_u8 set_value = 0, cur_value = 0;
+
+	/* argv: [0]=mlanutl [1]=mlanX [2]=thermal_mgmt [3]=<0|1>(optional) */
+	if (argc != 3 && argc != 4) {
+		printf("Error: invalid no of arguments\n");
+		printf("Get current state: mlanutl mlanX thermal_mgmt\n");
+		printf("Set state        : mlanutl mlanX thermal_mgmt <0|1>  (0: disable, 1: enable)\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	if (argc == 4) {
+		set_value = (t_u8)a2hex_or_atoi(argv[3]);
+		if (set_value != 0 && set_value != 1) {
+			printf("Error: value must be 0 (disable) or 1 (enable)\n");
+			ret = MLAN_STATUS_FAILURE;
+			goto done;
+		}
+		action = HostCmd_ACT_GEN_SET;
+	}
+
+	/* Initialize buffer */
+	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
+	if (!buffer) {
+		printf("ERR:Cannot allocate buffer for command!\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	/* Fill the "MRVL_CMD" + "hostcmd" header */
+	if (MLAN_STATUS_FAILURE ==
+	    prepare_buffer(buffer, (char *)HOSTCMD, 0, NULL)) {
+		printf("ERR:Cannot prepare buffer!\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	/* Build the raw host command right after the header:
+	 *   [t_u32 cmd_size][HostCmd_DS_GEN][Action(2) SUBID(2) Value(1)]
+	 * mirroring prepare_host_cmd_buffer() output for the thermal_mgmt
+	 * blocks in debug.conf.
+	 */
+	pos = buffer + strlen(CMD_NXP) + strlen(HOSTCMD);
+	hostcmd = (HostCmd_DS_GEN *)(pos + sizeof(t_u32));
+	hostcmd->command = cpu_to_le16(MLAN_THERMAL_MGMT_CMDCODE);
+	hostcmd->seq_num = 0;
+	hostcmd->result = 0;
+
+	payload = (t_u8 *)hostcmd + S_DS_GEN;
+	/* Action (2 bytes, little endian) */
+	payload[0] = (t_u8)(action & 0xff);
+	payload[1] = (t_u8)((action >> 8) & 0xff);
+	/* SUBID = THERMAL_MANAGEMENT (2 bytes, little endian) */
+	payload[2] = (t_u8)(MLAN_THERMAL_MGMT_SUBID & 0xff);
+	payload[3] = (t_u8)((MLAN_THERMAL_MGMT_SUBID >> 8) & 0xff);
+	/* Value (1 byte): 0 disable, 1 enable (placeholder for GET) */
+	payload[4] = set_value;
+
+	hostcmd->size = cpu_to_le16((t_u16)(S_DS_GEN + 5));
+	hostcmd_size = S_DS_GEN + 5;
+	memcpy(pos, (t_u8 *)&hostcmd_size, sizeof(t_u32));
+
+	cmd = (struct eth_priv_cmd *)malloc(sizeof(struct eth_priv_cmd));
+	if (!cmd) {
+		printf("ERR:Cannot allocate buffer for command!\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	/* Fill up buffer */
+#ifdef USERSPACE_32BIT_OVER_KERNEL_64BIT
+	memset(cmd, 0, sizeof(struct eth_priv_cmd));
+	memcpy(&cmd->buf, &buffer, sizeof(buffer));
+#else
+	cmd->buf = buffer;
+#endif
+	cmd->used_len = 0;
+	cmd->total_len = BUFFER_LENGTH;
+
+	/* Perform IOCTL */
+	memset(&ifr, 0, sizeof(struct ifreq));
+	strncpy(ifr.ifr_ifrn.ifrn_name, dev_name, strlen(dev_name));
+	ifr.ifr_ifru.ifru_data = (void *)cmd;
+
+	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr)) {
+		perror("mlanutl");
+		fprintf(stderr, "mlanutl: thermal_mgmt fail\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	/* Process response (same layout as the request) */
+	pos = buffer + strlen(CMD_NXP) + strlen(HOSTCMD) + sizeof(t_u32);
+	hostcmd = (HostCmd_DS_GEN *)pos;
+	if (le16_to_cpu(hostcmd->result)) {
+		printf("thermal_mgmt: firmware returned error (result=%d)\n",
+		       le16_to_cpu(hostcmd->result));
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	payload = pos + S_DS_GEN;
+	/* payload: Action(2) SUBID(2) Value(1); Value holds current state */
+	cur_value = payload[4];
+
+	if (action == HostCmd_ACT_GEN_SET)
+		printf("Thermal management %s\n",
+		       set_value ? "ENABLED" : "DISABLED");
+	else
+		printf("Thermal management is currently %s\n",
+		       cur_value ? "ON" : "OFF");
 
 done:
 	if (buffer)
