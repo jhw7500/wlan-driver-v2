@@ -324,6 +324,7 @@ static bool moal_bridge_arp_is_for_self(struct moal_bridge *br,
 	struct arphdr *arp;
 	unsigned char *arp_ptr;
 	__be32 target_ip;
+	__be32 wlan_ip, peer_ip;
 
 	if (!pskb_may_pull(skb, l3_off + sizeof(struct arphdr) + 20))
 		return false;
@@ -339,8 +340,16 @@ static bool moal_bridge_arp_is_for_self(struct moal_bridge *br,
 	arp_ptr = (unsigned char *)(arp + 1);
 	memcpy(&target_ip, arp_ptr + 16, 4);
 
-	/* wlan IP만 보호 (peer IP는 MAC 스푸핑 환경에서 불필요) */
-	return (br->wlan_ipv4 && target_ip == br->wlan_ipv4);
+	/* 박스 소유 IP는 wlan(mlan0)·peer(eth0) 양쪽 모두 보호.
+	 * eth0-IP 토폴로지(IP를 eth0에 두는 배치) 정식 지원 — wbridge
+	 * filter.c::filter_arp_is_for_bridge() 가 interfaces[] 전체를 검사하는
+	 * 것과 동등. 한계(설계 파리티): 인터페이스당 캐시 1개라 eth0 가 다중
+	 * IP(peer_route /32 미러 + 관리 IP)면 마지막 inetaddr 이벤트의 주소만
+	 * 보호된다. */
+	wlan_ip = READ_ONCE(br->wlan_ipv4);
+	peer_ip = READ_ONCE(br->peer_ipv4);
+	return (wlan_ip && target_ip == wlan_ip) ||
+	       (peer_ip && target_ip == peer_ip);
 }
 
 /*
@@ -416,41 +425,60 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 
 	/* STA 모드: 모든 수신 패킷의 dst MAC = WLAN MAC (AP→STA 프레임 특성)
 	 * → MAC 기반 자기/포워딩 구분 불가. IP로 판정:
-	 *   - self IPv4 unicast: 스택만 처리 (return 0)
-	 *   - non-self IPv4 unicast: 원본 consume (return 1, 스택 배달 생략)
-	 *   - 나머지 (mcast, non-IPv4, iph pull 실패): clone + 스택 배달 (return 0) */
+	 *   - 박스 소유(wlan 또는 peer) IPv4 unicast: 스택만 처리 (return 0)
+	 *   - non-self IPv4 unicast (wlan_ipv4 보유 시): consume (return 1)
+	 *   - 나머지 (mcast, non-IPv4, wlan_ipv4==0 의 non-self, pull 실패):
+	 *     clone + 스택 배달 (return 0)
+	 * peer(eth0) IP 를 self 로 취급하는 목적은 "유선 누출 차단" — 공중발
+	 * eth0-IP 패킷을 유선으로 흘리지 않는다 (wbridge filter_ip_is_local
+	 * 파리티). 스택 배달까지는 하지만 무선→eth0-IP e2e 통신은 응답
+	 * 라우팅(유선으로 misroute) + mlan rp_filter 제약으로 미지원 —
+	 * eth0-IP 토폴로지의 지원 대상은 유선(P2W) 측 통신이다.
+	 * non-self consume fast path 는 wlan_ipv4 보유 시에만: wlan_ipv4==0
+	 * 과도기(assoc 후 주소 적용 전)나 브릿지 인터페이스가 DHCP 취득 중인
+	 * 변형(mlan1 DHCP=yes)에서 unicast DHCPOFFER/ACK 등 스택행 트래픽이
+	 * 유선으로 새는 것을 막고 tcpdump 가시성을 보존한다 (기존 동작 유지). */
 	if (proto == htons(ETH_P_IP) &&
 	    !is_multicast_ether_addr(eth->h_dest)) {
 		__be32 wlan_ip = READ_ONCE(br->wlan_ipv4);
+		__be32 peer_ip = READ_ONCE(br->peer_ipv4);
 
-		if (wlan_ip &&
+		if ((wlan_ip || peer_ip) &&
 		    pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
 			struct iphdr *iph = (struct iphdr *)(skb->data + l3_off);
 
-			if (iph->daddr == wlan_ip) {
+			if ((wlan_ip && iph->daddr == wlan_ip) ||
+			    (peer_ip && iph->daddr == peer_ip)) {
 				BR_DBG("w2p SELF-IP skip clone dip=%pI4\n",
 				       &iph->daddr);
 				return 0;
 			}
-			/* Non-self unicast IPv4 → consume original (no clone, no stack) */
-			if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
-				atomic_long_inc(&br->wlan_to_peer.dropped);
-				kfree_skb(skb);
-				return 1;
+			if (wlan_ip) {
+				/* Non-self unicast IPv4 → consume original
+				 * (no clone, no stack) */
+				if (unlikely(!moal_bridge_dev_ready(
+					    br->peer_dev))) {
+					atomic_long_inc(
+						&br->wlan_to_peer.dropped);
+					kfree_skb(skb);
+					return 1;
+				}
+				if (atomic_inc_return(&br->w2p_qlen) >
+				    MOAL_BR_W2P_QUEUE_MAX) {
+					atomic_dec(&br->w2p_qlen);
+					atomic_long_inc(
+						&br->wlan_to_peer.dropped);
+					kfree_skb(skb);
+					return 1; /* consumed: dropped */
+				}
+				skb->dev = br->peer_dev;
+				skb_queue_tail(&br->w2p_queue, skb);
+				wake_up(&br->w2p_wait);
+				return 1; /* consumed: forwarded */
 			}
-			if (atomic_inc_return(&br->w2p_qlen) >
-			    MOAL_BR_W2P_QUEUE_MAX) {
-				atomic_dec(&br->w2p_qlen);
-				atomic_long_inc(&br->wlan_to_peer.dropped);
-				kfree_skb(skb);
-				return 1; /* consumed: dropped without stack deliver */
-			}
-			skb->dev = br->peer_dev;
-			skb_queue_tail(&br->w2p_queue, skb);
-			wake_up(&br->w2p_wait);
-			return 1; /* consumed: forwarded, skip stack deliver */
+			/* wlan_ipv4==0: non-self 는 기존 clone+pass 경로로 */
 		}
-		/* wlan_ip == 0 or iph pull failed → fall through to clone+pass */
+		/* 박스 IP 캐시 모두 0 or iph pull failed → fall through to clone+pass */
 	}
 
 	/* Multicast/Broadcast, 비IPv4 유니캐스트, 또는 iph pull 실패 →
@@ -540,6 +568,93 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	if (!is_multicast_ether_addr(eth->h_dest) &&
 	    ether_addr_equal(eth->h_dest, br->peer_mac))
 		return RX_HANDLER_PASS;
+
+	/* ---- 자기(mlan0) 앞 트래픽: 장치 내부에서 로컬 처리 ----
+	 *
+	 * MAC-cloning bridge 에서는 mlan0(STA) MAC == eth0 유선 클라이언트 MAC
+	 * 이므로 MAC 으로는 "박스 자신(mlan0)" 과 "유선 클라이언트" 를 구분할 수
+	 * 없다. W2P 경로(rx_fast)의 SELF-IP/SELF-ARP 필터와 동일하게 L3 로
+	 * 판정한다.
+	 *
+	 * skb->data 는 eth_type_trans 이후라 L3 시작점. in-band 802.1Q 태그가
+	 * 남아있으면 VLAN_HLEN 만큼 뒤가 L3 (hwaccel 태그는 이미 분리됨).
+	 * wlan_ipv4==0(mlan0 IP 미할당)이면 모든 검사 불발 → 기존 포워딩으로
+	 * graceful fall-through (완전 투명 브릿지 동작 유지). */
+
+	/* SELF-ARP REQUEST: target IP == 박스 소유 IP(mlan0 또는 eth0)인 ARP
+	 * "요청" → 스택만 처리, 공중 포워딩 금지. 공중으로 포워딩하면 AP
+	 * 반사를 거쳐 mlan0 스택이 클론 MAC(MAC_C)으로 한 번 더 응답(weak
+	 * host model — 타깃 IP 가 eth0 소유여도 응답) → 정상 응답(MAC_E)과
+	 * 이중 응답 레이스가 생겨 클라이언트 ARP 캐시가 MAC_E/MAC_C 사이를
+	 * 오가며 간헐 단절된다. 레이스의 근원은 "요청"의 공중 유출이므로
+	 * REQUEST 만 억제한다. (eth0-IP 토폴로지 정식 지원 — peer_ipv4 는
+	 * arp_is_for_self 공유 판정에 포함됨)
+	 *
+	 * ARP "REPLY"(tip==mlan0 IP — 예: 박스가 mlan0 라우트로 보낸 who-has
+	 * 에 대한 유선 클라이언트의 응답)는 억제하지 않는다: pending neigh 가
+	 * (ip, dev=mlan0) 키로 만들어진 경우 arp_process 는 수신 dev 로만
+	 * 조회하므로(net/ipv4/arp.c) eth0 로 PASS 해봐야 해소되지 않고,
+	 * 기존 공중 hairpin(AP 반사 → mlan0 수신)이 유일한 해소 경로다.
+	 * → REPLY 는 아래 비자기 유니캐스트 경로로 fall-through (기존 동작). */
+	if (vlan_get_protocol(skb) == htons(ETH_P_ARP)) {
+		unsigned int arp_off =
+			(skb->protocol == htons(ETH_P_8021Q)) ? VLAN_HLEN : 0;
+
+		/* arp_is_for_self == true 면 arphdr 까지 pull 보장됨 */
+		if (moal_bridge_arp_is_for_self(br, skb, arp_off) &&
+		    ((struct arphdr *)(skb->data + arp_off))->ar_op ==
+			    htons(ARPOP_REQUEST)) {
+			/* unicast re-ARP 가 클론 MAC 앞으로 오면 eth0 기준
+			 * OTHERHOST 마킹 상태 — arp_rcv 는 OTHERHOST 를
+			 * 폐기하므로 HOST 로 정정 (broadcast ARP 는
+			 * PACKET_BROADCAST 그대로 둠) */
+			if (skb->pkt_type == PACKET_OTHERHOST)
+				skb->pkt_type = PACKET_HOST;
+			BR_DBG("p2w SELF-ARP-REQ pass (no air fwd)\n");
+			return RX_HANDLER_PASS;
+		}
+	}
+
+	/* 위 SELF-ARP 검사의 pskb_may_pull 이 head 를 재할당했을 수 있으므로
+	 * 아래 eth->h_dest 사용 전에 재취득 (mac_header offset 은 유지됨) */
+	eth = eth_hdr(skb);
+
+	/* SELF-IP unicast: dst IP == 박스 소유 IP(mlan0 또는 eth0) → 로컬
+	 * 스택이 처리. 포워딩하면 자기에게 갈 패킷이 WiFi 로 hairpin 송출된다.
+	 *
+	 * pkt_type 정정 필수: dst MAC 이 클론 MAC(=mlan0 MAC)이면
+	 * eth_type_trans 가 eth0 기준 PACKET_OTHERHOST 로 마킹했고,
+	 * ip_rcv 는 OTHERHOST 를 무조건 폐기한다 (net/ipv4/ip_input.c).
+	 * daddr == 자기 IP 가 확인된 패킷이므로 HOST 로 정정해야
+	 * RX_HANDLER_PASS 가 실제 로컬 배달로 이어진다.
+	 * (peer_ip 매치는 eth0 가 직접 소유한 IP 라 rp_filter strict 에서도
+	 *  reverse path == eth0 으로 통과 — wlan_ip 매치만 loose 필요) */
+	if (!is_multicast_ether_addr(eth->h_dest) &&
+	    vlan_get_protocol(skb) == htons(ETH_P_IP)) {
+		__be32 wlan_ip = READ_ONCE(br->wlan_ipv4);
+		__be32 peer_ip = READ_ONCE(br->peer_ipv4);
+		unsigned int l3_off =
+			(skb->protocol == htons(ETH_P_8021Q)) ? VLAN_HLEN : 0;
+
+		if ((wlan_ip || peer_ip) &&
+		    pskb_may_pull(skb, l3_off + sizeof(struct iphdr))) {
+			struct iphdr *iph =
+				(struct iphdr *)(skb->data + l3_off);
+
+			if ((wlan_ip && iph->daddr == wlan_ip) ||
+			    (peer_ip && iph->daddr == peer_ip)) {
+				if (skb->pkt_type == PACKET_OTHERHOST)
+					skb->pkt_type = PACKET_HOST;
+				BR_DBG("p2w SELF-IP pass dip=%pI4\n",
+				       &iph->daddr);
+				return RX_HANDLER_PASS;
+			}
+		}
+	}
+
+	/* 위 SELF 검사들의 pskb_may_pull 이 head 를 재할당했을 수 있으므로
+	 * eth 포인터 재취득 (mac_header offset 은 pull 시에도 유지됨) */
+	eth = eth_hdr(skb);
 
 	/* 비자기 유니캐스트: 로컬 스택이 소비할 수 없는 트래픽이므로
 	 * clone 없이 원본을 p2w 큐에 넘기고 CONSUMED로 반환.
@@ -647,6 +762,32 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
+	/* SELF-ARP REQUEST (target IP == 박스 소유 IP 인 ARP "요청"): 공중
+	 * 포워딩 금지 — 단, 스택 원본이 실제로 처리되는 경우(broadcast/host)에만.
+	 * (peer_ipv4 도 arp_is_for_self 공유 판정에 포함 — eth0-IP 토폴로지)
+	 * - REQUEST 한정: REPLY(tip==mlan0 IP)는 mlan0 pending neigh 해소의
+	 *   유일 경로인 공중 hairpin 을 유지해야 한다 (rx_handler 가드와 동일
+	 *   근거).
+	 * - dst MAC 이 클론 MAC 인 unicast(OTHERHOST)는 arp_rcv 가 원본을
+	 *   처리 없이 소비하므로(net/ipv4/arp.c) 공중 hairpin 이 유일한 배달
+	 *   경로 — 기존 포워딩 유지. pt 모드는 rx_handler 와 달리 스택 원본의
+	 *   pkt_type 을 정정할 수 없다(copy 만 받음).
+	 * broadcast REQUEST 억제만으로 이중 ARP 응답(MAC_C) 레이스의 근원은
+	 * 차단된다. (pt 모드의 SELF-IP unicast 도 동일 이유로 hairpin 유지.) */
+	if (skb->pkt_type != PACKET_OTHERHOST &&
+	    vlan_get_protocol(skb) == htons(ETH_P_ARP)) {
+		unsigned int arp_off =
+			(skb->protocol == htons(ETH_P_8021Q)) ? VLAN_HLEN : 0;
+
+		if (moal_bridge_arp_is_for_self(br, skb, arp_off) &&
+		    ((struct arphdr *)(skb->data + arp_off))->ar_op ==
+			    htons(ARPOP_REQUEST)) {
+			BR_DBG("p2w(pt) SELF-ARP-REQ no air fwd\n");
+			kfree_skb(skb);
+			return 0;
+		}
+	}
+
 	if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {
 		atomic_long_inc(&br->peer_to_wlan.dropped);
 		dev_kfree_skb_any(skb);
@@ -682,6 +823,11 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
  *
  * DHCP 완료 시 wlan_ipv4를 재캐시하여 자기 IP 필터 정상 동작 보장.
  * 브릿지 init 시점에 wlan_ipv4=0.0.0.0 문제 해결.
+ *
+ * event 분기 필수: NETDEV_DOWN 은 "삭제되는 주소"의 ifa 로 호출되므로
+ * (net/ipv4/devinet.c::__inet_del_ifa) 그 ifa_local 을 캐시하면 박스가
+ * 더 이상 소유하지 않는 IP 가 self 로 남는다 (예: eth0 mgmt IP 교체
+ * add→del 순서). DOWN 이면 장치에 남아있는 주소를 재조회한다.
  */
 static int moal_bridge_inetaddr_event(struct notifier_block *nb,
 				      unsigned long event, void *ptr)
@@ -689,18 +835,36 @@ static int moal_bridge_inetaddr_event(struct notifier_block *nb,
 	struct in_ifaddr *ifa = (struct in_ifaddr *)ptr;
 	struct net_device *dev;
 	struct moal_bridge *br = container_of(nb, struct moal_bridge, inet_nb);
+	__be32 new_ip;
 
 	/* Defensive: some notifier paths may deliver a partially-constructed ifa */
 	if (!ifa || !ifa->ifa_dev || !ifa->ifa_dev->dev)
 		return NOTIFY_DONE;
 	dev = ifa->ifa_dev->dev;
 
+	if (dev != br->wlan_dev && dev != br->peer_dev)
+		return NOTIFY_DONE;
+
+	/* if/else 사용 (switch-case 금지): bridge_static_checks.sh 의 B4 규칙이
+	 * 파일에서 처음 나오는 DOWN case 레이블을 netdev notifier 의 queue
+	 * purge 블록으로 가정하므로, 여기에 case 레이블(주석 포함)이 먼저
+	 * 등장하면 오탐된다. */
+	if (event == NETDEV_UP) {
+		new_ip = ifa->ifa_local;
+	} else if (event == NETDEV_DOWN) {
+		/* 삭제 통지 시점에는 ifa 가 이미 리스트에서 분리됨 —
+		 * 남은 첫 주소(없으면 0)를 재조회 */
+		new_ip = moal_bridge_get_ipv4(dev);
+	} else {
+		return NOTIFY_DONE;
+	}
+
 	if (dev == br->wlan_dev) {
-		WRITE_ONCE(br->wlan_ipv4, ifa->ifa_local);
+		WRITE_ONCE(br->wlan_ipv4, new_ip);
 		PRINTM(MMSG, "bridge: wlan IPv4 updated = %pI4\n",
 		       &br->wlan_ipv4);
-	} else if (dev == br->peer_dev) {
-		WRITE_ONCE(br->peer_ipv4, ifa->ifa_local);
+	} else {
+		WRITE_ONCE(br->peer_ipv4, new_ip);
 		PRINTM(MMSG, "bridge: peer IPv4 updated = %pI4\n",
 		       &br->peer_ipv4);
 	}

@@ -28,7 +28,8 @@ printf '%s\n' "$KEEPALIVE_BLOCK" | \
 grep -q 'MOAL_BR_W2P_QUEUE_MAX' "$ROOT/mlinux/moal_bridge.h" || fail "w2p queue max missing"
 grep -q 'MOAL_BR_P2W_QUEUE_MAX' "$ROOT/mlinux/moal_bridge.h" || fail "p2w queue max missing"
 
-W2P_FAST_BLOCK="$(grep -n -A120 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
+# -A170: peer_ipv4 가드 확장(2026-06-10)으로 rx_fast 본문이 길어짐 (bridge_debug 블록 +137줄)
+W2P_FAST_BLOCK="$(grep -n -A170 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
 printf '%s\n' "$W2P_FAST_BLOCK" | \
   grep -q 'atomic_inc_return(&br->w2p_qlen)' || \
   fail "w2p queue length guard missing (rx_fast)"
@@ -205,7 +206,7 @@ grep -cE 'handle->bridge(->|\s*\))' "$SHIM_C" | awk '$1 > 0 {
 }'
 
 # --- v3 D2: A-MSDU subframe honors rx_fast CONSUMED return ---
-W2P_FAST_BLOCK2="$(grep -n -A140 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
+W2P_FAST_BLOCK2="$(grep -n -A170 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
 printf '%s\n' "$W2P_FAST_BLOCK2" | \
   grep -Eq 'return[[:space:]]+1;\s*/\*.*consumed' || \
   fail "rx_fast must return 1 for consumed (non-self unicast)"
