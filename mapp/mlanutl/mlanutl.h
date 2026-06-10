@@ -816,6 +816,10 @@ struct eth_priv_tx_rate_cfg {
 #define MLAN_THERMAL_MGMT_CMDCODE 0x008b
 /** Thermal management sub-command id */
 #define MLAN_THERMAL_MGMT_SUBID 0x113
+/** Sentinel placed in the Value byte of a thermal_mgmt GET request, so the
+ *  response can be checked for whether firmware actually wrote the state
+ *  (rather than us silently reading back our own request placeholder) */
+#define MLAN_THERMAL_MGMT_GET_SENTINEL 0xFF
 
 #define MRVL_DOT11AX_ENABLE_SR_TLV_ID (PROPRIETARY_TLV_BASE_ID + 322)
 #define MRVL_DOT11AX_OBSS_PD_OFFSET_TLV_ID (PROPRIETARY_TLV_BASE_ID + 323)

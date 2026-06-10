@@ -17671,9 +17671,14 @@ done:
  *  debug.conf produce (CmdCode 0x008b, SUBID 0x113), so no kernel-side
  *  change is required.
  *
+ *  The GET path sends a sentinel (0xFF) in the Value byte so we can tell
+ *  whether the firmware actually wrote the current state back, instead of
+ *  silently reading our own request placeholder.  --raw dumps the whole
+ *  HostCmd response so the real payload layout can be inspected on target.
+ *
  *  Usage:
- *      mlanutl mlanX thermal_mgmt          -> get current state
- *      mlanutl mlanX thermal_mgmt <0|1>    -> 0: disable, 1: enable
+ *      mlanutl mlanX thermal_mgmt [--raw]         -> get current state
+ *      mlanutl mlanX thermal_mgmt <0|1> [--raw]   -> 0: disable, 1: enable
  *
  *  @param argc   Number of arguments
  *  @param argv   A pointer to arguments array
@@ -17681,7 +17686,7 @@ done:
  */
 static int process_thermal_mgmt(int argc, char *argv[])
 {
-	int ret = 0;
+	int ret = 0, i;
 	t_u8 *buffer = NULL, *pos = NULL, *payload = NULL;
 	struct eth_priv_cmd *cmd = NULL;
 	struct ifreq ifr;
@@ -17689,24 +17694,27 @@ static int process_thermal_mgmt(int argc, char *argv[])
 	t_u32 hostcmd_size = 0;
 	t_u16 action = HostCmd_ACT_GEN_GET;
 	t_u8 set_value = 0, cur_value = 0;
+	boolean have_set = FALSE, raw_dump = FALSE;
 
-	/* argv: [0]=mlanutl [1]=mlanX [2]=thermal_mgmt [3]=<0|1>(optional) */
-	if (argc != 3 && argc != 4) {
-		printf("Error: invalid no of arguments\n");
-		printf("Get current state: mlanutl mlanX thermal_mgmt\n");
-		printf("Set state        : mlanutl mlanX thermal_mgmt <0|1>  (0: disable, 1: enable)\n");
-		ret = MLAN_STATUS_FAILURE;
-		goto done;
-	}
+	/* argv: [0]=mlanutl [1]=mlanX [2]=thermal_mgmt [3..]=<0|1> / --raw */
+	if (argc < 3 || argc > 5)
+		goto usage;
 
-	if (argc == 4) {
-		set_value = (t_u8)a2hex_or_atoi(argv[3]);
-		if (set_value != 0 && set_value != 1) {
-			printf("Error: value must be 0 (disable) or 1 (enable)\n");
-			ret = MLAN_STATUS_FAILURE;
-			goto done;
+	for (i = 3; i < argc; i++) {
+		if (strcmp(argv[i], "--raw") == 0) {
+			raw_dump = TRUE;
+		} else if (!have_set) {
+			set_value = (t_u8)a2hex_or_atoi(argv[i]);
+			if (set_value != 0 && set_value != 1) {
+				printf("Error: value must be 0 (disable) or 1 (enable)\n");
+				ret = MLAN_STATUS_FAILURE;
+				goto done;
+			}
+			action = HostCmd_ACT_GEN_SET;
+			have_set = TRUE;
+		} else {
+			goto usage;
 		}
-		action = HostCmd_ACT_GEN_SET;
 	}
 
 	/* Initialize buffer */
@@ -17743,8 +17751,11 @@ static int process_thermal_mgmt(int argc, char *argv[])
 	/* SUBID = THERMAL_MANAGEMENT (2 bytes, little endian) */
 	payload[2] = (t_u8)(MLAN_THERMAL_MGMT_SUBID & 0xff);
 	payload[3] = (t_u8)((MLAN_THERMAL_MGMT_SUBID >> 8) & 0xff);
-	/* Value (1 byte): 0 disable, 1 enable (placeholder for GET) */
-	payload[4] = set_value;
+	/* Value (1 byte): SET carries 0/1; GET carries a sentinel so we can
+	 * detect whether firmware actually wrote the real state back. */
+	payload[4] = (action == HostCmd_ACT_GEN_SET)
+			     ? set_value
+			     : MLAN_THERMAL_MGMT_GET_SENTINEL;
 
 	hostcmd->size = cpu_to_le16((t_u16)(S_DS_GEN + 5));
 	hostcmd_size = S_DS_GEN + 5;
@@ -17793,12 +17804,39 @@ static int process_thermal_mgmt(int argc, char *argv[])
 	/* payload: Action(2) SUBID(2) Value(1); Value holds current state */
 	cur_value = payload[4];
 
-	if (action == HostCmd_ACT_GEN_SET)
+	if (raw_dump) {
+		t_u16 rsize = le16_to_cpu(hostcmd->size);
+		if (rsize < S_DS_GEN || rsize > 256)
+			rsize = (t_u16)(S_DS_GEN + 5);
+		printf("--- thermal_mgmt raw HostCmd response (%u bytes) ---\n",
+		       rsize);
+		hexdump("resp", (t_void *)hostcmd, rsize, ' ');
+	}
+
+	if (action == HostCmd_ACT_GEN_SET) {
 		printf("Thermal management %s\n",
 		       set_value ? "ENABLED" : "DISABLED");
-	else
+	} else if (cur_value == MLAN_THERMAL_MGMT_GET_SENTINEL) {
+		printf("Warning: firmware did not update the state byte (still 0x%02x at payload[4]).\n",
+		       cur_value);
+		printf("  GET may be reading the request placeholder rather than a real value;\n");
+		printf("  inspect the actual layout with: mlanutl %s thermal_mgmt --raw\n",
+		       argv[1]);
+		ret = MLAN_STATUS_FAILURE;
+	} else if (cur_value == 0 || cur_value == 1) {
 		printf("Thermal management is currently %s\n",
 		       cur_value ? "ON" : "OFF");
+	} else {
+		printf("Thermal management state = 0x%02x (unexpected; run with --raw to inspect)\n",
+		       cur_value);
+	}
+	goto done;
+
+usage:
+	printf("Error: invalid arguments\n");
+	printf("Get current state: mlanutl mlanX thermal_mgmt [--raw]\n");
+	printf("Set state        : mlanutl mlanX thermal_mgmt <0|1> [--raw]   (0: disable, 1: enable)\n");
+	ret = MLAN_STATUS_FAILURE;
 
 done:
 	if (buffer)
