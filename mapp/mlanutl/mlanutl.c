@@ -17673,12 +17673,13 @@ done:
  *
  *  The GET path sends a sentinel (0xFF) in the Value byte so we can tell
  *  whether the firmware actually wrote the current state back, instead of
- *  silently reading our own request placeholder.  --raw dumps the whole
- *  HostCmd response so the real payload layout can be inspected on target.
+ *  silently reading our own request placeholder.  --hex (alias --raw) dumps
+ *  the whole HostCmd response so the real payload layout can be inspected
+ *  on target.
  *
  *  Usage:
- *      mlanutl mlanX thermal_mgmt [--raw]         -> get current state
- *      mlanutl mlanX thermal_mgmt <0|1> [--raw]   -> 0: disable, 1: enable
+ *      mlanutl mlanX thermal_mgmt [--hex]         -> get current state
+ *      mlanutl mlanX thermal_mgmt <0|1> [--hex]   -> 0: disable, 1: enable
  *
  *  @param argc   Number of arguments
  *  @param argv   A pointer to arguments array
@@ -17701,18 +17702,22 @@ static int process_thermal_mgmt(int argc, char *argv[])
 		goto usage;
 
 	for (i = 3; i < argc; i++) {
-		if (strcmp(argv[i], "--raw") == 0) {
+		if (strcmp(argv[i], "--hex") == 0 ||
+		    strcmp(argv[i], "--raw") == 0) {
 			raw_dump = TRUE;
-		} else if (!have_set) {
-			set_value = (t_u8)a2hex_or_atoi(argv[i]);
-			if (set_value != 0 && set_value != 1) {
-				printf("Error: value must be 0 (disable) or 1 (enable)\n");
-				ret = MLAN_STATUS_FAILURE;
-				goto done;
-			}
+		} else if (!have_set && strcmp(argv[i], "0") == 0) {
+			set_value = 0;
+			action = HostCmd_ACT_GEN_SET;
+			have_set = TRUE;
+		} else if (!have_set && strcmp(argv[i], "1") == 0) {
+			set_value = 1;
 			action = HostCmd_ACT_GEN_SET;
 			have_set = TRUE;
 		} else {
+			/* An unknown token (e.g. a typo'd option) must NOT be
+			 * silently parsed as 0 and turned into an accidental
+			 * "disable". Reject it explicitly. */
+			printf("Error: invalid argument '%s'\n", argv[i]);
 			goto usage;
 		}
 	}
@@ -17820,22 +17825,22 @@ static int process_thermal_mgmt(int argc, char *argv[])
 		printf("Warning: firmware did not update the state byte (still 0x%02x at payload[4]).\n",
 		       cur_value);
 		printf("  GET may be reading the request placeholder rather than a real value;\n");
-		printf("  inspect the actual layout with: mlanutl %s thermal_mgmt --raw\n",
+		printf("  inspect the actual layout with: mlanutl %s thermal_mgmt --hex\n",
 		       argv[1]);
 		ret = MLAN_STATUS_FAILURE;
 	} else if (cur_value == 0 || cur_value == 1) {
 		printf("Thermal management is currently %s\n",
 		       cur_value ? "ON" : "OFF");
 	} else {
-		printf("Thermal management state = 0x%02x (unexpected; run with --raw to inspect)\n",
+		printf("Thermal management state = 0x%02x (unexpected; run with --hex to inspect)\n",
 		       cur_value);
 	}
 	goto done;
 
 usage:
-	printf("Error: invalid arguments\n");
-	printf("Get current state: mlanutl mlanX thermal_mgmt [--raw]\n");
-	printf("Set state        : mlanutl mlanX thermal_mgmt <0|1> [--raw]   (0: disable, 1: enable)\n");
+	printf("Get current state: mlanutl mlanX thermal_mgmt [--hex]\n");
+	printf("Set state        : mlanutl mlanX thermal_mgmt <0|1> [--hex]   (0: disable, 1: enable)\n");
+	printf("  --hex (alias --raw): dump the raw HostCmd response bytes\n");
 	ret = MLAN_STATUS_FAILURE;
 
 done:
