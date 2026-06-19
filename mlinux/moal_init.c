@@ -95,6 +95,9 @@ char *bridge_peer = "eth0";
 int bridge_wlan_idx;
 int bridge_debug;
 int bridge_keepalive_ms = 1;
+/** bridge_keepalive_idle_ms: adaptive keepalive idle cutoff (ms).
+ *  0 = legacy free-running timer (default), >0 = self-stop after idle. */
+int bridge_keepalive_idle_ms;
 /* [DBG-RXDROP] Toggle: 1 = link-local frame을 driver에서 consume(kfree+return 1).
  * 0 (default) = 기존 동작 (return 0, kernel stack으로 deliver → ptype handler 부재 시
  * dev->rx_nohandler 자동 증가하여 sysfs rx_dropped 에 합산). */
@@ -930,6 +933,15 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->bridge_keepalive_ms_present = 1;
 			PRINTM(MMSG, "bridge_keepalive_ms = %d\n",
 			       params->bridge_keepalive_ms);
+		} else if (strncmp(line, "bridge_keepalive_idle_ms",
+				   strlen("bridge_keepalive_idle_ms")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->bridge_keepalive_idle_ms = out_data;
+			params->bridge_keepalive_idle_ms_present = 1;
+			PRINTM(MMSG, "bridge_keepalive_idle_ms = %d\n",
+			       params->bridge_keepalive_idle_ms);
 		} else if (strncmp(line, "amsdu_deaggr",
 				   strlen("amsdu_deaggr")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1856,6 +1868,8 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.bridge_wlan_idx = bridge_wlan_idx;
 	handle->params.bridge_keepalive_ms = bridge_keepalive_ms;
 	handle->params.bridge_keepalive_ms_present = 0;
+	handle->params.bridge_keepalive_idle_ms = bridge_keepalive_idle_ms;
+	handle->params.bridge_keepalive_idle_ms_present = 0;
 	if (params) {
 		if (params->bridge_mode)
 			handle->params.bridge_mode = params->bridge_mode;
@@ -1870,6 +1884,11 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 			handle->params.bridge_keepalive_ms =
 				params->bridge_keepalive_ms;
 			handle->params.bridge_keepalive_ms_present = 1;
+		}
+		if (params->bridge_keepalive_idle_ms_present) {
+			handle->params.bridge_keepalive_idle_ms =
+				params->bridge_keepalive_idle_ms;
+			handle->params.bridge_keepalive_idle_ms_present = 1;
 		}
 	}
 
@@ -3181,6 +3200,8 @@ module_param(bridge_debug, int, 0644);
 MODULE_PARM_DESC(bridge_debug, "Bridge debug log: 0=off(default), 1=on (runtime changeable)");
 module_param(bridge_keepalive_ms, int, 0644);
 MODULE_PARM_DESC(bridge_keepalive_ms, "Bridge keepalive timer interval ms: 0=off, 1=1ms(default). Keeps SDIO processing loop warm.");
+module_param(bridge_keepalive_idle_ms, int, 0444);
+MODULE_PARM_DESC(bridge_keepalive_idle_ms, "Bridge keepalive idle cutoff ms (applied at load; reload to change): 0=free-running(default), >0=adaptive (timer armed by traffic, self-stops after this idle → zero wakeups when idle).");
 module_param(bridge_consume_link_local, int, 0644);
 MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(amsdu_deaggr, int, 0);

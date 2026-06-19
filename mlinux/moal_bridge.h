@@ -84,6 +84,12 @@ struct moal_bridge {
 	/** Keepalive timer: 주기적으로 드라이버 main_work를 깨워서
 	 *  SDIO 처리 루프를 warm 유지 (pcap RT polling 효과 재현) */
 	struct hrtimer keepalive_timer;
+	/** Adaptive keepalive: last forwarded-packet timestamp + armed flag.
+	 *  Producers refresh ka_last_fwd then arm via cmpxchg(ka_armed,0→1);
+	 *  the timer self-disarms after the idle cutoff. Only used when
+	 *  bridge_keepalive_idle_ms > 0. */
+	ktime_t ka_last_fwd;
+	atomic_t ka_armed;
 
 	/** Back-pointer to moal_handle */
 	void *handle;

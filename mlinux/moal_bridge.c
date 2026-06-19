@@ -49,7 +49,7 @@ static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
 				      keepalive_timer);
 	moal_handle *handle = (moal_handle *)br->handle;
 	ktime_t interval;
-	int keepalive_ms;
+	int keepalive_ms, idle_ms;
 
 	if (atomic_read(&br->active) && handle->workqueue)
 		queue_work(handle->workqueue, &handle->main_work);
@@ -59,8 +59,99 @@ static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
 		return HRTIMER_NORESTART;
 
 	interval = ns_to_ktime((u64)keepalive_ms * NSEC_PER_MSEC);
+
+	/* Adaptive mode: after idle_ms of no forwarded traffic, self-disarm so
+	 * a truly idle link burns zero wakeups. Producers re-arm on the next
+	 * packet via moal_bridge_ka_kick(). idle_ms<=0 keeps the legacy
+	 * free-running behaviour (timer never stops on its own). */
+	idle_ms = handle->params.bridge_keepalive_idle_ms;
+	if (idle_ms > 0) {
+		s64 cutoff_us = (s64)idle_ms * 1000;
+		s64 idle_us = ktime_to_us(
+			ktime_sub(ktime_get(), READ_ONCE(br->ka_last_fwd)));
+
+		if (idle_us >= cutoff_us) {
+			/* Tentatively disarm, then re-check: a producer may have
+			 * forwarded a packet between our idle read and here. */
+			atomic_set(&br->ka_armed, 0);
+			/* Full barrier: order the clear before the re-read,
+			 * pairing with the producer's WRITE_ONCE(ka_last_fwd)
+			 * (which its cmpxchg orders before the arm). Without it
+			 * the load could float above the clear and miss a
+			 * concurrent arm. */
+			smp_mb();
+			idle_us = ktime_to_us(ktime_sub(
+				ktime_get(), READ_ONCE(br->ka_last_fwd)));
+			if (idle_us < cutoff_us) {
+				/* A producer forwarded during our disarm window.
+				 * Reclaim so exactly one party re-arms:
+				 *   win  -> no producer has started the timer (it
+				 *           is not enqueued); we own it: forward the
+				 *           expiry and RESTART.
+				 *   lose -> a producer won cmpxchg(0->1) and will
+				 *           call hrtimer_start (its next step), so it
+				 *           owns the re-arm at the correct expiry:
+				 *           return NORESTART. NORESTART does NOT drop
+				 *           the producer's (possibly concurrent)
+				 *           enqueue — __run_hrtimer only re-enqueues
+				 *           on RESTART, it never removes — and
+				 *           armed==1 here always has a producer
+				 *           arming, so the timer is never stranded.
+				 *           (A bare RESTART would instead risk
+				 *           re-enqueuing at the stale past expiry ->
+				 *           one spurious immediate fire.) */
+				if (atomic_cmpxchg(&br->ka_armed, 0, 1) == 0)
+					hrtimer_forward_now(timer, interval);
+				else
+					return HRTIMER_NORESTART;
+				return HRTIMER_RESTART;
+			}
+			/* Confirmed idle: ka_armed left 0 — the next forwarded
+			 * packet re-arms via moal_bridge_ka_kick(). */
+			return HRTIMER_NORESTART;
+		}
+	}
+
 	hrtimer_forward_now(timer, interval);
 	return HRTIMER_RESTART;
+}
+
+/*
+ * moal_bridge_ka_kick - arm the adaptive keepalive on forwarded traffic.
+ *
+ * Called from the rx/forward enqueue paths (rx_handler / rx_fast in softirq,
+ * packet_type fallback). Publishes the last-forward timestamp BEFORE the
+ * cmpxchg so the timer's disarm path (clear ka_armed -> re-read timestamp)
+ * can never stop the timer while traffic is live, then starts the timer if it
+ * was disarmed. No-op outside adaptive mode (keepalive_ms>0 && idle_ms>0); in
+ * legacy mode the timer free-runs and never needs re-arming.
+ */
+static inline void moal_bridge_ka_kick(struct moal_bridge *br)
+{
+	moal_handle *handle = (moal_handle *)br->handle;
+	int keepalive_ms = handle->params.bridge_keepalive_ms;
+
+	if (keepalive_ms <= 0 || handle->params.bridge_keepalive_idle_ms <= 0)
+		return;
+
+	/* Publish the timestamp BEFORE arming. In Linux, atomic_cmpxchg is fully
+	 * ordered (x86 LOCK; arm64 casal / ldxr-stlxr), so the ka_last_fwd store
+	 * is globally visible before any CPU observes ka_armed==1 — the timer's
+	 * disarm re-read (after its own smp_mb) therefore cannot miss it. Do NOT
+	 * weaken this cmpxchg to a bare atomic_set(). */
+	WRITE_ONCE(br->ka_last_fwd, ktime_get());
+	/* Steady-state fast path: once armed, skip the bus-locked cmpxchg via a
+	 * plain atomic_read — saves a locked op on every packet of a burst. The
+	 * short-circuit only triggers when armed==1 (timer running, no disarm
+	 * pending); the correctness-critical disarm window always has armed==0
+	 * (timer just cleared it), so the producer still takes the fully-ordered
+	 * cmpxchg there and the ka_last_fwd publish stays correctly ordered. */
+	if (atomic_read(&br->ka_armed) == 0 &&
+	    atomic_cmpxchg(&br->ka_armed, 0, 1) == 0) {
+		ktime_t interval =
+			ns_to_ktime((u64)keepalive_ms * NSEC_PER_MSEC);
+		hrtimer_start(&br->keepalive_timer, interval, HRTIMER_MODE_REL);
+	}
 }
 
 /*
@@ -375,6 +466,15 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	if (!br || !skb)
 		return 0;
 
+	/* Defensive early-out — NOT load-bearing for keepalive teardown safety
+	 * (that is guaranteed by the synchronize_rcu drain + step-5b cancel in
+	 * deinit). It mirrors the active check in the rx_handler / packet_type
+	 * paths so all three ingress paths behave identically once deinit clears
+	 * active, and skips needless ka_kick()/forwarding work during teardown.
+	 * Safe to keep; removing it loses that consistency, not correctness. */
+	if (!atomic_read(&br->active))
+		return 0;
+
 	if (bridge_debug)
 		t_start = ktime_get();
 
@@ -474,6 +574,7 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 				skb->dev = br->peer_dev;
 				skb_queue_tail(&br->w2p_queue, skb);
 				wake_up(&br->w2p_wait);
+				moal_bridge_ka_kick(br);
 				return 1; /* consumed: forwarded */
 			}
 			/* wlan_ipv4==0: non-self 는 기존 clone+pass 경로로 */
@@ -498,6 +599,7 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 			skb2->dev = br->peer_dev;
 			skb_queue_tail(&br->w2p_queue, skb2);
 			wake_up(&br->w2p_wait);
+			moal_bridge_ka_kick(br);
 		} else {
 			atomic_long_inc(&br->wlan_to_peer.oom_drops);
 		}
@@ -684,6 +786,7 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 		skb_push(skb, ETH_HLEN);
 		skb_queue_tail(&br->p2w_queue, skb);
 		wake_up(&br->p2w_wait);
+		moal_bridge_ka_kick(br);
 		*pskb = NULL;
 		return RX_HANDLER_CONSUMED;
 	}
@@ -714,6 +817,7 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			skb_push(skb2, ETH_HLEN);
 			skb_queue_tail(&br->p2w_queue, skb2);
 			wake_up(&br->p2w_wait);
+			moal_bridge_ka_kick(br);
 		} else {
 			atomic_long_inc(&br->peer_to_wlan.oom_drops);
 		}
@@ -810,6 +914,7 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 	skb_push(skb, ETH_HLEN);
 	skb_queue_tail(&br->p2w_queue, skb);
 	wake_up(&br->p2w_wait);
+	moal_bridge_ka_kick(br);
 
 	return 0;
 }
@@ -1121,17 +1226,41 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	br->inet_nb.notifier_call = moal_bridge_inetaddr_event;
 	register_inetaddr_notifier(&br->inet_nb);
 
-	/* 7. keepalive timer 시작 (드라이버 main_work warm 유지) */
+	/* 7. keepalive timer — keeps the SDIO main_work warm.
+	 *    idle_ms<=0: free-running (legacy) — start now, never self-stops.
+	 *    idle_ms>0 : adaptive — armed by the first forwarded packet
+	 *                (moal_bridge_ka_kick) and self-stops after idle_ms of
+	 *                no traffic, so a truly idle link costs zero wakeups. */
 	if (handle->params.bridge_keepalive_ms > 0) {
-		ktime_t interval = ns_to_ktime(
-			(u64)handle->params.bridge_keepalive_ms * NSEC_PER_MSEC);
 		hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC,
 			     HRTIMER_MODE_REL);
 		br->keepalive_timer.function = moal_bridge_keepalive;
-		hrtimer_start(&br->keepalive_timer, interval,
-			      HRTIMER_MODE_REL);
-		PRINTM(MMSG, "bridge:   keepalive  = %dms\n",
-		       handle->params.bridge_keepalive_ms);
+		br->ka_last_fwd = ktime_get();
+		if (handle->params.bridge_keepalive_idle_ms > 0) {
+			atomic_set(&br->ka_armed, 0);
+			PRINTM(MMSG,
+			       "bridge:   keepalive  = %dms (adaptive, idle %dms)\n",
+			       handle->params.bridge_keepalive_ms,
+			       handle->params.bridge_keepalive_idle_ms);
+			/* idle_ms < keepalive_ms → 타이머가 매 tick 마다
+			 * idle_us < cutoff 로 판정되어 legacy 속도로 계속 돎
+			 * (자가정지 안 됨) → 절감 무력화. 경고만, 동작은 유지. */
+			if (handle->params.bridge_keepalive_idle_ms <
+			    handle->params.bridge_keepalive_ms)
+				PRINTM(MWARN,
+				       "bridge: keepalive_idle_ms(%d) < keepalive_ms(%d) — timer re-arms every tick; power saving ineffective\n",
+				       handle->params.bridge_keepalive_idle_ms,
+				       handle->params.bridge_keepalive_ms);
+		} else {
+			ktime_t interval = ns_to_ktime(
+				(u64)handle->params.bridge_keepalive_ms *
+				NSEC_PER_MSEC);
+			atomic_set(&br->ka_armed, 1);
+			hrtimer_start(&br->keepalive_timer, interval,
+				      HRTIMER_MODE_REL);
+			PRINTM(MMSG, "bridge:   keepalive  = %dms\n",
+			       handle->params.bridge_keepalive_ms);
+		}
 	} else {
 		PRINTM(MMSG, "bridge:   keepalive  = off\n");
 	}
@@ -1211,6 +1340,25 @@ void moal_bridge_deinit(void *phandle)
 	 *    뒤이지만, 이 단계를 kthread_stop 앞으로 당겨야 설계 의도가 명확. */
 	rcu_assign_pointer(handle->bridge, NULL);
 	synchronize_rcu();
+
+	/* 5b. keepalive: in adaptive mode an in-flight producer may have
+	 *     re-armed the timer (hrtimer_start) after the early cancel above.
+	 *     All ka_kick producers are drained by now, each by its own path:
+	 *       - rx_handler mode: netdev_rx_handler_unregister()+
+	 *         synchronize_net() (step 3/4),
+	 *       - packet_type mode: dev_remove_pack()+synchronize_net() — its
+	 *         br comes from container_of(pt,...), NOT handle->bridge, so the
+	 *         bridge-ptr NULL does not gate it,
+	 *       - rx_fast (WLAN RX): bridge-ptr NULL + synchronize_rcu() above.
+	 *     So no further ka_kick can arm the timer. The callback can still
+	 *     keep ITSELF alive via HRTIMER_RESTART while ka_last_fwd is recent,
+	 *     but active=0 (step 1) already makes its queue_work(main_work) a
+	 *     no-op, and this second hrtimer_cancel terminates that self-RESTART
+	 *     loop — so this cancel is final. No-op / safe in legacy and off modes. */
+	if (br->keepalive_timer.function) {
+		atomic_set(&br->ka_armed, 0);
+		hrtimer_cancel(&br->keepalive_timer);
+	}
 
 	/* 6. 전용 kthread 종료 후 남은 큐 purge. */
 	if (br->w2p_thread) {

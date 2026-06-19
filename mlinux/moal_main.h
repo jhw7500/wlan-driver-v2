@@ -2746,6 +2746,11 @@ typedef struct _moal_mod_para {
 	int bridge_keepalive_ms;
 	/** 1 when config file explicitly sets bridge_keepalive_ms */
 	int bridge_keepalive_ms_present;
+	/** Bridge keepalive idle cutoff (ms): auto-stop the warm-tick timer
+	 *  after this much idle (0 = never stop = legacy free-running) */
+	int bridge_keepalive_idle_ms;
+	/** 1 when config file explicitly sets bridge_keepalive_idle_ms */
+	int bridge_keepalive_idle_ms_present;
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);
