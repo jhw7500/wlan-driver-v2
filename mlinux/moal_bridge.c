@@ -134,8 +134,8 @@ static inline void moal_bridge_ka_kick(struct moal_bridge *br)
 	if (keepalive_ms <= 0 || handle->params.bridge_keepalive_idle_ms <= 0)
 		return;
 
-	/* Publish the timestamp BEFORE arming. atomic_cmpxchg is a full barrier
-	 * (x86 LOCK; arm64 acquire-release / LSE casal), so the ka_last_fwd store
+	/* Publish the timestamp BEFORE arming. In Linux, atomic_cmpxchg is fully
+	 * ordered (x86 LOCK; arm64 casal / ldxr-stlxr), so the ka_last_fwd store
 	 * is globally visible before any CPU observes ka_armed==1 — the timer's
 	 * disarm re-read (after its own smp_mb) therefore cannot miss it. Do NOT
 	 * weaken this cmpxchg to a bare atomic_set(). */
@@ -457,6 +457,14 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	ktime_t t_start = 0;
 
 	if (!br || !skb)
+		return 0;
+
+	/* Silenced once deinit clears active (step 1), mirroring the rx_handler /
+	 * packet_type paths — also stops moal_bridge_ka_kick() from arming the
+	 * keepalive timer after teardown begins (the synchronize_rcu drain +
+	 * step-5b cancel already make that race-free; this keeps the invariant
+	 * self-contained in one place). */
+	if (!atomic_read(&br->active))
 		return 0;
 
 	if (bridge_debug)

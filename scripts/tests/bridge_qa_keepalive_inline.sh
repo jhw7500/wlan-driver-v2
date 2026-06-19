@@ -25,6 +25,10 @@ KA_IDLE_MS="${KA_IDLE_MS:-20}"            # 적응형 idle 컷오프
 LOG="${LOG:-/tmp/bridge_qa_keepalive.log}"
 RUN_STRESS="${RUN_STRESS:-0}"
 : > "$LOG"
+# 실패 누적기. set -e 는 의도적 실패(미로드 시 rmmod 등)가 많아 조기 종료를
+# 유발하므로 미사용 — 대신 실질 실패만 RC=1 로 모아 마지막에 exit $RC (CI 비0 종료).
+RC=0
+LAST_DELTA=0
 
 say()  { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 hr()   { echo "----------------------------------------------------------------" | tee -a "$LOG"; }
@@ -32,6 +36,7 @@ load() {
   insmod "$MLAN_KO" 2>/dev/null
   if ! insmod "$MOAL_KO" "$@"; then
     say "!! insmod MOAL_KO failed (args: $*) — 후속 검사 신뢰 불가"
+    RC=1
     return 1
   fi
   sleep 2
@@ -39,8 +44,8 @@ load() {
 unload(){ rmmod moal 2>/dev/null; rmmod mlan 2>/dev/null; sleep 1; }
 params(){ for p in bridge_keepalive_ms bridge_keepalive_idle_ms bridge_mode; do
             v=$(cat /sys/module/moal/parameters/$p 2>/dev/null); echo "    $p=$v"; done | tee -a "$LOG"; }
-panic_check(){ dmesg | grep -Ei 'kernel panic|BUG:|WARN|general protection|null pointer|use-after-free|KASAN' \
-               && say "!! PANIC/BUG SIGNATURE FOUND" || say "panic_check: clean"; }
+panic_check(){ if dmesg | grep -Eiq 'kernel panic|BUG:|WARN|general protection|null pointer|use-after-free|KASAN'; then \
+                 say "!! PANIC/BUG SIGNATURE FOUND"; RC=1; else say "panic_check: clean"; fi; }
 # 누적 타이머 IRQ 카운트 (빈 결과는 0 으로 안전 대체)
 timer_irq_total(){
   local s
@@ -75,15 +80,20 @@ measure_idle_timer(){  # $1=label
   b=$(timer_irq_total)
   sleep 30
   a=$(timer_irq_total)
-  say "  [$1] 30s idle timer-IRQ delta = $((a-b))"
+  LAST_DELTA=$((a-b))
+  say "  [$1] 30s idle timer-IRQ delta = $LAST_DELTA"
 }
 say "T-B  idle wakeup A/B (무트래픽 30초)"
 say "  (주의: timer-IRQ delta는 시스템 전체값 — busy 보드면 타 IRQ가 섞여 신호를 가릴 수 있음. 정밀 측정은 /proc/timer_list 의 bridge cpu_base hrtimer 권장)"
 unload; load bridge_mode=1 bridge_peer=$PEER_IF bridge_keepalive_ms=1 bridge_keepalive_idle_ms=0
-measure_idle_timer "idle=0 (free-running)"
+measure_idle_timer "idle=0 (free-running)"; FR=$LAST_DELTA
 unload; load bridge_mode=1 bridge_peer=$PEER_IF bridge_keepalive_ms=1 bridge_keepalive_idle_ms=$KA_IDLE_MS
-measure_idle_timer "idle=$KA_IDLE_MS (adaptive)"
-say "  기대: adaptive delta << free-running delta (idle 시 keepalive 정지)"
+measure_idle_timer "idle=$KA_IDLE_MS (adaptive)"; AD=$LAST_DELTA
+if [ "${AD:-0}" -lt "${FR:-0}" ]; then
+  say "  T-B PASS: adaptive($AD) < free-running($FR) — idle wakeup 절감 확인"
+else
+  say "  T-B FAIL: adaptive($AD) !< free-running($FR) — 절감 미확인(노이즈/오설정 확인)"; RC=1
+fi
 unload
 hr
 
@@ -136,4 +146,5 @@ else
   say "T-E (stress) SKIPPED — RUN_STRESS=1 로 재실행"
 fi
 hr
-say "QA 완료. 로그: $LOG"
+say "QA 완료 (RC=$RC). 로그: $LOG"
+exit $RC
