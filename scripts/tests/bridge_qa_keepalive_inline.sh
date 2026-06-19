@@ -28,7 +28,14 @@ RUN_STRESS="${RUN_STRESS:-0}"
 
 say()  { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 hr()   { echo "----------------------------------------------------------------" | tee -a "$LOG"; }
-load() { insmod "$MLAN_KO" 2>/dev/null; insmod "$MOAL_KO" "$@"; sleep 2; }
+load() {
+  insmod "$MLAN_KO" 2>/dev/null
+  if ! insmod "$MOAL_KO" "$@"; then
+    say "!! insmod MOAL_KO failed (args: $*) — 후속 검사 신뢰 불가"
+    return 1
+  fi
+  sleep 2
+}
 unload(){ rmmod moal 2>/dev/null; rmmod mlan 2>/dev/null; sleep 1; }
 params(){ for p in bridge_keepalive_ms bridge_keepalive_idle_ms bridge_mode; do
             v=$(cat /sys/module/moal/parameters/$p 2>/dev/null); echo "    $p=$v"; done | tee -a "$LOG"; }
@@ -71,6 +78,7 @@ measure_idle_timer(){  # $1=label
   say "  [$1] 30s idle timer-IRQ delta = $((a-b))"
 }
 say "T-B  idle wakeup A/B (무트래픽 30초)"
+say "  (주의: timer-IRQ delta는 시스템 전체값 — busy 보드면 타 IRQ가 섞여 신호를 가릴 수 있음. 정밀 측정은 /proc/timer_list 의 bridge cpu_base hrtimer 권장)"
 unload; load bridge_mode=1 bridge_peer=$PEER_IF bridge_keepalive_ms=1 bridge_keepalive_idle_ms=0
 measure_idle_timer "idle=0 (free-running)"
 unload; load bridge_mode=1 bridge_peer=$PEER_IF bridge_keepalive_ms=1 bridge_keepalive_idle_ms=$KA_IDLE_MS
@@ -85,7 +93,11 @@ hr
 # ===========================================================================
 say "T-C  active-traffic latency (adaptive, mlan→eth ping)"
 load bridge_mode=1 bridge_peer=$PEER_IF bridge_keepalive_idle_ms=$KA_IDLE_MS
-ping -c 50 -i 0.05 -I "$WLAN_IF" "$WAN_HOST" 2>/dev/null | tail -3 | tee -a "$LOG"
+if ping -c1 -W1 -I "$WLAN_IF" "$WAN_HOST" >/dev/null 2>&1; then
+  ping -c 50 -i 0.05 -I "$WLAN_IF" "$WAN_HOST" 2>/dev/null | tail -3 | tee -a "$LOG"
+else
+  say "  T-C SKIP: $WAN_HOST 가 $WLAN_IF 로 도달 불가"
+fi
 [ -r /sys/kernel/moal_bridge/stats ] && { say "bridge stats:"; cat /sys/kernel/moal_bridge/stats | tee -a "$LOG"; }
 panic_check; unload
 hr
@@ -108,8 +120,8 @@ hr
 if [ "$RUN_STRESS" = "1" ]; then
   say "T-E1  S-05: traffic 중 rmmod (adaptive) — UAF/hang 감시 (deinit 2차 cancel)"
   load bridge_mode=1 bridge_peer=$PEER_IF bridge_keepalive_idle_ms=$KA_IDLE_MS
-  ( ping -f "$WAN_HOST" >/dev/null 2>&1 & echo $! > /tmp/qa_ping.pid )
-  sleep 3; rmmod moal 2>&1 | tee -a "$LOG"; kill "$(cat /tmp/qa_ping.pid)" 2>/dev/null
+  ping -f "$WAN_HOST" >/dev/null 2>&1 & PINGPID=$!
+  sleep 3; rmmod moal 2>&1 | tee -a "$LOG"; kill "$PINGPID" 2>/dev/null
   rmmod mlan 2>/dev/null; sleep 1; panic_check
 
   say "T-E2  T-09: 50x insmod/rmmod 스트레스 (adaptive)"

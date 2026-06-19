@@ -134,6 +134,11 @@ static inline void moal_bridge_ka_kick(struct moal_bridge *br)
 	if (keepalive_ms <= 0 || handle->params.bridge_keepalive_idle_ms <= 0)
 		return;
 
+	/* Publish the timestamp BEFORE arming. atomic_cmpxchg is a full barrier
+	 * (x86 LOCK; arm64 acquire-release / LSE casal), so the ka_last_fwd store
+	 * is globally visible before any CPU observes ka_armed==1 — the timer's
+	 * disarm re-read (after its own smp_mb) therefore cannot miss it. Do NOT
+	 * weaken this cmpxchg to a bare atomic_set(). */
 	WRITE_ONCE(br->ka_last_fwd, ktime_get());
 	if (atomic_cmpxchg(&br->ka_armed, 0, 1) == 0) {
 		ktime_t interval =
@@ -1221,6 +1226,15 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 			       "bridge:   keepalive  = %dms (adaptive, idle %dms)\n",
 			       handle->params.bridge_keepalive_ms,
 			       handle->params.bridge_keepalive_idle_ms);
+			/* idle_ms < keepalive_ms → 타이머가 매 tick 마다
+			 * idle_us < cutoff 로 판정되어 legacy 속도로 계속 돎
+			 * (자가정지 안 됨) → 절감 무력화. 경고만, 동작은 유지. */
+			if (handle->params.bridge_keepalive_idle_ms <
+			    handle->params.bridge_keepalive_ms)
+				PRINTM(MWARN,
+				       "bridge: keepalive_idle_ms(%d) < keepalive_ms(%d) — timer re-arms every tick; power saving ineffective\n",
+				       handle->params.bridge_keepalive_idle_ms,
+				       handle->params.bridge_keepalive_ms);
 		} else {
 			ktime_t interval = ns_to_ktime(
 				(u64)handle->params.bridge_keepalive_ms *
@@ -1320,8 +1334,11 @@ void moal_bridge_deinit(void *phandle)
 	 *         br comes from container_of(pt,...), NOT handle->bridge, so the
 	 *         bridge-ptr NULL does not gate it,
 	 *       - rx_fast (WLAN RX): bridge-ptr NULL + synchronize_rcu() above.
-	 *     So no further ka_kick can arm the timer and this cancel is final.
-	 *     No-op / safe in legacy and off modes. */
+	 *     So no further ka_kick can arm the timer. The callback can still
+	 *     keep ITSELF alive via HRTIMER_RESTART while ka_last_fwd is recent,
+	 *     but active=0 (step 1) already makes its queue_work(main_work) a
+	 *     no-op, and this second hrtimer_cancel terminates that self-RESTART
+	 *     loop — so this cancel is final. No-op / safe in legacy and off modes. */
 	if (br->keepalive_timer.function) {
 		atomic_set(&br->ka_armed, 0);
 		hrtimer_cancel(&br->keepalive_timer);
