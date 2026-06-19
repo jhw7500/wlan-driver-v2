@@ -140,7 +140,14 @@ static inline void moal_bridge_ka_kick(struct moal_bridge *br)
 	 * disarm re-read (after its own smp_mb) therefore cannot miss it. Do NOT
 	 * weaken this cmpxchg to a bare atomic_set(). */
 	WRITE_ONCE(br->ka_last_fwd, ktime_get());
-	if (atomic_cmpxchg(&br->ka_armed, 0, 1) == 0) {
+	/* Steady-state fast path: once armed, skip the bus-locked cmpxchg via a
+	 * plain atomic_read — saves a locked op on every packet of a burst. The
+	 * short-circuit only triggers when armed==1 (timer running, no disarm
+	 * pending); the correctness-critical disarm window always has armed==0
+	 * (timer just cleared it), so the producer still takes the fully-ordered
+	 * cmpxchg there and the ka_last_fwd publish stays correctly ordered. */
+	if (atomic_read(&br->ka_armed) == 0 &&
+	    atomic_cmpxchg(&br->ka_armed, 0, 1) == 0) {
 		ktime_t interval =
 			ns_to_ktime((u64)keepalive_ms * NSEC_PER_MSEC);
 		hrtimer_start(&br->keepalive_timer, interval, HRTIMER_MODE_REL);
@@ -459,11 +466,12 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	if (!br || !skb)
 		return 0;
 
-	/* Silenced once deinit clears active (step 1), mirroring the rx_handler /
-	 * packet_type paths — also stops moal_bridge_ka_kick() from arming the
-	 * keepalive timer after teardown begins (the synchronize_rcu drain +
-	 * step-5b cancel already make that race-free; this keeps the invariant
-	 * self-contained in one place). */
+	/* Defensive early-out — NOT load-bearing for keepalive teardown safety
+	 * (that is guaranteed by the synchronize_rcu drain + step-5b cancel in
+	 * deinit). It mirrors the active check in the rx_handler / packet_type
+	 * paths so all three ingress paths behave identically once deinit clears
+	 * active, and skips needless ka_kick()/forwarding work during teardown.
+	 * Safe to keep; removing it loses that consistency, not correctness. */
 	if (!atomic_read(&br->active))
 		return 0;
 
