@@ -232,6 +232,11 @@ struct moal_br_skb_cb {
 	ktime_t enq_ts;
 };
 
+/* skb->cb is exclusively owned by the bridge between moal_bridge_stamp_enq()
+ * (consume/enqueue point) and the drain kthread's read just before
+ * dev_queue_xmit(). The forwarded skb sits on the bridge's private w2p/p2w
+ * queue during that window, so no other layer (shim cb memset, qdisc, egress
+ * driver cb use) intersects until after enq_ts is copied to a local. */
 #define MOAL_BR_SKB_CB(skb) ((struct moal_br_skb_cb *)(skb)->cb)
 
 static inline void moal_bridge_stamp_enq(struct sk_buff *skb)
@@ -244,12 +249,6 @@ static void moal_bridge_account_dwell(struct moal_bridge_stats *st,
 				      ktime_t enq_ts)
 {
 	long us, old;
-
-	/* dwell math uses 'long' + atomic_long; targets are LP64 (arm64).
-	 * Enforce LP64 so a future 32-bit port fails loud at build time
-	 * instead of silently truncating s64 ktime_to_us / overflowing the
-	 * accumulators. */
-	BUILD_BUG_ON(sizeof(long) < 8);
 
 	if (!enq_ts)
 		return;
@@ -303,7 +302,8 @@ static int moal_bridge_w2p_thread_fn(void *data)
 			len = skb->len;
 			enq_ts = MOAL_BR_SKB_CB(skb)->enq_ts;
 			err = dev_queue_xmit(skb);
-			moal_bridge_account_dwell(&br->wlan_to_peer, enq_ts);
+			if (unlikely(enq_ts))
+				moal_bridge_account_dwell(&br->wlan_to_peer, enq_ts);
 			if (net_xmit_eval(err)) {
 				atomic_long_inc(&br->wlan_to_peer.errors);
 			} else {
@@ -368,7 +368,8 @@ static int moal_bridge_p2w_thread_fn(void *data)
 			len = skb->len;
 			enq_ts = MOAL_BR_SKB_CB(skb)->enq_ts;
 			err = dev_queue_xmit(skb);
-			moal_bridge_account_dwell(&br->peer_to_wlan, enq_ts);
+			if (unlikely(enq_ts))
+				moal_bridge_account_dwell(&br->peer_to_wlan, enq_ts);
 			if (net_xmit_eval(err)) {
 				atomic_long_inc(&br->peer_to_wlan.errors);
 			} else {
@@ -1164,6 +1165,10 @@ static int moal_bridge_sysfs_init(struct moal_bridge *br)
 
 	BUILD_BUG_ON(sizeof(struct moal_br_skb_cb) >
 		     sizeof(((struct sk_buff *)0)->cb));
+	/* dwell math uses 'long' + atomic_long; enforce LP64 (arm64 targets)
+	 * so a future 32-bit port fails loud instead of silently truncating
+	 * s64 ktime_to_us / overflowing the accumulators. */
+	BUILD_BUG_ON(sizeof(long) < 8);
 
 	moal_bridge_kobj = kobject_create_and_add("moal_bridge", kernel_kobj);
 	if (!moal_bridge_kobj)
