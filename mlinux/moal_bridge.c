@@ -245,6 +245,12 @@ static void moal_bridge_account_dwell(struct moal_bridge_stats *st,
 {
 	long us, old;
 
+	/* dwell math uses 'long' + atomic_long; targets are LP64 (arm64).
+	 * Enforce LP64 so a future 32-bit port fails loud at build time
+	 * instead of silently truncating s64 ktime_to_us / overflowing the
+	 * accumulators. */
+	BUILD_BUG_ON(sizeof(long) < 8);
+
 	if (!enq_ts)
 		return;
 	us = (long)ktime_to_us(ktime_sub(ktime_get(), enq_ts));
@@ -1111,12 +1117,17 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 		return scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
 
 	/* In-driver one-way dwell (producer entry -> dev_queue_xmit submit),
-	 * accumulated only while bridge_debug was on. avg = sum / cnt. */
+	 * accumulated only while bridge_debug was on. avg = sum / cnt.
+	 * cnt is read before sum without locking: a concurrent account_dwell
+	 * can bump cnt before its paired sum add retires, so avg may be
+	 * momentarily under-reported. Intentional for a debug sysfs file.
+	 * '> 0' (not just truthy) also guards the LONG_MIN/-1 division trap
+	 * should a counter ever wrap negative. */
 	w2p_n = atomic_long_read(&br->wlan_to_peer.dwell_cnt);
 	p2w_n = atomic_long_read(&br->peer_to_wlan.dwell_cnt);
-	w2p_avg = w2p_n ?
+	w2p_avg = w2p_n > 0 ?
 		atomic_long_read(&br->wlan_to_peer.dwell_sum_us) / w2p_n : 0;
-	p2w_avg = p2w_n ?
+	p2w_avg = p2w_n > 0 ?
 		atomic_long_read(&br->peer_to_wlan.dwell_sum_us) / p2w_n : 0;
 
 	return scnprintf(buf, PAGE_SIZE,
