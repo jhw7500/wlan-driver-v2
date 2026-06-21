@@ -219,6 +219,49 @@ static void moal_bridge_apply_sched(moal_handle *handle)
  * ---------- w2p Thread (WLAN→ETH, dedicated kthread) ----------
  */
 
+/* ---------- In-driver one-way dwell instrumentation (bridge_debug) ----------
+ *
+ * Carries the producer-entry timestamp through the per-direction queue in
+ * skb->cb so the drain kthread can measure the full in-driver dwell
+ * (producer entry -> dev_queue_xmit submit, queue wait included) per
+ * direction. This yields direction-split (W2P vs P2W) latency that an RTT
+ * ping cannot isolate. Armed only while bridge_debug != 0; otherwise the
+ * stamp is 0 and accounting is skipped (zero-overhead in production).
+ */
+struct moal_br_skb_cb {
+	ktime_t enq_ts;
+};
+
+#define MOAL_BR_SKB_CB(skb) ((struct moal_br_skb_cb *)(skb)->cb)
+
+static inline void moal_bridge_stamp_enq(struct sk_buff *skb)
+{
+	MOAL_BR_SKB_CB(skb)->enq_ts =
+		READ_ONCE(bridge_debug) ? ktime_get() : 0;
+}
+
+static void moal_bridge_account_dwell(struct moal_bridge_stats *st,
+				      ktime_t enq_ts)
+{
+	long us, old;
+
+	if (!enq_ts)
+		return;
+	us = (long)ktime_to_us(ktime_sub(ktime_get(), enq_ts));
+	if (us < 0)
+		us = 0;
+	atomic_long_inc(&st->dwell_cnt);
+	atomic_long_add(us, &st->dwell_sum_us);
+	old = atomic_long_read(&st->dwell_max_us);
+	while (us > old) {
+		long prev = atomic_long_cmpxchg(&st->dwell_max_us, old, us);
+
+		if (prev == old)
+			break;
+		old = prev;
+	}
+}
+
 static int moal_bridge_w2p_thread_fn(void *data)
 {
 	struct moal_bridge *br = data;
@@ -226,6 +269,7 @@ static int moal_bridge_w2p_thread_fn(void *data)
 	unsigned int len;
 	int err;
 	int cnt;
+	ktime_t enq_ts;
 
 	moal_bridge_apply_sched((moal_handle *)br->handle);
 	/* F2: join freezer so PM suspend halts this kthread cleanly instead of
@@ -251,7 +295,9 @@ static int moal_bridge_w2p_thread_fn(void *data)
 				continue;
 			}
 			len = skb->len;
+			enq_ts = MOAL_BR_SKB_CB(skb)->enq_ts;
 			err = dev_queue_xmit(skb);
+			moal_bridge_account_dwell(&br->wlan_to_peer, enq_ts);
 			if (net_xmit_eval(err)) {
 				atomic_long_inc(&br->wlan_to_peer.errors);
 			} else {
@@ -284,6 +330,7 @@ static int moal_bridge_p2w_thread_fn(void *data)
 	unsigned int len;
 	int err;
 	int cnt;
+	ktime_t enq_ts;
 
 	/* pcap과 동일: SCHED_FIFO:50으로 wake-up 즉시 실행.
 	 * 이전 실패(local_bh_disable + 양방향 kthread) 조건 해소:
@@ -313,7 +360,9 @@ static int moal_bridge_p2w_thread_fn(void *data)
 				continue;
 			}
 			len = skb->len;
+			enq_ts = MOAL_BR_SKB_CB(skb)->enq_ts;
 			err = dev_queue_xmit(skb);
+			moal_bridge_account_dwell(&br->peer_to_wlan, enq_ts);
 			if (net_xmit_eval(err)) {
 				atomic_long_inc(&br->peer_to_wlan.errors);
 			} else {
@@ -572,6 +621,7 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 					return 1; /* consumed: dropped */
 				}
 				skb->dev = br->peer_dev;
+				moal_bridge_stamp_enq(skb);
 				skb_queue_tail(&br->w2p_queue, skb);
 				wake_up(&br->w2p_wait);
 				moal_bridge_ka_kick(br);
@@ -597,6 +647,7 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 				return 0;
 			}
 			skb2->dev = br->peer_dev;
+			moal_bridge_stamp_enq(skb2);
 			skb_queue_tail(&br->w2p_queue, skb2);
 			wake_up(&br->w2p_wait);
 			moal_bridge_ka_kick(br);
@@ -784,6 +835,7 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 		}
 		skb->dev = br->wlan_dev;
 		skb_push(skb, ETH_HLEN);
+		moal_bridge_stamp_enq(skb);
 		skb_queue_tail(&br->p2w_queue, skb);
 		wake_up(&br->p2w_wait);
 		moal_bridge_ka_kick(br);
@@ -815,6 +867,7 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			}
 			skb2->dev = br->wlan_dev;
 			skb_push(skb2, ETH_HLEN);
+			moal_bridge_stamp_enq(skb2);
 			skb_queue_tail(&br->p2w_queue, skb2);
 			wake_up(&br->p2w_wait);
 			moal_bridge_ka_kick(br);
@@ -912,6 +965,7 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 	}
 	skb->dev = br->wlan_dev;
 	skb_push(skb, ETH_HLEN);
+	moal_bridge_stamp_enq(skb);
 	skb_queue_tail(&br->p2w_queue, skb);
 	wake_up(&br->p2w_wait);
 	moal_bridge_ka_kick(br);
@@ -1051,12 +1105,23 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
 {
 	struct moal_bridge *br = READ_ONCE(moal_bridge_for_sysfs);
+	long w2p_n, p2w_n, w2p_avg, p2w_avg;
 
 	if (!br)
 		return scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
+
+	/* In-driver one-way dwell (producer entry -> dev_queue_xmit submit),
+	 * accumulated only while bridge_debug was on. avg = sum / cnt. */
+	w2p_n = atomic_long_read(&br->wlan_to_peer.dwell_cnt);
+	p2w_n = atomic_long_read(&br->peer_to_wlan.dwell_cnt);
+	w2p_avg = w2p_n ?
+		atomic_long_read(&br->wlan_to_peer.dwell_sum_us) / w2p_n : 0;
+	p2w_avg = p2w_n ?
+		atomic_long_read(&br->peer_to_wlan.dwell_sum_us) / p2w_n : 0;
+
 	return scnprintf(buf, PAGE_SIZE,
-			 "w2p fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d\n"
-			 "p2w fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d\n"
+			 "w2p fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d dwell_avg=%ldus dwell_max=%ldus n=%ld\n"
+			 "p2w fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d dwell_avg=%ldus dwell_max=%ldus n=%ld\n"
 			 "active=%d peer_released=%d\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
 			 atomic_long_read(&br->wlan_to_peer.fwd_bytes),
@@ -1064,12 +1129,18 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->wlan_to_peer.errors),
 			 atomic_long_read(&br->wlan_to_peer.oom_drops),
 			 atomic_read(&br->w2p_qlen),
+			 w2p_avg,
+			 atomic_long_read(&br->wlan_to_peer.dwell_max_us),
+			 w2p_n,
 			 atomic_long_read(&br->peer_to_wlan.fwd_packets),
 			 atomic_long_read(&br->peer_to_wlan.fwd_bytes),
 			 atomic_long_read(&br->peer_to_wlan.dropped),
 			 atomic_long_read(&br->peer_to_wlan.errors),
 			 atomic_long_read(&br->peer_to_wlan.oom_drops),
 			 atomic_read(&br->p2w_qlen),
+			 p2w_avg,
+			 atomic_long_read(&br->peer_to_wlan.dwell_max_us),
+			 p2w_n,
 			 atomic_read(&br->active),
 			 atomic_read(&br->peer_released));
 }
@@ -1079,6 +1150,9 @@ static struct kobj_attribute stats_attr = __ATTR_RO(stats);
 static int moal_bridge_sysfs_init(struct moal_bridge *br)
 {
 	int ret;
+
+	BUILD_BUG_ON(sizeof(struct moal_br_skb_cb) >
+		     sizeof(((struct sk_buff *)0)->cb));
 
 	moal_bridge_kobj = kobject_create_and_add("moal_bridge", kernel_kobj);
 	if (!moal_bridge_kobj)

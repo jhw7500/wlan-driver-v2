@@ -32,6 +32,12 @@ struct moal_bridge_stats {
 	atomic_long_t dropped;       /**< Filtered/dropped */
 	atomic_long_t errors;        /**< Forward failures */
 	atomic_long_t oom_drops;     /**< skb_clone/skb_share_check OOM drops */
+	/* In-driver one-way dwell (producer entry -> kthread dev_queue_xmit
+	 * submit, queue wait included). Accumulated only while bridge_debug
+	 * != 0. Enables direction-split (W2P vs P2W) latency. us units. */
+	atomic_long_t dwell_cnt;     /**< # of dwell samples */
+	atomic_long_t dwell_sum_us;  /**< sum of dwell (us); avg = sum/cnt */
+	atomic_long_t dwell_max_us;  /**< max dwell (us) */
 };
 
 /** Bridge context — one per moal_handle */
