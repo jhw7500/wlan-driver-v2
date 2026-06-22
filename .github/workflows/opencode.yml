@@ -36,5 +36,5 @@ jobs:
       contents: read
       pull-requests: read
       issues: read
-    uses: jhw7500/automation/.github/workflows/opencode.yml@v1.30
+    uses: jhw7500/automation/.github/workflows/opencode.yml@v1.31
     secrets: inherit
