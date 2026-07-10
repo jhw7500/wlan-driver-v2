@@ -1129,6 +1129,10 @@ static mlan_status wlan_ret_802_11_rf_tx_power(pmlan_private pmpriv,
 		/* Some firmware reports board/target power in min_power, so
 		 * do not use it as the host-side lower bound.
 		 */
+		if (rtp->min_power)
+			PRINTM(MWARN,
+			       "Ignore firmware min tx power %d dBm; use 0 as lower bound\n",
+			       (int)rtp->min_power);
 		pmpriv->min_tx_power_level = 0;
 		if (pioctl_buf) {
 			power = (mlan_ds_power_cfg *)pioctl_buf->pbuf;

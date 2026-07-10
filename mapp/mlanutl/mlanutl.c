@@ -10591,6 +10591,10 @@ static int process_txpowercfg(int argc, char *argv[])
 		printf("Tx Power Configurations:\n");
 		printf("    Mode: firmware-reported value (%u)\n\n",
 		       power_ext->mode);
+		if (power_ext->num_pwr_grp >= MAX_POWER_GROUP)
+			printf("    Note: firmware reports at most %d power groups; entries\n"
+			       "    beyond that (e.g. HE 80 MHz NSS 2) are not shown.\n\n",
+			       MAX_POWER_GROUP);
 		for (i = 0; i < (int)power_ext->num_pwr_grp; i++) {
 			power_group = &power_ext->power_group[i];
 			if (power_group->rate_format == MLAN_RATE_FORMAT_HT) {
