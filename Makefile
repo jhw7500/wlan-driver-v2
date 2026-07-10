@@ -658,6 +658,13 @@ build:		echo default
 
 	cp -f moal.$(MODEXT) $(BINDIR)/moal$(MOD_SUFFIX)$(DBG).$(MODEXT)
 
+# .ko 는 재배치에 .symtab 이 필요하므로 --strip-debug 만 사용 (--strip-all 금지)
+	cd $(BINDIR) && for m in mlan$(MOD_SUFFIX)$(DBG).$(MODEXT) moal$(MOD_SUFFIX)$(DBG).$(MODEXT); do \
+		$(CROSS_COMPILE)objcopy --only-keep-debug $$m $$m.debug; \
+		$(CROSS_COMPILE)strip --strip-debug $$m; \
+		$(CROSS_COMPILE)objcopy --add-gnu-debuglink=$$m.debug $$m; \
+	done
+
 	cp -f README $(BINDIR)
 
 ifneq ($(APPDIR),)

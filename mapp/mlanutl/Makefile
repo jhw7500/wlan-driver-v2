@@ -30,6 +30,10 @@ CFLAGS := $(filter-out -I$(KERNELDIR)%, $(CFLAGS))
 # -----------------------------------------------------------------------------
 MOD_SUFFIX ?=
 
+# ?= : Yocto SDK env (aarch64-poky-linux-*) 가 export 하는 값을 우선한다
+STRIP ?= $(CROSS_COMPILE)strip
+OBJCOPY ?= $(CROSS_COMPILE)objcopy
+
 # -----------------------------------------------------------------------------
 # Yocto SDK/크로스 환경 보강
 # - CC가 --sysroot를 포함하지 않으면 강제로 붙여줌
@@ -57,6 +61,8 @@ endif
 
 #CFLAGS += -DAP22 -fshort-enums
 CFLAGS += -Wall
+# 디버그 심볼 생성 — 설치 단계에서 strip + .debug 분리되므로 배포본 크기 무영향
+CFLAGS += -g
 CFLAGS += -Wno-stringop-truncation
 CFLAGS += -I$(PATH_TO_TOP)/mlan
 #ECHO = @
@@ -81,6 +87,9 @@ TARGET := $(exectarget)
 
 build appsbuild default: $(TARGET)
 	@cp -f $(TARGET) $(INSTALLPATH)/$(exectarget)$(MOD_SUFFIX)
+	$(OBJCOPY) --only-keep-debug $(INSTALLPATH)/$(exectarget)$(MOD_SUFFIX) $(INSTALLPATH)/$(exectarget)$(MOD_SUFFIX).debug
+	$(STRIP) $(INSTALLPATH)/$(exectarget)$(MOD_SUFFIX)
+	cd $(INSTALLPATH) && $(OBJCOPY) --add-gnu-debuglink=$(exectarget)$(MOD_SUFFIX).debug $(exectarget)$(MOD_SUFFIX)
 
 all : tags default
 
