@@ -3059,6 +3059,8 @@ typedef struct mlan_power_group {
 typedef struct _mlan_power_cfg_ext {
 	/** number of power_groups */
 	t_u32 num_pwr_grp;
+	/** firmware tx power config mode: 0 auto, 1 manual override */
+	t_u32 mode;
 	/** array of power groups */
 	mlan_power_group power_group[MAX_POWER_GROUP];
 } mlan_power_cfg_ext;

@@ -902,7 +902,7 @@ static mlan_status wlan_ret_get_log(pmlan_private pmpriv,
 static mlan_status wlan_get_power_level(pmlan_private pmpriv, void *pdata_buf)
 {
 	t_s32 length = 0;
-	t_s8 max_power = -1, min_power = -1;
+	t_s8 max_power = -1;
 	MrvlTypes_Power_Group_t *ppg_tlv = MNULL;
 	Power_Group_t *pg = MNULL;
 
@@ -917,19 +917,20 @@ static mlan_status wlan_get_power_level(pmlan_private pmpriv, void *pdata_buf)
 		length = ppg_tlv->length;
 		if (length > 0) {
 			max_power = pg->power_max;
-			min_power = pg->power_min;
 			length -= sizeof(Power_Group_t);
 		}
 		while (length > 0) {
 			pg++;
 			if (max_power < pg->power_max)
 				max_power = pg->power_max;
-			if (min_power > pg->power_min)
-				min_power = pg->power_min;
 			length -= sizeof(Power_Group_t);
 		}
 		if (ppg_tlv->length > 0) {
-			pmpriv->min_tx_power_level = min_power;
+			/* txpwrlimit provides per-rate upper limits.  Some
+			 * firmware reports board/target power in power_min, so
+			 * do not use it as the host-side lower bound.
+			 */
+			pmpriv->min_tx_power_level = 0;
 			pmpriv->max_tx_power_level = max_power;
 		}
 	} else {
@@ -1012,6 +1013,8 @@ static mlan_status wlan_ret_tx_power_cfg(pmlan_private pmpriv,
 						1;
 			} else {
 				power->param.power_ext.num_pwr_grp = 0;
+				power->param.power_ext.mode =
+					wlan_le32_to_cpu(ptxp_cfg->mode);
 				i = 0;
 				while ((ppg_tlv->length) &&
 				       (i < MAX_POWER_GROUP)) {
@@ -1062,9 +1065,26 @@ static mlan_status wlan_ret_tx_power_cfg(pmlan_private pmpriv,
 							1 +
 							(pg->last_rate_code >>
 							 4);
+					} else if (pg->modulation_class ==
+						   MOD_CLASS_HE) {
+						pwr_grp->rate_format =
+							MLAN_RATE_FORMAT_HE;
+						pwr_grp->first_rate_ind =
+							(pg->first_rate_code) &
+							0xF;
+						pwr_grp->last_rate_ind =
+							(pg->last_rate_code) &
+							0xF;
+						pwr_grp->nss =
+							1 +
+							(pg->last_rate_code >>
+							 4);
 					}
 					pwr_grp->bandwidth = pg->ht_bandwidth;
-					pwr_grp->power_min = pg->power_min;
+					/* Keep user-visible limits consistent with
+					 * the range used for set_tx_power checks.
+					 */
+					pwr_grp->power_min = 0;
 					pwr_grp->power_max = pg->power_max;
 					pwr_grp->power_step = pg->power_step;
 					ppg_tlv->length -=
@@ -1106,7 +1126,14 @@ static mlan_status wlan_ret_802_11_rf_tx_power(pmlan_private pmpriv,
 
 	if (action == HostCmd_ACT_GEN_GET) {
 		pmpriv->max_tx_power_level = rtp->max_power;
-		pmpriv->min_tx_power_level = rtp->min_power;
+		/* Some firmware reports board/target power in min_power, so
+		 * do not use it as the host-side lower bound.
+		 */
+		if (rtp->min_power)
+			PRINTM(MWARN,
+			       "Ignore firmware min tx power %d dBm; use 0 as lower bound\n",
+			       (int)rtp->min_power);
+		pmpriv->min_tx_power_level = 0;
 		if (pioctl_buf) {
 			power = (mlan_ds_power_cfg *)pioctl_buf->pbuf;
 			if (power->sub_command == MLAN_OID_POWER_CFG) {
