@@ -6946,6 +6946,48 @@ static int woal_priv_txpowercfg(moal_private *priv, t_u8 *respbuf,
 					MLAN_VHT_BW80;
 				pcfg->param.power_ext.power_group[0].nss = 2;
 				break;
+			case 9: /* 1 NSS 20 MHZ HE */
+				pcfg->param.power_ext.power_group[0]
+					.rate_format = MLAN_RATE_FORMAT_HE;
+				pcfg->param.power_ext.power_group[0].bandwidth =
+					MLAN_HT_BW20;
+				pcfg->param.power_ext.power_group[0].nss = 1;
+				break;
+			case 10: /* 2 NSS 20 MHZ HE */
+				pcfg->param.power_ext.power_group[0]
+					.rate_format = MLAN_RATE_FORMAT_HE;
+				pcfg->param.power_ext.power_group[0].bandwidth =
+					MLAN_HT_BW20;
+				pcfg->param.power_ext.power_group[0].nss = 2;
+				break;
+			case 11: /* 1 NSS 40 MHZ HE */
+				pcfg->param.power_ext.power_group[0]
+					.rate_format = MLAN_RATE_FORMAT_HE;
+				pcfg->param.power_ext.power_group[0].bandwidth =
+					MLAN_HT_BW40;
+				pcfg->param.power_ext.power_group[0].nss = 1;
+				break;
+			case 12: /* 2 NSS 40 MHZ HE */
+				pcfg->param.power_ext.power_group[0]
+					.rate_format = MLAN_RATE_FORMAT_HE;
+				pcfg->param.power_ext.power_group[0].bandwidth =
+					MLAN_HT_BW40;
+				pcfg->param.power_ext.power_group[0].nss = 2;
+				break;
+			case 13: /* 1 NSS 80 MHZ HE */
+				pcfg->param.power_ext.power_group[0]
+					.rate_format = MLAN_RATE_FORMAT_HE;
+				pcfg->param.power_ext.power_group[0].bandwidth =
+					MLAN_VHT_BW80;
+				pcfg->param.power_ext.power_group[0].nss = 1;
+				break;
+			case 14: /* 2 NSS 80 MHZ HE */
+				pcfg->param.power_ext.power_group[0]
+					.rate_format = MLAN_RATE_FORMAT_HE;
+				pcfg->param.power_ext.power_group[0].bandwidth =
+					MLAN_VHT_BW80;
+				pcfg->param.power_ext.power_group[0].nss = 2;
+				break;
 			default:
 				ret = -EINVAL;
 				break;
@@ -6995,11 +7037,13 @@ static int woal_priv_txpowercfg(moal_private *priv, t_u8 *respbuf,
 		moal_memcpy_ext(priv->phandle, respbuf,
 				(t_u8 *)&pcfg->param.power_ext,
 				sizeof(pcfg->param.power_ext.num_pwr_grp) +
+					sizeof(pcfg->param.power_ext.mode) +
 					(MIN(pcfg->param.power_ext.num_pwr_grp,
 					     MAX_POWER_GROUP) *
 					 sizeof(mlan_power_group)),
 				respbuflen);
 		ret = sizeof(pcfg->param.power_ext.num_pwr_grp) +
+		      sizeof(pcfg->param.power_ext.mode) +
 		      (MIN(pcfg->param.power_ext.num_pwr_grp, MAX_POWER_GROUP) *
 		       sizeof(mlan_power_group));
 	}

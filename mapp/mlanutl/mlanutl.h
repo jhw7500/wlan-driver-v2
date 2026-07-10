@@ -1573,6 +1573,7 @@ enum _mlan_rate_format {
 	MLAN_RATE_FORMAT_LG = 0,
 	MLAN_RATE_FORMAT_HT,
 	MLAN_RATE_FORMAT_VHT,
+	MLAN_RATE_FORMAT_HE,
 	MLAN_RATE_FORMAT_AUTO = 0xFF,
 };
 
@@ -1586,16 +1587,17 @@ typedef enum _mlan_ht_bw {
 } mlan_ht_bw;
 /** Type definition of mlan_power group info */
 struct eth_priv_power_group {
-	/** rate format (LG rate: 0; HT rate: 1; VHT rate: 2; no auto ctrl:
-	 * 0xFF) */
+	/** rate format (LG rate: 0; HT rate: 1; VHT rate: 2; HE rate: 3;
+	 * no auto ctrl: 0xFF) */
 	t_u32 rate_format;
-	/** bandwidth (LG: 20 MHz; HT: 20/40 MHz; VHT: 80/160/80+80 MHz) */
+	/** bandwidth (LG: 20 MHz; HT: 20/40 MHz; VHT/HE:
+	 * 20/40/80/160 MHz) */
 	t_u8 bandwidth;
 	/** NSS */
 	t_u32 nss;
-	/** LG: first rate index; HT/VHT: first MCS */
+	/** LG: first rate index; HT/VHT/HE: first MCS */
 	t_u8 first_rate_ind;
-	/** LG: last rate index; HT/VHT: last MCS */
+	/** LG: last rate index; HT/VHT/HE: last MCS */
 	t_u8 last_rate_ind;
 	/** minmum tx power (dBm) */
 	t_s8 power_min;
@@ -1611,6 +1613,8 @@ struct eth_priv_power_group {
 struct eth_priv_power_cfg_ext {
 	/** number of power_groups */
 	t_u32 num_pwr_grp;
+	/** firmware tx power config mode: 0 auto, 1 manual override */
+	t_u32 mode;
 	/** array of power groups */
 	struct eth_priv_power_group power_group[MAX_POWER_GROUP];
 };

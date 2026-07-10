@@ -10589,6 +10589,8 @@ static int process_txpowercfg(int argc, char *argv[])
 	if (argc == 3) {
 		/* GET operation */
 		printf("Tx Power Configurations:\n");
+		printf("    Mode: firmware-reported value (%u)\n\n",
+		       power_ext->mode);
 		for (i = 0; i < (int)power_ext->num_pwr_grp; i++) {
 			power_group = &power_ext->power_group[i];
 			if (power_group->rate_format == MLAN_RATE_FORMAT_HT) {
@@ -10605,7 +10607,8 @@ static int process_txpowercfg(int argc, char *argv[])
 			printf("        Bandwidth:        %3s %s\n",
 			       rate_format[power_group->rate_format],
 			       bandwidth[power_group->bandwidth]);
-			if (power_group->rate_format == 2)
+			if (power_group->rate_format == MLAN_RATE_FORMAT_VHT ||
+			    power_group->rate_format == MLAN_RATE_FORMAT_HE)
 				/** NSS */
 				printf("        NSS:              %3d\n",
 				       power_group->nss);

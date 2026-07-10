@@ -1585,6 +1585,7 @@ static mlan_status wlan_power_ioctl_set_power(pmlan_adapter pmadapter,
 		ret = MLAN_STATUS_FAILURE;
 		goto exit;
 	}
+	memset(pmadapter, buf, 0, MRVDRV_SIZE_OF_CMD_BUFFER);
 	txp_cfg = (HostCmd_DS_TXPWR_CFG *)buf;
 	txp_cfg->action = HostCmd_ACT_GEN_SET;
 	if (!power->param.power_cfg.is_power_auto) {
@@ -1737,6 +1738,7 @@ static mlan_status wlan_power_ioctl_set_power_ext(pmlan_adapter pmadapter,
 		ret = MLAN_STATUS_FAILURE;
 		goto exit;
 	}
+	memset(pmadapter, buf, 0, MRVDRV_SIZE_OF_CMD_BUFFER);
 	txp_cfg = (HostCmd_DS_TXPWR_CFG *)buf;
 	txp_cfg->action = HostCmd_ACT_GEN_SET;
 	pwr_grp = &power->param.power_ext.power_group[0];
@@ -1774,6 +1776,14 @@ static mlan_status wlan_power_ioctl_set_power_ext(pmlan_adapter pmadapter,
 			pg->last_rate_code = (t_u8)pwr_grp->last_rate_ind;
 		} else if (pwr_grp->rate_format == MLAN_RATE_FORMAT_VHT) {
 			pg->modulation_class = MOD_CLASS_VHT;
+			pg->first_rate_code =
+				(t_u8)((pwr_grp->first_rate_ind & 0xF) |
+				       ((pwr_grp->nss - 1) << 4));
+			pg->last_rate_code =
+				(t_u8)((pwr_grp->last_rate_ind & 0xF) |
+				       ((pwr_grp->nss - 1) << 4));
+		} else if (pwr_grp->rate_format == MLAN_RATE_FORMAT_HE) {
+			pg->modulation_class = MOD_CLASS_HE;
 			pg->first_rate_code =
 				(t_u8)((pwr_grp->first_rate_ind & 0xF) |
 				       ((pwr_grp->nss - 1) << 4));

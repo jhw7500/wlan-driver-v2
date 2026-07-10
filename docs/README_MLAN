@@ -5323,3 +5323,149 @@ mlanutl mlanX setuserscan [ARGS]
 
 For detail information, please refer the command description.
 ===============================================================================
+
+===============================================================================
+===============================================================================
+		U S E R  M A N U A L  F O R  txpowercfg
+
+The txpowercfg command reads or overrides the firmware TX power configuration
+for selected rate groups.
+
+This command is different from powercons.  powercons only configures the
+802.11h local power constraint value.  It does not directly change the runtime
+TX power used for data frames.
+
+Usage:
+	mlanutl mlanX txpowercfg
+	mlanutl mlanX txpowercfg 0xFF
+	mlanutl mlanX txpowercfg <group> <rate_index> <power_dbm>
+
+Where:
+	No argument
+		Read the current firmware TX power table.  The displayed maximum
+		power is the effective per-rate limit selected by firmware for the
+		current channel, bandwidth, rate group, region, calibration, and
+		downloaded txpwrlimit_cfg table.
+		The output also shows the raw firmware mode field.  Do not use
+		this field alone to determine whether 0xFF restored automatic
+		control.  Some 9098 firmware keeps returning 1 after a successful
+		0xFF command.
+
+	0xFF
+		Disable host TX power override and return to firmware automatic
+		control.
+
+	<group>
+		Rate format, bandwidth, and NSS selector.
+
+	<rate_index>
+		Legacy rate index or MCS index within the selected group.
+
+	<power_dbm>
+		Requested TX power in dBm.  The driver sends this as both minimum
+		and maximum power for the selected power group.  Firmware may still
+		clip the final output according to regulatory, board, calibration,
+		or txpwrlimit_cfg limits.
+
+Group mapping:
+	0   LG, 20 MHz
+	1   HT, 20 MHz
+	2   HT, 40 MHz
+	3   VHT, 1 NSS, 20 MHz
+	4   VHT, 2 NSS, 20 MHz
+	5   VHT, 1 NSS, 40 MHz
+	6   VHT, 2 NSS, 40 MHz
+	7   VHT, 1 NSS, 80 MHz
+	8   VHT, 2 NSS, 80 MHz
+	9   HE, 1 NSS, 20 MHz
+	10  HE, 2 NSS, 20 MHz
+	11  HE, 1 NSS, 40 MHz
+	12  HE, 2 NSS, 40 MHz
+	13  HE, 1 NSS, 80 MHz
+	14  HE, 2 NSS, 80 MHz
+
+Legacy rate indexes for group 0:
+	0   1 Mbps
+	1   2 Mbps
+	2   5.5 Mbps
+	3   11 Mbps
+	4   6 Mbps
+	5   9 Mbps
+	6   12 Mbps
+	7   18 Mbps
+	8   24 Mbps
+	9   36 Mbps
+	10  48 Mbps
+	11  54 Mbps
+
+For HT, VHT, and HE groups, <rate_index> is the MCS index.  For NSS 2
+operation, still pass the MCS index shown by iw link, not the combined MCS
+number.  For example, "80MHz HE-MCS 11 HE-NSS 2" uses group 14 and rate_index
+11.
+
+Examples:
+	1) Read the current TX power table:
+		mlanutl mlan0 txpowercfg
+
+	2) Return to firmware automatic TX power control:
+		mlanutl mlan0 txpowercfg 0xFF
+
+	   When changing from a lower manual power to a higher manual power,
+	   restore automatic control first.  The firmware GET table can reflect
+	   the previously lowered manual maximum, and the driver may reject the
+	   higher request during its range check:
+		mlanutl mlan0 txpowercfg 0xFF
+		mlanutl mlan0 txpowercfg 0 4 10
+
+	3) Fix legacy 6 Mbps TX power to 5 dBm:
+		mlanutl mlan0 txratecfg 0 4
+		mlanutl mlan0 txpowercfg 0 4 5
+
+	4) Fix HT20 MCS15 TX power to 10 dBm:
+		mlanutl mlan0 txratecfg 1 15
+		mlanutl mlan0 txpowercfg 1 15 10
+
+	5) Fix HE 2 NSS 80 MHz MCS11 TX power to 5 dBm:
+		mlanutl mlan0 txratecfg 3 11 2
+		mlanutl mlan0 txpowercfg 14 11 5
+
+	6) Fix HE 1 NSS 80 MHz MCS11 TX power to 5 dBm:
+		mlanutl mlan0 txpowercfg 13 11 5
+
+Notes:
+	1) txpowercfg controls a firmware runtime TX power override.  The
+	   maximum values printed by "mlanutl mlanX txpowercfg" normally come
+	   from the currently active firmware power table.  If txpwrlimit_cfg is
+	   downloaded, its per-channel TLVPwr values are reflected in these
+	   maximum values.
+
+	2) txpwrlimit_cfg is channel based.  Use get_txpwrlimit to inspect the
+	   per-channel power limit table:
+		mlanutl mlan0 get_txpwrlimit 0x10
+
+	   5 GHz sub-band values commonly used by txpwrlimit_cfg:
+		0x10  channels 36,40,44,48,52,56,60,64
+		0x11  channels 100,104,108,112,116,120,124,128,132,136,140,144
+		0x12  channels 149,153,157,161,165,172
+		0x13  other 5 GHz sub-band channels
+
+	3) The AP RSSI display is not an exact TX power meter.  To verify the
+	   effect, fix the TX rate first, keep traffic running, and compare
+	   averaged RSSI or conducted power measurements across several power
+	   settings.
+
+	4) Very low requested power values may be clipped by firmware or RF
+	   calibration limits.  In that case two low settings, such as 1 dBm and
+	   5 dBm, can produce similar measured RSSI.
+
+	5) The firmware GET response is limited to 64 Power_Group_t entries on
+	   tested 9098 firmware.  A complete 2x2 HE table needs 69 entries, so
+	   the last five HE 80 MHz NSS 2 entries may be absent even when SET for
+	   group 14 is supported.  Increasing the host MAX_POWER_GROUP value
+	   does not add entries that firmware did not return.
+
+	6) scripts/txpower_family_set.sh records successful SET commands under
+	   /run and uses that state for --status.  This is needed for group 14
+	   and for firmware whose mode field does not change after 0xFF.
+	   Direct mlanutl commands are not visible to this script state.
+===============================================================================
