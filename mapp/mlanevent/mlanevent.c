@@ -206,7 +206,7 @@ static void print_mac(t_u8 *raw)
 static void print_usage(void)
 {
 	printf("\n");
-	printf("Usage : mlanevent.exe [-v] [-h]\n");
+	printf("Usage : mlanevent [-v] [-h]\n");
 	printf("    -v               : Print version information\n");
 	printf("    -h               : Print help information\n");
 	printf("    -i               : Specify device number from 0 to %d\n",
@@ -1940,6 +1940,90 @@ static void print_event_11k_nlist_report(t_u8 *buffer, t_u16 size)
 	return;
 }
 
+#define CUS_EVT_BW_CHANGED "EVENT=BW_CHANGED"
+
+/**
+ *  @brief Parse and print BW_CHANGED event
+ *
+ *  Wire format (moal_shim.c, MLAN_EVENT_ID_FW_BW_CHANGED):
+ *      "EVENT=BW_CHANGED" '\0' <1 byte band config>
+ *  Drivers that omit the NUL from the netlink broadcast length truncate the
+ *  trailing byte, so treat it as optional.
+ *
+ *  @param buffer   Pointer to received event
+ *  @param size     Length of the received event
+ *  @return         N/A
+ */
+static void print_event_bw_changed(t_u8 *buffer, t_u16 size)
+{
+	t_u16 offset = (t_u16)(strlen(CUS_EVT_BW_CHANGED) + 1);
+	Band_Config_t bandcfg;
+	t_u8 raw = 0;
+
+	printf("EVENT: BW_CHANGED\n");
+
+	if (size < (t_u16)(offset + sizeof(t_u8))) {
+		printf("\tno band config reported by driver\n");
+		return;
+	}
+
+	raw = buffer[offset];
+	memcpy(&bandcfg, &raw, sizeof(bandcfg));
+
+	/* raw 값을 항상 함께 찍는다. 아래 해석이 펌웨어와 어긋나더라도
+	 * 원본 바이트로 확인할 수 있어야 한다. */
+	printf("\tBand Config = 0x%02x\n", raw);
+
+	switch (bandcfg.chanBand) {
+	case BAND_2GHZ:
+		printf("\tBand = 2.4GHz\n");
+		break;
+	case BAND_5GHZ:
+		printf("\tBand = 5GHz\n");
+		break;
+	case BAND_6GHZ:
+		printf("\tBand = 6GHz\n");
+		break;
+	default:
+		printf("\tBand = unknown (%d)\n", bandcfg.chanBand);
+		break;
+	}
+
+	switch (bandcfg.chanWidth) {
+	case CHAN_BW_20MHZ:
+		printf("\tBandwidth = 20MHz\n");
+		break;
+	case CHAN_BW_10MHZ:
+		printf("\tBandwidth = 10MHz\n");
+		break;
+	case CHAN_BW_40MHZ:
+		printf("\tBandwidth = 40MHz\n");
+		break;
+	case CHAN_BW_80MHZ:
+		printf("\tBandwidth = 80MHz\n");
+		break;
+	default:
+		printf("\tBandwidth = unknown (%d)\n", bandcfg.chanWidth);
+		break;
+	}
+
+	switch (bandcfg.chan2Offset) {
+	case SEC_CHAN_NONE:
+		printf("\tno secondary channel\n");
+		break;
+	case SEC_CHAN_ABOVE:
+		printf("\tsecondary channel is above primary channel\n");
+		break;
+	case SEC_CHAN_BELOW:
+		printf("\tsecondary channel is below primary channel\n");
+		break;
+	default:
+		printf("\tsecondary channel offset = %d\n",
+		       bandcfg.chan2Offset);
+		break;
+	}
+}
+
 /**
  *  @brief Parse and print received event information
  *
@@ -2095,10 +2179,9 @@ static void print_event(event_header *event, t_u16 size, char *if_name)
 			printf("EVENT: OBSS_SCAN_PARAM\n");
 			break;
 		}
-#define CUS_EVT_BW_CHANGED "EVENT=BW_CHANGED"
 		if (!strncmp((char *)event, CUS_EVT_BW_CHANGED,
 			     strlen(CUS_EVT_BW_CHANGED))) {
-			printf("EVENT: BW_CHANGED\n");
+			print_event_bw_changed((t_u8 *)event, size);
 			break;
 		}
 #define CUS_EVT_MLME_MIC_ERR_UNI "MLME-MICHAELMICFAILURE.indication unicast"
@@ -2207,7 +2290,7 @@ static void print_event(event_header *event, t_u16 size, char *if_name)
 #define WMM_CONFIG_CHANGE_INDICATION "WMM_CONFIG_CHANGE.indication"
 		if (!strncmp((char *)event, WMM_CONFIG_CHANGE_INDICATION,
 			     strlen(WMM_CONFIG_CHANGE_INDICATION))) {
-			printf("EVENT: STA_DISCONNECTED\n");
+			printf("EVENT: WMM_CONFIG_CHANGE.indication\n");
 			break;
 		}
 #define CUS_EVT_DRIVER_HANG "EVENT=DRIVER_HANG"
