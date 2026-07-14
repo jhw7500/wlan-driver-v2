@@ -627,11 +627,17 @@ endif
 
 export		CC LD ccflags-y KERNELDIR
 
-.PHONY: mapp/mlanutl clean distclean
+.PHONY: mapp/mlanutl mapp/mlanevent clean distclean
 	@echo "Finished Making NXP Wlan Linux Driver"
 
 mapp/mlanutl:
 	$(MAKE) -C $@
+
+mapp/mlanevent:
+	@if [ ! -d $(BINDIR) ]; then \
+		mkdir $(BINDIR); \
+	fi
+	$(MAKE) -C $@ INSTALLDIR=$(BINDIR)
 
 echo:
 
@@ -646,6 +652,7 @@ appsbuild:
 ifneq ($(APPDIR),)
 	cp -rf mapp/mlanconfig/config $(BINDIR)
 	$(MAKE) -C mapp/mlanutl $@ INSTALLDIR=$(BINDIR)
+	$(MAKE) -C mapp/mlanevent $@ INSTALLDIR=$(BINDIR)
 endif
 
 build:		echo default
@@ -670,6 +677,7 @@ build:		echo default
 ifneq ($(APPDIR),)
 	cp -rf mapp/mlanconfig/config $(BINDIR)
 	$(MAKE) -C mapp/mlanutl $@ INSTALLDIR=$(BINDIR)
+	$(MAKE) -C mapp/mlanevent $@ INSTALLDIR=$(BINDIR)
 endif
 
 clean:
@@ -685,6 +693,7 @@ clean:
 	-rm -rf .tmp_versions
 ifneq ($(APPDIR),)
 	$(MAKE) -C mapp/mlanutl $@
+	$(MAKE) -C mapp/mlanevent $@
 endif
 #ifdef SDIO
 #endif // SDIO
@@ -714,6 +723,7 @@ distclean:
 	-rm -rf .tmp_versions
 ifneq ($(APPDIR),)
 	$(MAKE) -C mapp/mlanutl $@
+	$(MAKE) -C mapp/mlanevent $@
 endif
 
 # End of file

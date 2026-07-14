@@ -3290,9 +3290,13 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_OBSS_SCAN_PARAM),
 				strlen(CUS_EVT_OBSS_SCAN_PARAM));
 		pmevent->event_buf[strlen(CUS_EVT_OBSS_SCAN_PARAM)] = 0;
+		/* payload 는 strlen(CUS_EVT_OBSS_SCAN_PARAM) + 1 오프셋에 놓이므로
+		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
+		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_OBSS_SCAN_PARAM));
+					     strlen(CUS_EVT_OBSS_SCAN_PARAM) +
+					     1);
 
 #ifdef STA_WEXT
 		if (IS_STA_WEXT(cfg80211_wext)) {
@@ -3313,9 +3317,12 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_BW_CHANGED),
 				strlen(CUS_EVT_BW_CHANGED));
 		pmevent->event_buf[strlen(CUS_EVT_BW_CHANGED)] = 0;
+		/* payload 는 strlen(CUS_EVT_BW_CHANGED) + 1 오프셋에 놓이므로
+		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
+		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_BW_CHANGED));
+					     strlen(CUS_EVT_BW_CHANGED) + 1);
 
 #ifdef STA_WEXT
 		if (IS_STA_WEXT(cfg80211_wext)) {
@@ -4397,9 +4404,12 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_STA_CONNECTED),
 				strlen(CUS_EVT_STA_CONNECTED));
 		pmevent->event_buf[strlen(CUS_EVT_STA_CONNECTED)] = 0;
+		/* payload 는 strlen(CUS_EVT_STA_CONNECTED) + 1 오프셋에 놓이므로
+		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
+		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_STA_CONNECTED));
+					     strlen(CUS_EVT_STA_CONNECTED) + 1);
 #ifdef UAP_WEXT
 		if (IS_UAP_WEXT(cfg80211_wext)) {
 			memset(&wrqu, 0, sizeof(union iwreq_data));
@@ -4460,9 +4470,13 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				strlen(CUS_EVT_STA_DISCONNECTED),
 				strlen(CUS_EVT_STA_DISCONNECTED));
 		pmevent->event_buf[strlen(CUS_EVT_STA_DISCONNECTED)] = 0;
+		/* payload 는 strlen(CUS_EVT_STA_DISCONNECTED) + 1 오프셋에 놓이므로
+		 * 길이에도 NUL 1바이트를 더해야 마지막 바이트가 잘리지 않는다
+		 * (FW_DEBUG_INFO 와 동일한 계산). */
 		woal_broadcast_event(priv, pmevent->event_buf,
 				     pmevent->event_len +
-					     strlen(CUS_EVT_STA_DISCONNECTED));
+					     strlen(CUS_EVT_STA_DISCONNECTED) +
+					     1);
 
 #ifdef UAP_WEXT
 		if (IS_UAP_WEXT(cfg80211_wext)) {

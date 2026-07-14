@@ -24,20 +24,31 @@ PKG_CONFIG_PATH=${SYSROOT}/usr/lib/pkgconfig
 MOD_SUFFIX=${MOD_SUFFIX:-_imx8}
 
 MLANUTL_CFLAGS="-DSTA_SUPPORT -DUAP_SUPPORT -DWIFI_DIRECT_SUPPORT -DMFG_CMD_SUPPORT -DTDLS_SUPPORT -DMULTI_CHAN_SUPPORT -DDFS_TESTING_SUPPORT"
+# mlanevent 는 이벤트 수신 전용(netlink read-only)이라 드라이버 기능 플래그가 거의 불필요.
+# WIFI_DIRECT_SUPPORT 만 P2P 이벤트 파싱 블록을 켠다.
+MLANEVENT_CFLAGS="-DWIFI_DIRECT_SUPPORT"
 
 if [ "$1" = "mlanutl" ]; then
     shift
     mkdir -p bin_wlan
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANUTL_CFLAGS}" $@
+elif [ "$1" = "mlanevent" ]; then
+    shift
+    mkdir -p bin_wlan
+    make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
+    make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANEVENT_CFLAGS}" $@
 elif [ "$1" = "all" ]; then
     shift
+    mkdir -p bin_wlan
     "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx8
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX}
+    make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
+    make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANEVENT_CFLAGS}"
 else
     "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx8
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
