@@ -2290,7 +2290,7 @@ static void print_event(event_header *event, t_u16 size, char *if_name)
 #define WMM_CONFIG_CHANGE_INDICATION "WMM_CONFIG_CHANGE.indication"
 		if (!strncmp((char *)event, WMM_CONFIG_CHANGE_INDICATION,
 			     strlen(WMM_CONFIG_CHANGE_INDICATION))) {
-			printf("EVENT: STA_DISCONNECTED\n");
+			printf("EVENT: WMM_CONFIG_CHANGE.indication\n");
 			break;
 		}
 #define CUS_EVT_DRIVER_HANG "EVENT=DRIVER_HANG"
