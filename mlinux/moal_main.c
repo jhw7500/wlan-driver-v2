@@ -99,6 +99,8 @@ struct semaphore AddRemoveCardSem;
  **/
 moal_handle *m_handle[MAX_MLAN_ADAPTER];
 static int reg_work;
+/** bridge_debug (moal_init.c): gates the RX deliver-leg latency accounting. */
+extern int bridge_debug;
 /********************************************************
 		Local Variables
 ********************************************************/
@@ -6554,7 +6556,9 @@ void woal_queue_rx_task(moal_handle *handle)
 		return;
 	}
 #if defined(USB) || defined(SDIO)
-	queue_work(handle->rx_workqueue, &handle->rx_work);
+	if (queue_work(handle->rx_workqueue, &handle->rx_work) &&
+	    READ_ONCE(bridge_debug))
+		WRITE_ONCE(handle->rx_enqueue_ns, ktime_get_ns());
 #endif
 	LEAVE();
 }
@@ -12630,6 +12634,27 @@ t_void woal_evt_work_queue(struct work_struct *work)
 	LEAVE();
 }
 #if defined(USB) || defined(SDIO)
+/* Ceiling for a valid RX deliver-leg gap sample (us). Deltas above this are
+ * bridge_debug toggle/idle artifacts (stale rx_enqueue_ns), not real jitter,
+ * which targets tens of ms. */
+#define RX_GAP_CEIL_US 1000000L
+
+/* Lock-free max update for the RX deliver-leg latency counters. Mirrors the
+ * bridge dwell max pattern (moal_bridge_account_dwell). us clamped >=0 by
+ * caller. */
+static void woal_rx_acct_max(atomic_long_t *max, long us)
+{
+	long old = atomic_long_read(max);
+
+	while (us > old) {
+		long prev = atomic_long_cmpxchg(max, old, us);
+
+		if (prev == old)
+			break;
+		old = prev;
+	}
+}
+
 /**
  *  @brief This workqueue function handles rx_process
  *
@@ -12642,8 +12667,26 @@ t_void woal_rx_work_queue(struct work_struct *work)
 	moal_handle *handle = container_of(work, moal_handle, rx_work);
 	wifi_timeval start_timeval;
 	wifi_timeval end_timeval;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 10) &&                           \
+	LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 18)
+	struct sched_param sp;
+#elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
+	struct sched_attr attr;
+#endif
+	t_u64 rx_now_ns = 0;
+	t_u64 rx_enq_ns = 0;
 
 	ENTER();
+	/* Snapshot the deliver-leg gap endpoints at worker start. rx_enqueue_ns
+	 * is only written on the not-pending->pending transition, so it is
+	 * stable across the pending window and reads the batch that triggered
+	 * this run. Caveat: process_one_work() clears PENDING before calling us,
+	 * so a concurrent enqueue can overwrite rx_enqueue_ns with a newer stamp
+	 * before this read -> the gap can only under-report (never inflate). */
+	if (READ_ONCE(bridge_debug)) {
+		rx_enq_ns = READ_ONCE(handle->rx_enqueue_ns);
+		rx_now_ns = ktime_get_ns();
+	}
 	if (handle->surprise_removed == MTRUE) {
 		LEAVE();
 		return;
@@ -12656,6 +12699,53 @@ t_void woal_rx_work_queue(struct work_struct *work)
 	}
 #endif
 #endif
+	/* Raise the RX deliver leg to RT (pcap-equivalent servicing). The SDIO
+	 * pull leg already runs in the mmc threaded-IRQ (SCHED_FIFO), but this
+	 * rx_work worker (dequeue + deliver to stack) is left at CFS by default,
+	 * which is where the moal-engine downstream latency jitter is expected.
+	 * Mirrors the woal_main_work_queue block; honors wq_sched_policy/prio.
+	 * Idempotency guard => the setscheduler call fires once per worker.
+	 */
+	if ((handle->params.wq_sched_prio != current->rt_priority) ||
+	    (handle->params.wq_sched_policy != current->policy)) {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 10) &&                           \
+	LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 18)
+		PRINTM(MMSG,
+		       "Set rx work queue priority %d and scheduling policy %d\n",
+		       handle->params.wq_sched_prio,
+		       handle->params.wq_sched_policy);
+		sp.sched_priority = handle->params.wq_sched_prio;
+		sched_setscheduler(current, handle->params.wq_sched_policy, &sp);
+#elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
+		PRINTM(MMSG,
+		       "Set rx work queue priority %d and scheduling policy %d\n",
+		       handle->params.wq_sched_prio,
+		       handle->params.wq_sched_policy);
+		attr.sched_policy = handle->params.wq_sched_policy;
+		attr.sched_nice = DEF_NICE;
+		attr.sched_priority = handle->params.wq_sched_prio;
+		sched_setattr_nocheck(current, &attr);
+#endif
+	}
+
+	/* Deliver-leg queue->run gap: enqueue (rx_enq_ns) -> this worker running
+	 * (rx_now_ns). The suspected home of the moal-engine downstream jitter,
+	 * since the pull leg already runs in the mmc threaded-IRQ at SCHED_FIFO.
+	 * Clamp: rx_enqueue_ns freezes while bridge_debug is off (enqueue writes
+	 * are gated), so the first run after a 0->1 toggle can read a stale
+	 * timestamp and compute a multi-second delta. The real jitter target is
+	 * tens of ms, so reject anything above RX_GAP_CEIL_US as a toggle/idle
+	 * artifact instead of letting it poison gap_max. */
+	if (rx_now_ns && rx_enq_ns && rx_now_ns > rx_enq_ns) {
+		long gap_us = (long)((rx_now_ns - rx_enq_ns) / 1000);
+
+		if (gap_us <= RX_GAP_CEIL_US) {
+			atomic_long_inc(&handle->rx_gap_cnt);
+			atomic_long_add(gap_us, &handle->rx_gap_sum_us);
+			woal_rx_acct_max(&handle->rx_gap_max_us, gap_us);
+		}
+	}
+
 	woal_get_monotonic_time(&start_timeval);
 	if (MLAN_STATUS_SUCCESS != mlan_rx_process(handle->pmlan_adapter, NULL))
 		PRINTM(MERROR, "%s: mlan_rx_process failed \n", __func__);
@@ -12663,6 +12753,12 @@ t_void woal_rx_work_queue(struct work_struct *work)
 	woal_get_monotonic_time(&end_timeval);
 	handle->rx_time += (t_u64)(timeval_to_usec(end_timeval) -
 				   timeval_to_usec(start_timeval));
+	/* Deliver-leg processing duration (mlan_rx_process): distinguishes
+	 * "slow to run" (gap) from "slow while running" (duration). */
+	if (rx_now_ns)
+		woal_rx_acct_max(&handle->rx_dur_max_us,
+				 (long)(timeval_to_usec(end_timeval) -
+					timeval_to_usec(start_timeval)));
 	PRINTM(MINFO,
 	       "%s : start_timeval=%d:%d end_timeval=%d:%d inter=%llu rx_time=%llu\n",
 	       __func__, start_timeval.time_sec, start_timeval.time_usec,

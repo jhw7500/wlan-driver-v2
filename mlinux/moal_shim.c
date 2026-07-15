@@ -45,6 +45,9 @@ Change log:
 #endif
 #include <asm/div64.h>
 
+/** bridge_debug (moal_init.c): gates the RX deliver-leg enqueue timestamp. */
+extern int bridge_debug;
+
 #if defined(PCIE) || defined(SDIO)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 70)
 #ifdef IMX_SUPPORT
@@ -2889,7 +2892,9 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 		}
 #endif
 #if defined(USB) || defined(SDIO)
-		queue_work(handle->rx_workqueue, &handle->rx_work);
+		if (queue_work(handle->rx_workqueue, &handle->rx_work) &&
+		    READ_ONCE(bridge_debug))
+			WRITE_ONCE(handle->rx_enqueue_ns, ktime_get_ns());
 #endif
 		break;
 	default:
