@@ -1,0 +1,77 @@
+#!/usr/bin/env bpftrace
+/*
+ * moal mlan0 RX ~90ms jitter — leg attribution probe.
+ *
+ * Goal: decide whether the ~90ms downstream tail lives in
+ *   (1) PULL leg  — SDIO card->host read in IRQ/ksdioirqd context, or
+ *   (2) DELIVER leg — dequeue+deliver hand-off (NAPI ksoftirqd / MOAL_RX_WORK_QUEUE kworker).
+ *
+ * Run ON THE DUT (the SDIO receiver = cts-wlan) while a peer floods it:
+ *     peer$  ping -D -i 0.1 -c 300 <DUT_IP>
+ *     DUT$   bpftrace docs/moal-mlan0-rx-jitter.legtrace.bt
+ *
+ * Symbols are the CURRENT verified anchors (2026-07-15):
+ *   pull   : woal_sdio_interrupt / wlan_sdio_card_to_host[_mp_aggr]
+ *   handoff: mlan_queue_rx_work  (mlan_shim.c:1214)
+ *   deliver: woal_netdev_poll_rx (NAPI) / woal_rx_work_queue (workqueue)
+ *
+ * NOTE: adjust the ksdioirqd comm ("ksdioirqd/mmc0"/"mmc1"...) to the real
+ *       wifi SDIO host instance — find it with:
+ *          ps -eLo pid,comm | grep -E 'ksdioirqd|irq/.*mmc'
+ *       If the host is MMC_CAP2_SDIO_IRQ_NOTHREAD (typical sdhci-esdhc-imx),
+ *       there is NO ksdioirqd; the pull runs in an "irq/<N>-mmcX" thread and
+ *       the sched_wakeup block below will simply stay empty — that itself is
+ *       a signal (see driver-prep doc §6).
+ */
+
+BEGIN { printf("rx-legtrace armed. Flood now. Ctrl-C to dump histograms.\n"); }
+
+/* ---- PULL leg: full IRQ-callback duration + raw card->host DMA duration ---- */
+kprobe:woal_sdio_interrupt            { @pull_start[tid] = nsecs; }
+kretprobe:woal_sdio_interrupt /@pull_start[tid]/ {
+    @pull_total_us = hist((nsecs - @pull_start[tid]) / 1000);
+    delete(@pull_start[tid]);
+}
+
+kprobe:wlan_sdio_card_to_host_mp_aggr { @c2h[tid] = nsecs; }
+kretprobe:wlan_sdio_card_to_host_mp_aggr /@c2h[tid]/ {
+    @c2h_data_dma_us = hist((nsecs - @c2h[tid]) / 1000);   /* bulk data */
+    delete(@c2h[tid]);
+}
+kprobe:wlan_sdio_card_to_host         { @c2hc[tid] = nsecs; }
+kretprobe:wlan_sdio_card_to_host /@c2hc[tid]/ {
+    @c2h_cmd_dma_us = hist((nsecs - @c2hc[tid]) / 1000);   /* cmd/event */
+    delete(@c2hc[tid]);
+}
+
+/* ---- HAND-OFF -> DELIVER dispatch latency (enqueue at mlan_queue_rx_work) ----
+ * SDIO is single-in-flight for RX servicing, so one global slot is adequate. */
+kprobe:mlan_queue_rx_work             { @handoff = nsecs; }
+kprobe:woal_netdev_poll_rx /@handoff/ {                 /* NAPI deliver gap  */
+    @deliver_napi_us = hist((nsecs - @handoff) / 1000);
+    @handoff = 0;
+}
+kprobe:woal_rx_work_queue  /@handoff/ {                 /* workqueue deliver gap */
+    @deliver_wq_us = hist((nsecs - @handoff) / 1000);
+    @handoff = 0;
+}
+
+/* ---- PULL-thread runqueue (wakeup->run) latency: the ksdioirqd starvation probe ----
+ * Edit the comm strings to your host's ksdioirqd instance(s). */
+tracepoint:sched:sched_wakeup
+    /str(args->comm) == "ksdioirqd/mmc0" || str(args->comm) == "ksdioirqd/mmc1"/ {
+    @wk[args->pid] = nsecs;
+}
+tracepoint:sched:sched_switch /@wk[args->next_pid]/ {
+    @rqlat_pull_us = hist((nsecs - @wk[args->next_pid]) / 1000);
+    delete(@wk[args->next_pid]);
+}
+
+END {
+    clear(@pull_start); clear(@c2h); clear(@c2hc); clear(@wk); clear(@handoff);
+    printf("\n== attribution: whichever histogram carries the ~90ms tail owns the jitter ==\n");
+    printf(" @c2h_data_dma_us / @c2h_cmd_dma_us tail -> PULL DMA/bus stall (RT will NOT fix)\n");
+    printf(" @rqlat_pull_us tail             -> ksdioirqd starved on runqueue -> Direction A\n");
+    printf(" @pull_total_us big but c2h small-> pull preempted mid-callback  -> Direction A\n");
+    printf(" @deliver_napi_us/@deliver_wq_us -> hand-off queue->run gap       -> Direction B/C\n");
+}
