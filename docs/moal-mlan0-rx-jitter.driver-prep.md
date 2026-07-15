@@ -252,4 +252,43 @@ NAPI를 켜고(napi=1) threaded로 만들어 **전용 kthread**를 RT화. dummy 
 
 ---
 
-_준비 완료(코드) + 보드 접근·구조 확정(§8). **핵심 재정렬: 방향 A=무효(pull 이미 FIFO:50), 방향 C=유일 RT 레버(deliver, prio≈45 권장).** leg 정량 특정은 커널 트레이싱 부재로 **in-driver 계측(§8-C)** 이 현실적 경로. 다음 트리거 = ①C ready patch(§4-C)+②계측 패치를 함께 빌드→rsync 배포→engine=moal 재현 측정(사용자 승인 필요)._
+---
+
+## 9. 결론 (2026-07-15) — 근본원인 규명 + fix 실기 실증 ✅
+
+실보드(cts-wlan, engine=moal, **napi ON**) in-driver 계측으로 leg 정량 특정 완료. **커널 트레이싱(kprobes/ftrace) 없이 순수 드라이버 계측으로 규명·해결.**
+
+### 9-1. 근본 원인 (확정)
+이 보드 moal은 **napi=ON**이라 RX deliver leg = `woal_netdev_poll_rx`가 **ksoftirqd(SCHED_OTHER/CFS)** 에서 실행된다. sparse/idle 트래픽에서 `napi_schedule` 후 **poll이 최대 ~80ms 늦게 디스패치**되는 것이 jitter의 정체. (Q5의 "napi 기본 0" 가정과 달리 실보드는 napi=1 — §8-A 참조.)
+
+계측으로 각 leg 격리(동일 sparse bridged 부하 dev→OHT 0.220):
+
+| leg | 계측 앵커 | baseline max | 판정 |
+|---|---|---|---|
+| **② deliver gap** (napi_schedule→poll) | `woal_netdev_poll_rx` | **79.9 ms** | **★범인** |
+| ① pull (SDIO IRQ 처리) | `woal_sdio_interrupt` entry→exit | 1.4 ms | 결백 |
+| TX write (SDIO write) | `woal_sdiommc_write_data_sync` | 0.5 ms | 결백 |
+| deliver duration / bridge dwell | — | 0.09 / 0.2 ms | 결백 |
+
+(주의: jitter는 intermittent — 창에 따라 이벤트를 놓치면 gap이 작게 나옴. 강한 재현 창에서 gap_max=79.9ms가 RTT max 82ms를 그대로 설명.)
+
+### 9-2. 해결 = Direction B (실증)
+`woal_netdev_poll_rx`가 도는 NAPI를 **전용 kthread로 threaded화 + RT 고정**:
+- `napi_enable` 뒤 `wq_sched_policy`가 FIFO/RR이면 `dev_set_threaded(&handle->napi_dev, true)` + `sched_setattr_nocheck(handle->napi_rx.thread, {policy, prio})`. **dummy netdev라 sysfs `/threaded`·외부 chrt 타깃이 없어 in-driver로 승격**(문서가 우려한 "chrt targeting 곤란" 회피).
+- 게이트: `wq_sched_policy=1 wq_sched_prio=45` (pull IRQ FIFO:50 아래). moal_init.c가 module_param 또는 conf로 수용.
+
+**실측 (baseline → fix, 동일 부하):**
+
+| 지표 | baseline (napi=ksoftirqd) | **fix (Direction B, napi=FIFO:45)** |
+|---|---:|---:|
+| deliver gap_max | 79,902 µs | **32 µs** (~2500×↓) |
+| RTT max | 82 ms | **9.3 ms** (outlier 0) |
+
+→ **RTT 82ms→9.3ms, pcap 패리티(~7ms) 근접.** `napi/-259`=FF:45, dmesg `Direction B: threaded NAPI RT policy 1 prio 45` 확인.
+
+### 9-3. 남은 일 (프로덕션화)
+- **wq_sched 정식 주입경로**: 실측 테스트는 `wifi_init.sh`에 moal insmod args(`wq_sched_policy=1 wq_sched_prio=45`) capability-gate 삽입(백업 `wifi_init.sh.bak.rxj`). conf 활성 SD9098 블록 없음 → insmod args 경로가 확실. 정식 배포 시 wifi_init_conf.json 노브화 또는 conf SD9098 블록 추가 검토.
+- **부작용 주의**: `wq_sched_policy=1`은 main_work/tx_work/bridge kthread도 FIFO:45로 올림(deliver와 동일 계층). pull IRQ(50) 아래라 순서는 정상.
+- **계측 상시성**: gap/pull/tx 계측은 `bridge_debug` 게이트(기본 off, 오버헤드 READ_ONCE 1회)라 상시 탑재 가능.
+
+_조사 완결: 근본원인=NAPI deliver 디스패치 지연(ksoftirqd), 해결=Direction B(threaded NAPI RT). 커널 트레이싱 없이 in-driver 계측으로 규명·실증._
