@@ -2877,7 +2877,15 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 	case MLAN_EVENT_ID_DRV_DEFER_RX_WORK:
 		status = MLAN_STATUS_SUCCESS;
 		if (moal_extflg_isset(handle, EXT_NAPI)) {
-			napi_schedule(&handle->napi_rx);
+			/* Capture NAPI deliver-leg enqueue ts on the
+			 * not-scheduled->scheduled transition (bridge_debug
+			 * gated); woal_netdev_poll_rx reads it for the gap. */
+			if (napi_schedule_prep(&handle->napi_rx)) {
+				if (READ_ONCE(bridge_debug))
+					WRITE_ONCE(handle->rx_enqueue_ns,
+						   ktime_get_ns());
+				__napi_schedule(&handle->napi_rx);
+			}
 			break;
 		}
 #ifdef PCIE

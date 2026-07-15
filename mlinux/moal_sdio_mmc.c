@@ -276,12 +276,18 @@ static void woal_dump_sdio_reg(moal_handle *handle)
  *  @param func     A pointer to the sdio_func structure
  *  @return         N/A
  */
+/* bridge_debug (moal_init.c) gates the SDIO pull/tx latency instrumentation;
+ * woal_rx_acct_max (moal_main.c) is the shared lock-free max helper. */
+extern int bridge_debug;
+extern void woal_rx_acct_max(atomic_long_t *max, long us);
+
 static void woal_sdio_interrupt(struct sdio_func *func)
 {
 	moal_handle *handle;
 	sdio_mmc_card *card;
 	mlan_status status;
 	t_u32 host_int_status_reg_val;
+	t_u64 pull_t0 = 0;
 	ENTER();
 
 	card = sdio_get_drvdata(func);
@@ -309,6 +315,11 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 		LEAVE();
 		return;
 	}
+	/* Pull leg start: the SDIO IRQ-context RX read + process below runs
+	 * mlan_interrupt + mlan_main_process (card_to_host, incl sdio_claim_host
+	 * wait). This is the leg the deliver gap (rx_gap) proved innocent of. */
+	if (READ_ONCE(bridge_debug))
+		pull_t0 = ktime_get_ns();
 	/* call mlan_interrupt to read int status */
 	status = mlan_interrupt(0, handle->pmlan_adapter);
 	if (status == MLAN_STATUS_FAILURE) {
@@ -326,6 +337,13 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 	status = mlan_main_process(handle->pmlan_adapter);
 	if (status == MLAN_STATUS_FAILURE) {
 		PRINTM(MINTR, "mlan main process exited with failure\n");
+	}
+	if (pull_t0) {
+		long us = (long)((ktime_get_ns() - pull_t0) / 1000);
+
+		atomic_long_inc(&handle->rx_pull_cnt);
+		atomic_long_add(us, &handle->rx_pull_sum_us);
+		woal_rx_acct_max(&handle->rx_pull_max_us, us);
 	}
 	handle->main_state = MOAL_END_MAIN_PROCESS;
 	LEAVE();
@@ -1405,6 +1423,7 @@ static mlan_status woal_sdiommc_write_data_sync(moal_handle *handle,
 			       pmbuf->data_len;
 	t_u32 ioport = (port & MLAN_SDIO_IO_PORT_MASK);
 	int status = 0;
+	t_u64 tx_t0 = READ_ONCE(bridge_debug) ? ktime_get_ns() : 0;
 	if (pmbuf->use_count > 1)
 		return woal_sdio_rw_mb(handle, pmbuf, port, MTRUE);
 #ifdef SDIO_MMC_DEBUG
@@ -1427,6 +1446,17 @@ static mlan_status woal_sdiommc_write_data_sync(moal_handle *handle,
 #ifdef SDIO_MMC_DEBUG
 	handle->cmd53w = 2;
 #endif
+	/* TX leg: this whole sdio_claim_host + sdio_writesb + release. A large
+	 * value here means the reply-TX over SDIO stalls (host-mutex contention
+	 * with the RX read, or bus), a candidate for the RTT jitter that the
+	 * deliver leg is not responsible for. */
+	if (tx_t0) {
+		long us = (long)((ktime_get_ns() - tx_t0) / 1000);
+
+		atomic_long_inc(&handle->tx_write_cnt);
+		atomic_long_add(us, &handle->tx_write_sum_us);
+		woal_rx_acct_max(&handle->tx_write_max_us, us);
+	}
 	return ret;
 }
 

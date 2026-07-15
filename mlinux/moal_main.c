@@ -6551,7 +6551,16 @@ void woal_queue_rx_task(moal_handle *handle)
 	}
 #endif
 	if (moal_extflg_isset(handle, EXT_NAPI)) {
-		napi_schedule(&handle->napi_rx);
+		/* Capture the NAPI deliver-leg enqueue timestamp on the
+		 * not-scheduled->scheduled transition (napi_schedule_prep), the
+		 * napi analogue of queue_work returning true. Gated by
+		 * bridge_debug; woal_netdev_poll_rx reads it for the gap. */
+		if (napi_schedule_prep(&handle->napi_rx)) {
+			if (READ_ONCE(bridge_debug))
+				WRITE_ONCE(handle->rx_enqueue_ns,
+					   ktime_get_ns());
+			__napi_schedule(&handle->napi_rx);
+		}
 		LEAVE();
 		return;
 	}
@@ -12380,6 +12389,28 @@ mlan_status woal_request_country_power_table(moal_private *priv, char *country,
 	return ret;
 }
 
+/* Ceiling for a valid RX deliver-leg gap sample (us). Deltas above this are
+ * bridge_debug toggle/idle artifacts (stale rx_enqueue_ns), not real jitter,
+ * which targets tens of ms. Shared by the NAPI and rx_work deliver paths. */
+#define RX_GAP_CEIL_US 1000000L
+
+/* Lock-free max update for the RX/TX leg latency counters. Mirrors the bridge
+ * dwell max pattern (moal_bridge_account_dwell). us clamped >=0 by caller.
+ * Non-static: also used by the SDIO pull/tx instrumentation in
+ * moal_sdio_mmc.c. */
+void woal_rx_acct_max(atomic_long_t *max, long us)
+{
+	long old = atomic_long_read(max);
+
+	while (us > old) {
+		long prev = atomic_long_cmpxchg(max, old, us);
+
+		if (prev == old)
+			break;
+		old = prev;
+	}
+}
+
 /**
  *  @brief napi polling call back function.
  *
@@ -12392,8 +12423,17 @@ static int woal_netdev_poll_rx(struct napi_struct *napi, int budget)
 {
 	moal_handle *handle = container_of(napi, moal_handle, napi_rx);
 	t_u8 recv = budget;
+	t_u64 rx_now_ns = 0;
+	t_u64 rx_enq_ns = 0;
+	t_u64 dur_start_ns = 0;
 
 	ENTER();
+	/* NAPI deliver-leg gap: napi_schedule -> this poll running. Reuses the
+	 * shared rx_gap_* counters (NAPI and rx_work are mutually exclusive). */
+	if (READ_ONCE(bridge_debug)) {
+		rx_enq_ns = READ_ONCE(handle->rx_enqueue_ns);
+		rx_now_ns = ktime_get_ns();
+	}
 	if (handle->surprise_removed == MTRUE) {
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 		if (false == napi_complete(napi))
@@ -12405,9 +12445,23 @@ static int woal_netdev_poll_rx(struct napi_struct *napi, int budget)
 		LEAVE();
 		return 0;
 	}
+	if (rx_now_ns && rx_enq_ns && rx_now_ns > rx_enq_ns) {
+		long gap_us = (long)((rx_now_ns - rx_enq_ns) / 1000);
+
+		if (gap_us <= RX_GAP_CEIL_US) {
+			atomic_long_inc(&handle->rx_gap_cnt);
+			atomic_long_add(gap_us, &handle->rx_gap_sum_us);
+			woal_rx_acct_max(&handle->rx_gap_max_us, gap_us);
+		}
+	}
+	if (rx_now_ns)
+		dur_start_ns = ktime_get_ns();
 	if (MLAN_STATUS_SUCCESS !=
 	    mlan_rx_process(handle->pmlan_adapter, &recv))
 		PRINTM(MERROR, "%s: mlan_rx_process failed \n", __func__);
+	if (dur_start_ns)
+		woal_rx_acct_max(&handle->rx_dur_max_us,
+				 (long)((ktime_get_ns() - dur_start_ns) / 1000));
 	if (recv < budget) {
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 		if (false == napi_complete(napi))
@@ -12634,27 +12688,6 @@ t_void woal_evt_work_queue(struct work_struct *work)
 	LEAVE();
 }
 #if defined(USB) || defined(SDIO)
-/* Ceiling for a valid RX deliver-leg gap sample (us). Deltas above this are
- * bridge_debug toggle/idle artifacts (stale rx_enqueue_ns), not real jitter,
- * which targets tens of ms. */
-#define RX_GAP_CEIL_US 1000000L
-
-/* Lock-free max update for the RX deliver-leg latency counters. Mirrors the
- * bridge dwell max pattern (moal_bridge_account_dwell). us clamped >=0 by
- * caller. */
-static void woal_rx_acct_max(atomic_long_t *max, long us)
-{
-	long old = atomic_long_read(max);
-
-	while (us > old) {
-		long prev = atomic_long_cmpxchg(max, old, us);
-
-		if (prev == old)
-			break;
-		old = prev;
-	}
-}
-
 /**
  *  @brief This workqueue function handles rx_process
  *
@@ -13601,6 +13634,38 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 			       woal_netdev_poll_rx, NAPI_BUDGET);
 #endif
 		napi_enable(&handle->napi_rx);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
+		/* Direction B: when an RT policy is configured (wq_sched_policy
+		 * FIFO/RR), run NAPI in a dedicated kthread and pin it RT so the
+		 * RX deliver leg is RT-serviced (pcap-equivalent). Baseline
+		 * (wq_sched_policy=0) leaves NAPI in ksoftirqd (CFS). The dummy
+		 * netdev has no sysfs 'threaded' knob, so it is set in-driver on
+		 * handle->napi_rx.thread (created by dev_set_threaded). */
+		if (handle->params.wq_sched_policy == SCHED_FIFO ||
+		    handle->params.wq_sched_policy == SCHED_RR) {
+			if (!dev_set_threaded(&handle->napi_dev, true) &&
+			    handle->napi_rx.thread) {
+				struct sched_attr attr = {
+					.sched_policy =
+						handle->params.wq_sched_policy,
+					.sched_nice = DEF_NICE,
+					.sched_priority =
+						(handle->params.wq_sched_prio >=
+							 1 &&
+						 handle->params.wq_sched_prio <=
+							 99) ?
+							handle->params
+								.wq_sched_prio :
+							45,
+				};
+				PRINTM(MMSG,
+				       "Direction B: threaded NAPI RT policy %d prio %d\n",
+				       attr.sched_policy, attr.sched_priority);
+				sched_setattr_nocheck(handle->napi_rx.thread,
+						      &attr);
+			}
+		}
+#endif
 	}
 
 	if (moal_extflg_isset(handle, EXT_TX_WORK)) {
@@ -13617,6 +13682,16 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 #endif
 #endif
 		if (!handle->tx_workqueue) {
+			/* NAPI (and, under Direction B, its RT kthread) was set up
+			 * above. This goto jumps to err_kmalloc, which skips the
+			 * netif_napi_del under err_registerdev, so the kthread would
+			 * outlive the freed handle (UAF). Tear the napi down here;
+			 * netif_napi_del reaps the threaded-NAPI kthread. Guarded by
+			 * EXT_NAPI, which at this point implies the napi was added. */
+			if (moal_extflg_isset(handle, EXT_NAPI)) {
+				napi_disable(&handle->napi_rx);
+				netif_napi_del(&handle->napi_rx);
+			}
 			woal_terminate_workqueue(handle);
 			goto err_kmalloc;
 		}
