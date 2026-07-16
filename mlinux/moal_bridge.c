@@ -1112,10 +1112,14 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
 {
 	struct moal_bridge *br = READ_ONCE(moal_bridge_for_sysfs);
+	moal_handle *handle;
 	long w2p_n, p2w_n, w2p_avg, p2w_avg;
+	long rx_gap_n, rx_gap_avg;
+	long rx_pull_n, rx_pull_avg, tx_write_n, tx_write_avg;
 
 	if (!br)
 		return scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
+	handle = (moal_handle *)br->handle;
 
 	/* In-driver one-way dwell (producer entry -> dev_queue_xmit submit),
 	 * accumulated only while bridge_debug was on. avg = sum / cnt.
@@ -1131,10 +1135,31 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 	p2w_avg = p2w_n > 0 ?
 		atomic_long_read(&br->peer_to_wlan.dwell_sum_us) / p2w_n : 0;
 
+	/* RX deliver-leg queue->run gap (handle-level, accumulated only while
+	 * bridge_debug != 0). This is the moal-engine downstream jitter suspect;
+	 * the pull leg runs in the mmc threaded-IRQ at SCHED_FIFO and is not
+	 * measured here. gap_max is the headline number for leg attribution. */
+	rx_gap_n = handle ? atomic_long_read(&handle->rx_gap_cnt) : 0;
+	rx_gap_avg = rx_gap_n > 0 ?
+		atomic_long_read(&handle->rx_gap_sum_us) / rx_gap_n : 0;
+
+	/* SDIO bus legs: pull = woal_sdio_interrupt processing (RX read incl
+	 * host-claim wait); tx_write = one sdio_claim_host+writesb. A large max
+	 * here locates the RTT jitter the deliver leg (rx_gap) is not causing. */
+	rx_pull_n = handle ? atomic_long_read(&handle->rx_pull_cnt) : 0;
+	rx_pull_avg = rx_pull_n > 0 ?
+		atomic_long_read(&handle->rx_pull_sum_us) / rx_pull_n : 0;
+	tx_write_n = handle ? atomic_long_read(&handle->tx_write_cnt) : 0;
+	tx_write_avg = tx_write_n > 0 ?
+		atomic_long_read(&handle->tx_write_sum_us) / tx_write_n : 0;
+
 	return scnprintf(buf, PAGE_SIZE,
 			 "w2p fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d dwell_avg=%ldus dwell_max=%ldus n=%ld\n"
 			 "p2w fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d dwell_avg=%ldus dwell_max=%ldus n=%ld\n"
-			 "active=%d peer_released=%d\n",
+			 "active=%d peer_released=%d\n"
+			 "rx_deliver gap_avg=%ldus gap_max=%ldus n=%ld dur_max=%ldus\n"
+			 "rx_pull avg=%ldus max=%ldus n=%ld\n"
+			 "tx_write avg=%ldus max=%ldus n=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
 			 atomic_long_read(&br->wlan_to_peer.fwd_bytes),
 			 atomic_long_read(&br->wlan_to_peer.dropped),
@@ -1154,7 +1179,17 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->peer_to_wlan.dwell_max_us),
 			 p2w_n,
 			 atomic_read(&br->active),
-			 atomic_read(&br->peer_released));
+			 atomic_read(&br->peer_released),
+			 rx_gap_avg,
+			 handle ? atomic_long_read(&handle->rx_gap_max_us) : 0,
+			 rx_gap_n,
+			 handle ? atomic_long_read(&handle->rx_dur_max_us) : 0,
+			 rx_pull_avg,
+			 handle ? atomic_long_read(&handle->rx_pull_max_us) : 0,
+			 rx_pull_n,
+			 tx_write_avg,
+			 handle ? atomic_long_read(&handle->tx_write_max_us) : 0,
+			 tx_write_n);
 }
 
 static struct kobj_attribute stats_attr = __ATTR_RO(stats);

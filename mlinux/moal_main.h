@@ -3299,6 +3299,28 @@ struct _moal_handle {
 	wifi_timeval tx_time_end;
 	/** rx time, in usecs */
 	t_u64 rx_time;
+	/* RX deliver-leg latency instrumentation (gated by bridge_debug).
+	 * Attributes the moal-engine downstream jitter to the deliver leg
+	 * (rx_work queue->run gap) vs the pull leg (already SCHED_FIFO in the
+	 * mmc threaded-IRQ). Exposed read-only via /sys/kernel/moal_bridge/stats.
+	 * ns field written with WRITE_ONCE at enqueue, read at worker entry;
+	 * counters mirror the bridge dwell pattern (atomic_long + lock-free max). */
+	t_u64 rx_enqueue_ns;         /**< ktime_get_ns() when rx_work made pending */
+	atomic_long_t rx_gap_cnt;    /**< # queue->run gap samples */
+	atomic_long_t rx_gap_sum_us; /**< sum of gap (us); avg = sum/cnt */
+	atomic_long_t rx_gap_max_us; /**< max queue->run gap (us) */
+	atomic_long_t rx_dur_max_us; /**< max mlan_rx_process duration (us) */
+	/* SDIO bus-leg instrumentation (bridge_debug gated). Pull = the whole
+	 * woal_sdio_interrupt pull processing (mlan_interrupt + mlan_main_process,
+	 * i.e. card_to_host incl sdio_claim_host wait). tx_write = one
+	 * woal_sdiommc_write_data_sync (sdio_claim_host + sdio_writesb). Locate
+	 * the jitter that the deliver leg (rx_gap) proved innocent of. */
+	atomic_long_t rx_pull_cnt;   /**< # pull samples */
+	atomic_long_t rx_pull_sum_us;/**< sum pull (us); avg = sum/cnt */
+	atomic_long_t rx_pull_max_us;/**< max woal_sdio_interrupt pull (us) */
+	atomic_long_t tx_write_cnt;  /**< # sdio write samples */
+	atomic_long_t tx_write_sum_us;/**< sum sdio write (us) */
+	atomic_long_t tx_write_max_us;/**< max sdio write (us) */
 	/** scan time, in usecs */
 	t_u64 scan_time;
 	/** systime when scan cmd response return success */

@@ -45,6 +45,9 @@ Change log:
 #endif
 #include <asm/div64.h>
 
+/** bridge_debug (moal_init.c): gates the RX deliver-leg enqueue timestamp. */
+extern int bridge_debug;
+
 #if defined(PCIE) || defined(SDIO)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 70)
 #ifdef IMX_SUPPORT
@@ -2874,7 +2877,15 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 	case MLAN_EVENT_ID_DRV_DEFER_RX_WORK:
 		status = MLAN_STATUS_SUCCESS;
 		if (moal_extflg_isset(handle, EXT_NAPI)) {
-			napi_schedule(&handle->napi_rx);
+			/* Capture NAPI deliver-leg enqueue ts on the
+			 * not-scheduled->scheduled transition (bridge_debug
+			 * gated); woal_netdev_poll_rx reads it for the gap. */
+			if (napi_schedule_prep(&handle->napi_rx)) {
+				if (READ_ONCE(bridge_debug))
+					WRITE_ONCE(handle->rx_enqueue_ns,
+						   ktime_get_ns());
+				__napi_schedule(&handle->napi_rx);
+			}
 			break;
 		}
 #ifdef PCIE
@@ -2889,7 +2900,9 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 		}
 #endif
 #if defined(USB) || defined(SDIO)
-		queue_work(handle->rx_workqueue, &handle->rx_work);
+		if (queue_work(handle->rx_workqueue, &handle->rx_work) &&
+		    READ_ONCE(bridge_debug))
+			WRITE_ONCE(handle->rx_enqueue_ns, ktime_get_ns());
 #endif
 		break;
 	default:
