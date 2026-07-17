@@ -744,6 +744,26 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 	if (eth->h_proto == htons(ETH_P_ARP) &&
 	    is_broadcast_ether_addr(eth->h_dest) &&
 	    moal_bridge_dev_ready(br->peer_dev)) {
+		/* 플릿 안전 경고(부팅당 1회): hairpin 활성인데 wlan iface 의
+		 * 실효 arp_ignore(max(all,dev))가 0 이면 wlan-package 의
+		 * weak-host 봉인이 미적용된 상태 — 무선발 who-has <eth0-IP> 에
+		 * 클론 MAC 으로 응답해 플릿(공통 관리IP+플랫 L2)에서 중복
+		 * IP/DAI 제재를 부를 수 있다. 배포 커플링을 운영자가 인지하도록
+		 * dmesg 로 알린다 (PR #10 리뷰 HIGH). ARP tee 경로에서만 검사
+		 * — BD→peer 통신은 ARP 로 시작하므로 조기 발화하며 데이터
+		 * 핫패스(A) 비용은 0. */
+		{
+			struct in_device *in_dev;
+
+			rcu_read_lock();
+			in_dev = __in_dev_get_rcu(br->wlan_dev);
+			if (in_dev && !IN_DEV_ARP_IGNORE(in_dev) &&
+			    !atomic_cmpxchg(&br->hairpin_seal_warned, 0, 1))
+				PRINTM(MMSG,
+				       "bridge: hairpin active but %s effective arp_ignore==0 — weak-host ARP open (fleet DAI risk); apply wlan-package per-interface seal\n",
+				       br->wlan_dev->name);
+			rcu_read_unlock();
+		}
 		/* skb_copy(사유 데이터 복사): clone 은 데이터를 공유하므로 아래
 		 * src MAC 재작성이 공중으로 나갈 원본까지 오염시킨다. ARP 는
 		 * 수십 바이트라 copy 비용 무시 가능. */
@@ -896,8 +916,10 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 				skb->pkt_type = PACKET_HOST;
 				atomic_long_inc(&br->hairpin_arp_inject);
 				BR_DBG("p2w hairpin ARP-REPLY inject\n");
-				netif_rx(skb);
+				/* 소유권 이전(netif_rx) 전에 caller 포인터 무효화
+				 * — 커널 레퍼런스(vlan/bridge) 관례 */
 				*pskb = NULL;
+				netif_rx(skb);
 				return RX_HANDLER_CONSUMED;
 			}
 			/* hairpin off/태그드 REPLY: 기존 공중 hairpin 경로로

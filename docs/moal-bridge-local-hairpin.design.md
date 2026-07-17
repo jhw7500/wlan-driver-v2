@@ -70,6 +70,8 @@ skb->dev = br->wlan_dev; skb->pkt_type = PACKET_HOST; netif_rx(skb); RX_HANDLER_
 
 ## 4. 단계별 계획
 
+> **(완료 표기)** 아래 전 Phase 는 2026-07-17 수행 완료 — 실측 결과·판정은 §9(검증 결과)·§10(봉인 매트릭스)이 정본이다. 체크박스는 계획 시점 기록으로 보존한다.
+
 ### Phase 0 — 계약 검증 (0.5d)
 - [ ] TX hook 위치 확정: `woal_hard_start_xmit` 초입에서 eth 헤더 접근 안전성(리니어 여부), NETDEV_TX_OK 반환 계약, mon 경로(:5253)와의 무간섭.
 - [ ] skb->cb 소유권: TX 경유 skb에 `moal_bridge_stamp_enq()`(cb 사용) 안전한지 — qdisc 이전이므로 안전 추정, 확인.

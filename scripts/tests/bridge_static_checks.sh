@@ -405,4 +405,17 @@ if [ -n "$PLAIN_PEER_RELEASED" ]; then
   exit 1
 fi
 
-printf 'PASS: keepalive, bounded queues, worker accounting, F1 RCU drain ordering + atomic peer_released enforced\n'
+# --- local hairpin (PR #10) 핵심 경로 스모크 단언 ---
+grep -q '^int moal_bridge_tx_hairpin' "$BRIDGE_C" || \
+  fail "hairpin: tx divert 함수 누락"
+grep -q 'hairpin_tx_fwd' "$BRIDGE_C" && grep -q 'hairpin_arp_tee' "$BRIDGE_C" && \
+  grep -q 'hairpin_arp_inject' "$BRIDGE_C" || \
+  fail "hairpin: 카운터 3종 누락"
+grep -q 'READ_ONCE(bridge_local_hairpin)' "$BRIDGE_C" || \
+  fail "hairpin: READ_ONCE 핫패스 게이트 누락"
+grep -q 'ether_addr_copy(((struct ethhdr \*)skb2->data)->h_source' "$BRIDGE_C" || \
+  fail "hairpin: tee src-MAC 재작성 누락 (anti-spoof 가드)"
+P2W_PT_INJECT="$(printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | grep -c 'netif_rx(skb)')"
+[ "${P2W_PT_INJECT:-0}" -ge 1 ] || fail "hairpin: pt_func REPLY inject 분기 누락"
+
+printf 'PASS: keepalive, bounded queues, worker accounting, F1 RCU drain ordering + atomic peer_released + hairpin smoke enforced\n'

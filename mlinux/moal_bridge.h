@@ -62,6 +62,9 @@ struct moal_bridge {
 	atomic_long_t hairpin_tx_fwd;     /**< TX unicast(dst==클론MAC) divert */
 	atomic_long_t hairpin_arp_tee;    /**< TX broadcast ARP clone tee */
 	atomic_long_t hairpin_arp_inject; /**< peer ARP REPLY → wlan RX 주입 */
+	/** 플릿 안전 경고 1회 발화 플래그: hairpin 활성인데 wlan iface 실효
+	 *  arp_ignore==0 (wlan-package weak-host 봉인 미적용) 감지용 */
+	atomic_t hairpin_seal_warned;
 
 	/** w2p (WLAN→ETH) */
 	struct sk_buff_head w2p_queue;
