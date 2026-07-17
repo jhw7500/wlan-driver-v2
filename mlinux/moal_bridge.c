@@ -825,9 +825,9 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	       MAC2STR(eth->h_source), MAC2STR(eth->h_dest),
 	       ntohs(skb->protocol), skb->len);
 
-	/* media_connected check (READ_ONCE — disconnect race 방어) */
-	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected))
-		return RX_HANDLER_PASS;
+	/* NOTE: media_connected 게이트는 아래 "공중 포워딩" 직전으로 이동됨
+	 * (G2 게이트 재배치) — SELF-ARP/SELF-IP 정정·inject 는 로컬 배달이라
+	 * 무선 상태와 무관하게 동작해야 한다. */
 
 	/* EAPOL: never forward. D8: VLAN-aware to match rx_fast(D7) policy —
 	 * vlan_get_protocol unwraps outer 802.1Q/AD tag (hwaccel or in-band)
@@ -965,6 +965,15 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 		}
 	}
 
+	/* media_connected 게이트 (READ_ONCE — disconnect race 방어): 본래
+	 * 목적인 "공중 포워딩"(아래 consume/clone→p2w 큐) 직전에 배치 (G2
+	 * 게이트 재배치, PR #10 후속). 위의 SELF-ARP/SELF-IP 정정과 REPLY
+	 * inject 는 로컬 배달·주입이라 무선 down 중에도 동작해야 유선→BD
+	 * 제어 채널이 생존한다 (dst=클론MAC 프레임의 OTHERHOST 폐기 방지 —
+	 * DFK 무선단절 시 유선 VHL 요구). */
+	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected))
+		return RX_HANDLER_PASS;
+
 	/* 위 SELF 검사들의 pskb_may_pull 이 head 를 재할당했을 수 있으므로
 	 * eth 포인터 재취득 (mac_header offset 은 pull 시에도 유지됨) */
 	eth = eth_hdr(skb);
@@ -1064,9 +1073,9 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
-	/* media_connected + EAPOL check (READ_ONCE — disconnect race 방어) */
-	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected) ||
-	    skb->protocol == htons(ETH_P_PAE)) {
+	/* EAPOL check — media_connected 게이트는 공중 포워딩 직전으로 이동
+	 * (G2 게이트 재배치, rx_handler 와 동일 근거) */
+	if (skb->protocol == htons(ETH_P_PAE)) {
 		kfree_skb(skb);
 		return 0;
 	}
@@ -1121,6 +1130,13 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 			netif_rx(skb);
 			return 0;
 		}
+	}
+
+	/* media_connected 게이트: 공중 포워딩 직전 (G2 게이트 재배치 —
+	 * 위 SELF-ARP suppress·inject 는 무선 상태와 무관하게 동작) */
+	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected)) {
+		kfree_skb(skb);
+		return 0;
 	}
 
 	if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {

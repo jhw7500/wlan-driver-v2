@@ -203,6 +203,26 @@ WARN 규칙 추가.
 neigh 학습"을 확인할 것. 실패 시 대비 설계: tee 시 ethernet src만 MAC_E로 재작성
 (ARP sha=MAC_C 유지 → 응답은 dst=MAC_C로 돌아와 inject 체인 보존).
 
-## 11. 공수 요약
+## 11. G2 후속 — media 게이트 재배치 + eth_fallback(B-2) 정식화 (2026-07-17)
+
+리뷰 G2(무선 단절 중 유선 VHL 제어 불능, 3중 종속) 대응:
+
+- **게이트 재배치(드라이버)**: p2w rx_handler·pt 핸들러의 media_connected 게이트를 본래
+  목적인 "공중 포워딩" 직전으로 이동 — SELF-ARP/SELF-IP 정정과 REPLY inject 는 로컬
+  배달이라 무선 down 중에도 동작한다. **A/B 실측**: 무선down + OHT neigh=클론MAC 강제
+  인바운드가 구 게이트 100% loss ↔ 재배치 후 5/5(0.44ms). G2-① 종속 제거.
+- **eth_fallback(B-2) 정식화(wlan-package)**: `wbridge.eth_fallback.enabled` —
+  wifi_init.sh 가 mlan0 IP 를 eth0 에 /32 미러 + 공유 서브넷 fallback route(metric 200)
+  + `mlan0.ignore_routes_with_linkdown=1` 로 부여. hairpin/dual 프로파일 기본 포함.
+  절체 트리거 2계층: ⓐ networkd 의 주소/라우트 철회(기본 구성) ⓑ S1(KeepConfiguration/
+  ConfigureWithoutCarrier — 철회 없음) 구성에서는 linkdown-skip 이 linkdown 라우트를
+  FIB 에서 제외해 동일 절체. **S1 병용 상충은 linkdown-skip 포함으로 해소**(S1 적용
+  상태에서 절체 0.41ms 실기 확인). G2-②③ 우회/해소.
+- 사이클 실측: 평시 hairpin 경유(카운터 증가) → 무선down 절체(eth0 직결, 카운터 불변)
+  → 복귀 자동 환원(카운터 재개). 부팅 영속(재부팅 후 route/32/linkdown-skip 자동 부여) 확인.
+- 잔여: 순수 mlan0 TX 생존(S3 wire-alive)은 불채택 — B-2 가 동일 목표를 설정 레벨에서
+  달성. eth0-IP 별도 채널(방법 A)은 OPC 의 VHL IP 체계 질의 결과에 따라 선택지로 유지.
+
+## 12. 공수 요약
 
 계획 3.5~4d → **실제 Phase 0~2 약 0.5d에 완료** (실기 접근·기존 ssh 검증 방법론 재사용 효과). V4/V5는 진행 중.
