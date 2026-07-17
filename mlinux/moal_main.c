@@ -8899,7 +8899,7 @@ netdev_tx_t woal_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		rcu_read_lock();
 		br = rcu_dereference(priv->phandle->bridge);
-		if (unlikely(br) && atomic_read(&br->active) &&
+		if (likely(br) && atomic_read(&br->active) &&
 		    dev == br->wlan_dev)
 			consumed = moal_bridge_tx_hairpin(br, skb);
 		rcu_read_unlock();

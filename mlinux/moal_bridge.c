@@ -702,8 +702,9 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 {
 	struct ethhdr *eth;
 
-	/* 스택발 프레임은 ETH 헤더가 항상 선형이지만 방어적으로 확인 */
-	if (unlikely(skb_headlen(skb) < ETH_HLEN))
+	/* 스택발 프레임은 ETH 헤더가 항상 선형이지만 방어적으로 보장
+	 * (pskb_may_pull 은 필요 시 head 를 선형화 — headlen 비교보다 안전) */
+	if (unlikely(!pskb_may_pull(skb, ETH_HLEN)))
 		return 0;
 	eth = (struct ethhdr *)skb->data;
 
@@ -743,7 +744,10 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 	if (eth->h_proto == htons(ETH_P_ARP) &&
 	    is_broadcast_ether_addr(eth->h_dest) &&
 	    moal_bridge_dev_ready(br->peer_dev)) {
-		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
+		/* skb_copy(사유 데이터 복사): clone 은 데이터를 공유하므로 아래
+		 * src MAC 재작성이 공중으로 나갈 원본까지 오염시킨다. ARP 는
+		 * 수십 바이트라 copy 비용 무시 가능. */
+		struct sk_buff *skb2 = skb_copy(skb, GFP_ATOMIC);
 
 		if (!skb2) {
 			atomic_long_inc(&br->wlan_to_peer.oom_drops);
@@ -755,6 +759,13 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 			dev_kfree_skb_any(skb2);
 			return 0;
 		}
+		/* ethernet src 를 peer(eth0) MAC 으로 재작성: 클론 MAC 그대로면
+		 * peer 입장에서 "src==자기 MAC" 프레임이라 스택/스위치
+		 * anti-spoof drop 위험 (PR #10 리뷰 HIGH — Design §10 대비
+		 * 설계의 선반영). ARP payload 의 SHA 는 클론 MAC 유지 — peer
+		 * 응답이 dst=클론 MAC 으로 돌아와야 P2W REPLY inject 가 동작. */
+		ether_addr_copy(((struct ethhdr *)skb2->data)->h_source,
+				br->peer_dev->dev_addr);
 		skb2->dev = br->peer_dev;
 		moal_bridge_stamp_enq(skb2);
 		atomic_long_inc(&br->hairpin_arp_tee);
@@ -878,6 +889,7 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			 * 재귀 없음, wlan_dev 에는 rx_handler 미등록.
 			 * untagged 만 — 태그드는 기존 공중 경로 유지. */
 			if (READ_ONCE(bridge_local_hairpin) &&
+			    /* untagged only — tagged 는 공중 경로 fallback */
 			    skb->protocol == htons(ETH_P_ARP) &&
 			    arp->ar_op == htons(ARPOP_REPLY)) {
 				skb->dev = br->wlan_dev;
