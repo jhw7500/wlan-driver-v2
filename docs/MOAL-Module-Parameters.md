@@ -222,8 +222,14 @@
 | ✅ `bridge_debug` | int | 0644 | 0 | ✓(sysfs) | ✗ | 35ec541 |
 | ✅ `bridge_keepalive_ms` | int | 0644 | 1ms | ✓ | ✓(`_present`) | fe46fea |
 | ✅ `bridge_consume_link_local` | int | 0644 | 0 | ✓ | ✗ | 69d1b43 |
+| ✅ `bridge_local_hairpin` | int | 0644 | 0(off) | ✓(sysfs) | ✗ | 81a5805 |
 | ✏️ `net_rx` | int | 0 | 1 | ✗ | ✓ | 의미확장 5835c85 |
 | ✅ `mgmt_hex_dump` | int | 0 | 0(off) | ✗ | ✓(per-adapter) | 8d7c2d1 |
+
+`bridge_local_hairpin`(로컬 hairpin): 로컬발 TX(dst==클론 MAC) 유선 divert + ARP tee/inject로
+BD↔유선peer IP 통신을 peer IP 인지(peer_route/ip_discovery) 없이 성립시킴 — AP intra-BSS
+무반사 환경의 유일 해법. wifi_init.sh가 JSON `wbridge.moal.local_hairpin`을 parmtype 게이트
+후 insmod 인자로 전달. 설계·실측: `docs/moal-bridge-local-hairpin.design.md`.
 
 ### 11.1 `bridge_mode` — int, 기본 0(off), perm 0
 커널 내 L2 브릿지(WLAN ↔ eth 직접 포워딩) 마스터 스위치. userspace pcap-wbridge 대체.
