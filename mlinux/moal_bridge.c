@@ -1083,7 +1083,12 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 	/* media down 비ARP 조기 드롭 (PR #11 리뷰): 아래 media 게이트에서
 	 * 어차피 폐기될 트래픽이 skb_share_check 의 clone 할당/해제를 타지
 	 * 않도록 선별. 무선 down 중 media 무관 처리가 필요한 것은 ARP
-	 * (SELF-ARP suppress / REPLY inject)뿐이다. */
+	 * (SELF-ARP suppress / REPLY inject)뿐이다.
+	 *
+	 * rx_handler 와 달리 SELF-IP 를 제외하는 이유: pt 핸들러는 스택
+	 * 원본과 별개의 카피(deliver_skb)만 받으므로 여기서의 kfree 는 로컬
+	 * 배달과 무관하다 — 원본은 스택이 독립 배달하며, OTHERHOST 정정
+	 * 불가는 pt 캡처 모드의 구조적 한계(Design §11 보증 범위 참조). */
 	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected) &&
 	    vlan_get_protocol(skb) != htons(ETH_P_ARP)) {
 		kfree_skb(skb);
