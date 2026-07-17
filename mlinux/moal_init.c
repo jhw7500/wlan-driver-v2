@@ -94,6 +94,10 @@ int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
 int bridge_debug;
+/** Local hairpin: 로컬발 TX(dst==클론 MAC)를 공중 대신 유선 peer 로 divert
+ *  + ARP tee/inject. 유선 peer IP 인지(peer_route/ip_discovery) 불요.
+ *  기본 0. runtime 변경 가능 (0644). */
+int bridge_local_hairpin;
 int bridge_keepalive_ms = 1;
 /** bridge_keepalive_idle_ms: adaptive keepalive idle cutoff (ms).
  *  0 = legacy free-running timer (default), >0 = self-stop after idle. */
@@ -3204,6 +3208,8 @@ module_param(bridge_keepalive_idle_ms, int, 0444);
 MODULE_PARM_DESC(bridge_keepalive_idle_ms, "Bridge keepalive idle cutoff ms (applied at load; reload to change): 0=free-running(default), >0=adaptive (timer armed by traffic, self-stops after this idle → zero wakeups when idle).");
 module_param(bridge_consume_link_local, int, 0644);
 MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
+module_param(bridge_local_hairpin, int, 0644);
+MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable)");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,

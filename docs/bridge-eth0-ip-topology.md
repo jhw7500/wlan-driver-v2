@@ -57,6 +57,12 @@ moal 가드는 wbridge filter.c 의미론을 의도적으로 이식한 것 (Desi
    안전하나 서로 다른 IP를 보호할 수 있음.
 4. **tpacket 엔진은 지원 범위 밖**: 필터 미통합 + 런치 플래그 없음. 투트랙은
    pcap+moal에 한정한다.
+5. **로컬 hairpin(`bridge_local_hairpin`)은 moal 전용**: 로컬발 TX(dst==클론 MAC)
+   divert + ARP tee/inject로 BD↔유선peer 통신을 peer IP 인지(peer_route/
+   ip_discovery) 없이 성립시킨다 (2026-07-17 실기 검증, AP intra-BSS 무반사
+   환경의 유일 해법). pcap은 tap이라 TX 가로채기가 구조적으로 불가 — pcap
+   트랙에서 BD↔유선peer가 필요하면 peer_route+ip_discovery를 유지해야 한다.
+   상세: `docs/moal-bridge-local-hairpin.design.md`.
 
 ## 5. 지원 범위 명세
 

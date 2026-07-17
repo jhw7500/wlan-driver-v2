@@ -675,6 +675,97 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 }
 
 /*
+ * ---------- Local hairpin: WLAN TX-side divert (bridge_local_hairpin=1) ----------
+ *
+ * 목적: BD(박스)↔유선 peer IP 통신을 peer IP 인지(peer_route host route /
+ * ip_discovery) 없이 성립시킨다. 2026-07-16 실기 확정 근거:
+ *   - host route 부재 시 BD발 응답은 main 라우트(wlan)로 향해 neigh 미해소로
+ *     전멸 (iif rule/table 100 은 로컬 생성 응답을 조향하지 않음)
+ *   - 현장 AP 는 intra-BSS 반사를 안 함 → 공중 hairpin 경로 부재
+ *
+ * 판정 안전성: MAC-clone 제약(수신 방향 MAC 판정 불가)은 수신 이야기고,
+ * "로컬발 TX 에서 dst MAC == 자기(클론) MAC 인 유니캐스트"는 정의상 유선
+ * peer 행이다 — 무선망에 이 MAC 을 가진 다른 장치가 없고, AP 가 할 수 있는
+ * 것도 되반사뿐이다. 송신 방향의 이 지점만은 MAC 판정이 안전하다.
+ */
+
+/**
+ * moal_bridge_tx_hairpin - 로컬발 TX 프레임을 유선 peer 로 로컬 hairpin
+ *
+ * woal_hard_start_xmit 초입에서 호출. caller 가 rcu_read_lock 보유,
+ * bridge active + dev == wlan_dev 확인 후 진입.
+ *
+ * @return 1 = consumed (w2p divert 또는 정책 drop — caller 는 TX 완료 처리)
+ *         0 = 통상 TX 계속 (ARP tee 는 clone 후 원본을 공중으로 보냄)
+ */
+int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
+{
+	struct ethhdr *eth;
+
+	/* 스택발 프레임은 ETH 헤더가 항상 선형이지만 방어적으로 확인 */
+	if (unlikely(skb_headlen(skb) < ETH_HLEN))
+		return 0;
+	eth = (struct ethhdr *)skb->data;
+
+	/* A. 유니캐스트 divert: dst == 자기(클론) MAC → 공중 대신 w2p.
+	 * 클론 MAC 은 br 캐시가 아닌 현재 dev_addr 로 비교 (재클론 대응).
+	 * 큐 계약은 rx_fast consume 경로와 동일: skb->dev=peer_dev,
+	 * data=ETH 헤더 상태로 인큐 → w2p kthread 가 dev_queue_xmit.
+	 * GSO/CHECKSUM_PARTIAL 은 peer 쪽 validate_xmit_skb 가 처리. */
+	if (!is_multicast_ether_addr(eth->h_dest)) {
+		if (!ether_addr_equal(eth->h_dest, br->wlan_dev->dev_addr))
+			return 0;
+		if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
+			atomic_long_inc(&br->wlan_to_peer.dropped);
+			dev_kfree_skb_any(skb);
+			return 1;
+		}
+		if (atomic_inc_return(&br->w2p_qlen) > MOAL_BR_W2P_QUEUE_MAX) {
+			atomic_dec(&br->w2p_qlen);
+			atomic_long_inc(&br->wlan_to_peer.dropped);
+			dev_kfree_skb_any(skb);
+			return 1;
+		}
+		skb->dev = br->peer_dev;
+		moal_bridge_stamp_enq(skb);
+		atomic_long_inc(&br->hairpin_tx_fwd);
+		BR_DBG("tx hairpin divert len=%d\n", skb->len);
+		skb_queue_tail(&br->w2p_queue, skb);
+		wake_up(&br->w2p_wait);
+		return 1;
+	}
+
+	/* B. 로컬발 broadcast ARP tee: 박스의 who-has 가 유선 peer 에 직접
+	 * 도달하도록 clone 을 w2p 로 보내고, 원본은 공중으로 계속(무선 피어
+	 * ARP 유지). 대상 IP 로 유선/무선을 구분하지 않는 것이 의도 — peer
+	 * IP 무지가 이 기능의 전제이고, 무관한 who-has 는 peer 가 무시한다
+	 * (발생률 수 pps 미만). REPLY 유니캐스트는 A 가 커버한다. */
+	if (eth->h_proto == htons(ETH_P_ARP) &&
+	    is_broadcast_ether_addr(eth->h_dest) &&
+	    moal_bridge_dev_ready(br->peer_dev)) {
+		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
+
+		if (!skb2) {
+			atomic_long_inc(&br->wlan_to_peer.oom_drops);
+			return 0;
+		}
+		if (atomic_inc_return(&br->w2p_qlen) > MOAL_BR_W2P_QUEUE_MAX) {
+			atomic_dec(&br->w2p_qlen);
+			atomic_long_inc(&br->wlan_to_peer.dropped);
+			dev_kfree_skb_any(skb2);
+			return 0;
+		}
+		skb2->dev = br->peer_dev;
+		moal_bridge_stamp_enq(skb2);
+		atomic_long_inc(&br->hairpin_arp_tee);
+		BR_DBG("tx hairpin ARP tee\n");
+		skb_queue_tail(&br->w2p_queue, skb2);
+		wake_up(&br->w2p_wait);
+	}
+	return 0;
+}
+
+/*
  * ---------- ETH → WLAN Forwarding (rx_handler) ----------
  */
 
@@ -763,17 +854,42 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			(skb->protocol == htons(ETH_P_8021Q)) ? VLAN_HLEN : 0;
 
 		/* arp_is_for_self == true 면 arphdr 까지 pull 보장됨 */
-		if (moal_bridge_arp_is_for_self(br, skb, arp_off) &&
-		    ((struct arphdr *)(skb->data + arp_off))->ar_op ==
-			    htons(ARPOP_REQUEST)) {
-			/* unicast re-ARP 가 클론 MAC 앞으로 오면 eth0 기준
-			 * OTHERHOST 마킹 상태 — arp_rcv 는 OTHERHOST 를
-			 * 폐기하므로 HOST 로 정정 (broadcast ARP 는
-			 * PACKET_BROADCAST 그대로 둠) */
-			if (skb->pkt_type == PACKET_OTHERHOST)
+		if (moal_bridge_arp_is_for_self(br, skb, arp_off)) {
+			struct arphdr *arp =
+				(struct arphdr *)(skb->data + arp_off);
+
+			if (arp->ar_op == htons(ARPOP_REQUEST)) {
+				/* unicast re-ARP 가 클론 MAC 앞으로 오면 eth0
+				 * 기준 OTHERHOST 마킹 상태 — arp_rcv 는
+				 * OTHERHOST 를 폐기하므로 HOST 로 정정
+				 * (broadcast ARP 는 PACKET_BROADCAST 그대로 둠) */
+				if (skb->pkt_type == PACKET_OTHERHOST)
+					skb->pkt_type = PACKET_HOST;
+				BR_DBG("p2w SELF-ARP-REQ pass (no air fwd)\n");
+				return RX_HANDLER_PASS;
+			}
+
+			/* C. local hairpin: REPLY(tip==자기 IP)를 공중 hairpin
+			 * (위 REPLY fall-through 주석) 대신 wlan RX 로 직접
+			 * 주입 → arp_process 가 (sip, dev=wlan) pending neigh
+			 * 를 AP 반사 없이 해소. 주입 skb 는 수신 프레임 형태
+			 * (data=L3, mac_header/protocol 유지) 그대로이므로
+			 * dev/pkt_type 만 바꾼다. netif_rx 는 backlog 경유라
+			 * 재귀 없음, wlan_dev 에는 rx_handler 미등록.
+			 * untagged 만 — 태그드는 기존 공중 경로 유지. */
+			if (READ_ONCE(bridge_local_hairpin) &&
+			    skb->protocol == htons(ETH_P_ARP) &&
+			    arp->ar_op == htons(ARPOP_REPLY)) {
+				skb->dev = br->wlan_dev;
 				skb->pkt_type = PACKET_HOST;
-			BR_DBG("p2w SELF-ARP-REQ pass (no air fwd)\n");
-			return RX_HANDLER_PASS;
+				atomic_long_inc(&br->hairpin_arp_inject);
+				BR_DBG("p2w hairpin ARP-REPLY inject\n");
+				netif_rx(skb);
+				*pskb = NULL;
+				return RX_HANDLER_CONSUMED;
+			}
+			/* hairpin off/태그드 REPLY: 기존 공중 hairpin 경로로
+			 * fall-through (비자기 유니캐스트 consume) */
 		}
 	}
 
@@ -950,6 +1066,24 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 			    htons(ARPOP_REQUEST)) {
 			BR_DBG("p2w(pt) SELF-ARP-REQ no air fwd\n");
 			kfree_skb(skb);
+			return 0;
+		}
+	}
+
+	/* C(pt). local hairpin: OTHERHOST unicast ARP REPLY(tip==자기 IP)는
+	 * 스택 원본을 arp_rcv 가 처리 없이 소비하므로(위 주석), 공중 hairpin
+	 * 대신 이 copy 를 wlan RX 로 주입해 pending neigh 를 AP 반사 없이
+	 * 해소한다. rx_handler 모드의 inject 분기와 동등. untagged 만. */
+	if (READ_ONCE(bridge_local_hairpin) &&
+	    skb->pkt_type == PACKET_OTHERHOST &&
+	    skb->protocol == htons(ETH_P_ARP)) {
+		if (moal_bridge_arp_is_for_self(br, skb, 0) &&
+		    ((struct arphdr *)skb->data)->ar_op == htons(ARPOP_REPLY)) {
+			skb->dev = br->wlan_dev;
+			skb->pkt_type = PACKET_HOST;
+			atomic_long_inc(&br->hairpin_arp_inject);
+			BR_DBG("p2w(pt) hairpin ARP-REPLY inject\n");
+			netif_rx(skb);
 			return 0;
 		}
 	}
@@ -1161,7 +1295,8 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 "active=%d peer_released=%d\n"
 			 "rx_deliver gap_avg=%ldus gap_max=%ldus n=%ld dur_max=%ldus\n"
 			 "rx_pull avg=%ldus max=%ldus n=%ld\n"
-			 "tx_write avg=%ldus max=%ldus n=%ld\n",
+			 "tx_write avg=%ldus max=%ldus n=%ld\n"
+			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
 			 atomic_long_read(&br->wlan_to_peer.fwd_bytes),
 			 atomic_long_read(&br->wlan_to_peer.dropped),
@@ -1191,7 +1326,11 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 rx_pull_n,
 			 tx_write_avg,
 			 handle ? atomic_long_read(&handle->tx_write_max_us) : 0,
-			 tx_write_n);
+			 tx_write_n,
+			 READ_ONCE(bridge_local_hairpin),
+			 atomic_long_read(&br->hairpin_tx_fwd),
+			 atomic_long_read(&br->hairpin_arp_tee),
+			 atomic_long_read(&br->hairpin_arp_inject));
 }
 
 static struct kobj_attribute stats_attr = __ATTR_RO(stats);
@@ -1513,6 +1652,10 @@ void moal_bridge_deinit(void *phandle)
 	       atomic_long_read(&br->peer_to_wlan.dropped),
 	       atomic_long_read(&br->peer_to_wlan.errors),
 	       atomic_long_read(&br->peer_to_wlan.oom_drops));
+	PRINTM(MMSG, "bridge: hairpin tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n",
+	       atomic_long_read(&br->hairpin_tx_fwd),
+	       atomic_long_read(&br->hairpin_arp_tee),
+	       atomic_long_read(&br->hairpin_arp_inject));
 
 	/* 8. peer 참조 반환 + 메모리 해제. */
 	if (!atomic_read(&br->peer_released))

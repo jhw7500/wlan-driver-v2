@@ -57,6 +57,12 @@ struct moal_bridge {
 	struct moal_bridge_stats wlan_to_peer;  /**< WLAN→ETH */
 	struct moal_bridge_stats peer_to_wlan;  /**< ETH→WLAN */
 
+	/** Local hairpin counters (bridge_local_hairpin=1).
+	 *  drop/oom 은 w2p 큐를 타므로 wlan_to_peer 카운터에 합산된다. */
+	atomic_long_t hairpin_tx_fwd;     /**< TX unicast(dst==클론MAC) divert */
+	atomic_long_t hairpin_arp_tee;    /**< TX broadcast ARP clone tee */
+	atomic_long_t hairpin_arp_inject; /**< peer ARP REPLY → wlan RX 주입 */
+
 	/** w2p (WLAN→ETH) */
 	struct sk_buff_head w2p_queue;
 	atomic_t w2p_qlen;             /**< hard cap counter for w2p_queue */
@@ -105,5 +111,11 @@ struct moal_bridge {
 int moal_bridge_init(void *handle, const char *peer_name, int wlan_bss_idx);
 void moal_bridge_deinit(void *handle);
 int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv);
+int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb);
+
+/** bridge_local_hairpin: moal_init.c module param (0644, runtime 변경 가능).
+ *  1 이면 로컬발 TX(dst==클론 MAC) divert + ARP tee/inject — 유선 peer IP
+ *  인지(peer_route/ip_discovery) 없이 BD↔peer 통신 성립. 기본 0. */
+extern int bridge_local_hairpin;
 
 #endif /* _MOAL_BRIDGE_H_ */

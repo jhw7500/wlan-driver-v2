@@ -46,7 +46,9 @@ printf '%s\n' "$W2P_FAST_BLOCK" | \
   grep -Eq 'iph = \(struct iphdr \*\)\(skb->data \+ l3_off\);|iph = \(struct iphdr \*\)\(skb->data \+ l3_off\)' || \
   fail "w2p fast path still uses fixed L3 offset"
 
-P2W_RX_HANDLER_BLOCK="$(grep -n -A200 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
+# 창 크기: local hairpin(SELF-ARP REPLY inject) 분기 추가로 함수가 길어져
+# 200 → 260 확장 (docstring 773 → clone path 978 = 205줄, 여유 포함)
+P2W_RX_HANDLER_BLOCK="$(grep -n -A260 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
 printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
   grep -Eq 'struct sk_buff \*skb2\s*=\s*skb_clone\b' || \
   fail "p2w rx_handler clone path missing"
@@ -63,7 +65,8 @@ printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
   grep -Eq 'return\s+RX_HANDLER_PASS\s*;' || \
   fail "p2w rx_handler overflow return missing"
 
-P2W_PACKET_TYPE_BLOCK="$(grep -n -A160 -m1 'moal_bridge_peer_pt_func' "$BRIDGE_C")"
+# 창 크기: hairpin pt inject 분기(+20줄) 여유 포함 160 → 220
+P2W_PACKET_TYPE_BLOCK="$(grep -n -A220 -m1 'moal_bridge_peer_pt_func' "$BRIDGE_C")"
 printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
   grep -q 'atomic_inc_return(&br->p2w_qlen)' || \
   fail "p2w queue length guard missing (packet_type)"
