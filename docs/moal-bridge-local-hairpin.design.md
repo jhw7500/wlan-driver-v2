@@ -181,6 +181,20 @@ peer_route=on+ip_discovery=off 조합(arp_ignore=1을 부수효과로 빌리는 
 `wifi br status`에 실효 arp_ignore 표시 + "all=0 && iface=0"(구버전 wifi_init.sh 신호)
 WARN 규칙 추가.
 
+**봉인 검증 매트릭스 (2026-07-17 실측, 리뷰 제안 반영)**:
+
+| # | 검증 | 결과 |
+|---|---|---|
+| V-seal-1 (부정) | 무선측에서 who-has <eth0-IP> | ✅ 침묵(INCOMPLETE). 인과: mlan0.arp_ignore=0 재개방 시 클론 MAC 응답 재현 ↔ 재봉인 침묵 |
+| V-seal-2 (긍정) | 유선 peer에서 arping <eth0 자기IP> / <mlan0 IP(weak-host)> | ✅ 둘 다 eth0 MAC으로 2/2 응답 — 유선측 ARP 생존 |
+| V-seal-3 (교차) | mlan1 봉인 | ✅ sysctl 1/2 적용 확인 (mlan1 무선 활성 상태의 실전파 테스트는 mlan1 사용 시점에 수행) |
+| 내구성 | netdev 재생성 시 sysctl 소실 | ✅ **udev rule**(`99-wlan-arp-seal.rules`, mlan[0-9]* add 시 자동 재적용)로 이중화 — mlan0 uevent 재생으로 0/0→1/2 자동 복원 실증. 근거: `woal_post_reset`의 `!wifi_hal_flag` 분기가 remove/add interface(netdev 재생성)라 부팅 1회 적용만으로는 불충분 |
+| rp_filter | eth0 loose 프로비저닝 | ✅ wifi_init.sh 봉인 블록에 `eth0.rp_filter=2` 명시 고정 — 이미지 드리프트 차단 (hairpin 계열의 유선 인바운드 역경로 불일치 대응) |
+| V1~V3 무회귀 | 봉인+udev 배포 후 hairpin 3메커니즘 | ✅ OHT발신 4/4+TCP, BD발신 4/4, e2e 3/3, 카운터 정상 |
+
+기존 GUARD(mlan0-IP + peer_route=off + aia=true 금지 조합 경고)는 eth0측 문제라 봉인과
+무관하게 유효 — 유지.
+
 **잔여 게이트 (플릿 배포 전 필수)**: ARP tee 프레임은 OHT 입장에서 ethernet src ==
 자기 MAC이다. Linux(imx93)는 수용 확인했으나 **실 OHT(PLC/RTOS 스택·port-security
 스위치)의 anti-spoof drop 가능성은 미검증** — 실 장비에서 "tee 카운터 증가 ↔ OHT
