@@ -8888,6 +8888,24 @@ netdev_tx_t woal_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		priv->stats.tx_dropped++;
 		goto done;
 	}
+	/* L2 bridge local hairpin (bridge_local_hairpin=1): 로컬발 프레임 중
+	 * 유선 peer 행(dst==자기/클론 MAC 유니캐스트)을 공중 대신 w2p 큐로
+	 * divert, broadcast ARP 는 clone tee. peer IP 인지 없이 BD↔유선peer
+	 * 통신을 성립시킨다. moal_shim.c rx_fast 와 동일한 RCU 접근 패턴.
+	 * consumed=1 이면 skb 소유권이 bridge 로 넘어감 — 통상 TX 종료. */
+	if (READ_ONCE(bridge_local_hairpin)) {
+		struct moal_bridge *br;
+		int consumed = 0;
+
+		rcu_read_lock();
+		br = rcu_dereference(priv->phandle->bridge);
+		if (likely(br) && atomic_read(&br->active) &&
+		    dev == br->wlan_dev)
+			consumed = moal_bridge_tx_hairpin(br, skb);
+		rcu_read_unlock();
+		if (consumed)
+			goto done;
+	}
 	if (!priv->wdev->use_4addr &&
 	    moal_extflg_isset(priv->phandle, EXT_TX_WORK) &&
 	    (skb->protocol != htons(NXP_ETH_P_EAPOL))) {
