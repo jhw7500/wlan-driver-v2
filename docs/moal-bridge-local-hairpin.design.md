@@ -158,6 +158,35 @@ V4 관찰: peer_route=off에선 OHT의 박스 neigh가 MAC_C로 정착할 수 �
 정적 검사 게이트: 함수 성장으로 rx_handler(-A200)/pt(-A160) 창 초과 → 260/220으로 확장 (`scripts/tests/bridge_static_checks.sh`).
 wlan-package 플러밍: `wbridge.moal.local_hairpin` JSON 키 + wifi_init.sh parmtype 게이트 추가 (템플릿 문서화 포함).
 
-## 10. 공수 요약
+## 10. 플릿(DFK) 리스크와 근본해소 — weak-host ARP 봉인 (2026-07-17 리뷰 반영)
+
+**리스크**: hairpin 프로파일(peer_route=off)은 wifi_init.sh가 `conf.all.arp_ignore`를 0으로
+리셋한다. 커널 실효값 = max(all, dev)이므로 mlan0도 weak-host가 되어, **무선발
+who-has <eth0-IP>에 클론 MAC으로 응답**하는 구멍이 열린다 (moal SELF-ARP 가드는
+유선 유출만 차단하고 스택 배달은 유지 — 응답은 공중으로 나감). 전 BD가 공통 eth0
+관리IP를 쓰는 플릿 + 플랫 L2에서는 who-has 한 발에 N대가 서로 다른 클론 MAC으로
+동일 IP를 주장 → 중복 IP/DAI 위반 → exclusion 제재 시 플릿 전멸. 벤치(고유 eth0-IP,
+공중 ARP 프로브 부재)에서는 증상이 없어 V4 검증이 놓쳤던 항목.
+
+**근본해소**: wifi_init.sh에 per-interface 봉인 신설 — `net.ipv4.conf.mlan0/mlan1.
+arp_ignore=1` + `arp_announce=2`를 **토글과 무관하게 무조건 적용**. arp_ignore=1은
+"target IP가 수신 iface에 설정된 경우만 응답"이므로:
+- 공중발 who-has <eth0-IP> → mlan0에 미설정 → **침묵** (구멍 봉인)
+- 공중발 who-has <mlan0-IP> → mlan0 소유 → 응답 유지 (무선↔BD 무영향)
+- 유선발 who-has <mlan0-IP> → eth0 지배(all/eth0=0 weak-host) → MAC_E 응답 유지
+  (hairpin 프로파일의 유선→BD ARP 전제 보존)
+
+이로써 **순수 hairpin 프로파일(peer_route=off)이 플릿-안전**해진다. 과도기 대안이었던
+peer_route=on+ip_discovery=off 조합(arp_ignore=1을 부수효과로 빌리는 방식)은 불필요.
+`wifi br status`에 실효 arp_ignore 표시 + "all=0 && iface=0"(구버전 wifi_init.sh 신호)
+WARN 규칙 추가.
+
+**잔여 게이트 (플릿 배포 전 필수)**: ARP tee 프레임은 OHT 입장에서 ethernet src ==
+자기 MAC이다. Linux(imx93)는 수용 확인했으나 **실 OHT(PLC/RTOS 스택·port-security
+스위치)의 anti-spoof drop 가능성은 미검증** — 실 장비에서 "tee 카운터 증가 ↔ OHT
+neigh 학습"을 확인할 것. 실패 시 대비 설계: tee 시 ethernet src만 MAC_E로 재작성
+(ARP sha=MAC_C 유지 → 응답은 dst=MAC_C로 돌아와 inject 체인 보존).
+
+## 11. 공수 요약
 
 계획 3.5~4d → **실제 Phase 0~2 약 0.5d에 완료** (실기 접근·기존 ssh 검증 방법론 재사용 효과). V4/V5는 진행 중.
