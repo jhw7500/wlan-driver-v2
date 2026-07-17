@@ -972,18 +972,12 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	 * 제어 채널이 생존한다 (dst=클론MAC 프레임의 OTHERHOST 폐기 방지 —
 	 * DFK 무선단절 시 유선 VHL 요구). */
 	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected)) {
-		/* L2 폴백 정정: 위 SELF 판정은 wlan_ipv4 캐시 의존인데,
-		 * networkd 가 disconnect 시 mlan0 주소를 철회하면 wlan_ipv4==0
-		 * 이 되어 불발한다. 그 상태로 dst==클론MAC 유니캐스트가
-		 * OTHERHOST 인 채 PASS 되면 ip_rcv/arp_rcv 가 무조건 폐기 —
-		 * 유선 peer 가 ARP 캐시에 클론 MAC 을 물고 있는 동안 유선
-		 * 양방향 블랙홀이 된다 (2026-07-17 실측 2.7s, peer 의
-		 * broadcast 재ARP 로 eth0 MAC 갈아탈 때까지). 무선 down 중
-		 * dst==클론MAC 은 공중 포워딩이 불가하므로 로컬 배달이 유일한
-		 * 비폐기 처분이고, eth_fallback 의 eth0 /32 가 해당 IP 를
-		 * 실소유하므로 HOST 정정이 정당하다. unicast ARP probe 도
-		 * arp_rcv 에 도달하게 되어 재ARP 회복이 즉시화된다. TX divert
-		 * 와 동일하게 현재 dev_addr 로 비교 (재클론 대응). */
+		/* L2 폴백: 주소 철회로 wlan_ipv4==0 이면 위 SELF 판정이 불발
+		 * → dst==클론MAC 유니캐스트가 OTHERHOST 인 채 폐기된다 (유선
+		 * peer 가 클론 MAC 보유 중 유선 블랙홀 — 근거·실측은 PR #12).
+		 * 무선 down 중 이 프레임의 유일한 비폐기 처분은 로컬 배달이므로
+		 * HOST 정정. TX divert 와 동일하게 현재 dev_addr 비교(재클론
+		 * 대응). */
 		if (skb->pkt_type == PACKET_OTHERHOST &&
 		    ether_addr_equal(eth_hdr(skb)->h_dest,
 				     br->wlan_dev->dev_addr))
