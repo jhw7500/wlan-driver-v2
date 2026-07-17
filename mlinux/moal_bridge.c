@@ -1080,6 +1080,16 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
+	/* media down 비ARP 조기 드롭 (PR #11 리뷰): 아래 media 게이트에서
+	 * 어차피 폐기될 트래픽이 skb_share_check 의 clone 할당/해제를 타지
+	 * 않도록 선별. 무선 down 중 media 무관 처리가 필요한 것은 ARP
+	 * (SELF-ARP suppress / REPLY inject)뿐이다. */
+	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected) &&
+	    vlan_get_protocol(skb) != htons(ETH_P_ARP)) {
+		kfree_skb(skb);
+		return 0;
+	}
+
 	/* packet_type handlers receive a refcount-shared skb, not a clone;
 	 * unshare before mutating skb->data via skb_push(). */
 	skb = skb_share_check(skb, GFP_ATOMIC);

@@ -220,6 +220,12 @@ neigh 학습"을 확인할 것. 실패 시 대비 설계: tee 시 ethernet src�
   상태에서 절체 0.41ms 실기 확인). G2-②③ 우회/해소.
 - 사이클 실측: 평시 hairpin 경유(카운터 증가) → 무선down 절체(eth0 직결, 카운터 불변)
   → 복귀 자동 환원(카운터 재개). 부팅 영속(재부팅 후 route/32/linkdown-skip 자동 부여) 확인.
+- **보증 범위 (PR #11 리뷰 반영)**: "무선 down 중 유선 생존"의 dst=클론MAC(OTHERHOST)
+  정정 보증은 **rx_handler 캡처 모드 기준**이다. pt(packet_type) fallback 모드는 스택
+  원본의 pkt_type 을 정정할 수 없는 구조적 한계(기존 문서화)로, 무선 down 중 클론MAC행
+  IP 유니캐스트는 배달되지 않는다 — 단 eth_fallback 의 /32 덕에 peer 가 재ARP 하면
+  eth0 MAC(HOST) 경로로 수 초 내 자가 회복하고, ARP suppress/inject 는 pt 에서도 동작.
+  pt 모드는 rx_handler 점유(외부 Linux bridge 등) 시에만 쓰이는 예외 경로.
 - 잔여: 순수 mlan0 TX 생존(S3 wire-alive)은 불채택 — B-2 가 동일 목표를 설정 레벨에서
   달성. eth0-IP 별도 채널(방법 A)은 OPC 의 VHL IP 체계 질의 결과에 따라 선택지로 유지.
 
