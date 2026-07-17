@@ -199,7 +199,9 @@ static void moal_bridge_apply_sched(moal_handle *handle)
 	}
 #elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
 	{
-		struct sched_attr attr;
+		/* Zero-init: __sched_setscheduler rejects unsupported sched_flags
+		 * bits, so the fields not set below must not carry stack garbage. */
+		struct sched_attr attr = {};
 		int ret;
 
 		attr.sched_policy = policy;

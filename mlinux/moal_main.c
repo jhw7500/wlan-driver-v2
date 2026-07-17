@@ -13024,7 +13024,9 @@ static t_void woal_tx_work_handler(struct work_struct *work)
 	LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 18)
 	struct sched_param sp;
 #elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
-	struct sched_attr attr;
+	/* Zero-init: __sched_setscheduler rejects unsupported sched_flags bits,
+	 * so the fields not set below must not carry stack garbage. */
+	struct sched_attr attr = {};
 #endif
 
 	ENTER();
@@ -13085,7 +13087,9 @@ t_void woal_main_work_queue(struct work_struct *work)
 	LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 18)
 	struct sched_param sp;
 #elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 13, 19)
-	struct sched_attr attr;
+	/* Zero-init: __sched_setscheduler rejects unsupported sched_flags bits,
+	 * so the fields not set below must not carry stack garbage. */
+	struct sched_attr attr = {};
 #endif
 
 	ENTER();
