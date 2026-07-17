@@ -3209,7 +3209,7 @@ MODULE_PARM_DESC(bridge_keepalive_idle_ms, "Bridge keepalive idle cutoff ms (app
 module_param(bridge_consume_link_local, int, 0644);
 MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(bridge_local_hairpin, int, 0644);
-MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable)");
+MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable). Fleet precondition: apply wlan iface arp_ignore=1 seal (wlan-package) or weak-host ARP opens on air — driver warns once via dmesg if unsealed");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,

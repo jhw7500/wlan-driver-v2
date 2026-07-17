@@ -744,6 +744,8 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 	if (eth->h_proto == htons(ETH_P_ARP) &&
 	    is_broadcast_ether_addr(eth->h_dest) &&
 	    moal_bridge_dev_ready(br->peer_dev)) {
+		struct sk_buff *skb2;
+
 		/* 플릿 안전 경고(부팅당 1회): hairpin 활성인데 wlan iface 의
 		 * 실효 arp_ignore(max(all,dev))가 0 이면 wlan-package 의
 		 * weak-host 봉인이 미적용된 상태 — 무선발 who-has <eth0-IP> 에
@@ -767,8 +769,7 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 		/* skb_copy(사유 데이터 복사): clone 은 데이터를 공유하므로 아래
 		 * src MAC 재작성이 공중으로 나갈 원본까지 오염시킨다. ARP 는
 		 * 수십 바이트라 copy 비용 무시 가능. */
-		struct sk_buff *skb2 = skb_copy(skb, GFP_ATOMIC);
-
+		skb2 = skb_copy(skb, GFP_ATOMIC);
 		if (!skb2) {
 			atomic_long_inc(&br->wlan_to_peer.oom_drops);
 			return 0;
