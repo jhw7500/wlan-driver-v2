@@ -972,12 +972,13 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	 * 제어 채널이 생존한다 (dst=클론MAC 프레임의 OTHERHOST 폐기 방지 —
 	 * DFK 무선단절 시 유선 VHL 요구). */
 	if (!READ_ONCE(((moal_private *)br->wlan_priv)->media_connected)) {
-		/* L2 폴백: 주소 철회로 wlan_ipv4==0 이면 위 SELF 판정이 불발
-		 * → dst==클론MAC 유니캐스트가 OTHERHOST 인 채 폐기된다 (유선
+		/* L2 폴백: 위 SELF 판정을 통과하지 못한 dst==클론MAC 유니캐스트
+		 * (주 케이스: 주소 철회로 wlan_ipv4==0 — 그 외 daddr 불일치,
+		 * iph pull 실패 포함)가 OTHERHOST 인 채 폐기되는 것을 방지 (유선
 		 * peer 가 클론 MAC 보유 중 유선 블랙홀 — 근거·실측은 PR #12).
 		 * 무선 down 중 이 프레임의 유일한 비폐기 처분은 로컬 배달이므로
-		 * HOST 정정. TX divert 와 동일하게 현재 dev_addr 비교(재클론
-		 * 대응). */
+		 * daddr 와 무관하게 HOST 정정이 정당하다. TX divert 와 동일하게
+		 * 현재 dev_addr 비교(재클론 대응). */
 		if (skb->pkt_type == PACKET_OTHERHOST &&
 		    ether_addr_equal(eth_hdr(skb)->h_dest,
 				     br->wlan_dev->dev_addr))
