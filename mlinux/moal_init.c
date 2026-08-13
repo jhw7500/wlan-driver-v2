@@ -95,6 +95,14 @@ int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
 int bridge_runtime_switch;
+/* Runtime-only bridge control is unavailable while module parameters are
+ * parsed and while teardown is in progress.  The module init/exit path owns
+ * publication after AddRemoveCardSem and the global handle table are valid. */
+int bridge_runtime_control_ready;
+int driver_exit_in_progress;
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+int bridge_switch_fault_mask;
+#endif
 int bridge_debug;
 /** Local hairpin: 로컬발 TX(dst==클론 MAC)를 공중 대신 유선 peer 로 divert
  *  + ARP tee/inject. 유선 peer IP 인지(peer_route/ip_discovery) 불요.
@@ -2969,6 +2977,8 @@ static int bridge_iface_set(const char *val, const struct kernel_param *kp)
 	size_t len = 0, end;
 
 	(void)kp;
+	if (!READ_ONCE(bridge_runtime_control_ready))
+		return -EAGAIN;
 	if (!READ_ONCE(bridge_runtime_switch))
 		return -EOPNOTSUPP;
 	if (!val)
@@ -3244,6 +3254,12 @@ module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644);
 MODULE_PARM_DESC(
 	bridge_iface,
 	"Active bridge STA interface; write a connected MOAL STA name to switch synchronously");
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+module_param(bridge_switch_fault_mask, int, 0600);
+MODULE_PARM_DESC(
+	bridge_switch_fault_mask,
+	"QA-only one-shot bridge switch faults: bit0 target init, bit1 rollback init");
+#endif
 module_param(bridge_peer, charp, 0);
 MODULE_PARM_DESC(bridge_peer, "Bridge peer interface (default: eth0)");
 module_param(bridge_wlan_idx, int, 0);

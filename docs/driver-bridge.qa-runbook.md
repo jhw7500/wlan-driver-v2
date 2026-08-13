@@ -285,20 +285,25 @@ capture_kmemleak before
 
 # 양방향 traffic가 실행 중인 별도 terminal/host를 확인한 다음 수행한다.
 set -o pipefail
-if ! FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000 \
-    ./scripts/tests/bridge_runtime_switch_qa.sh 2>&1 | tee /tmp/bridge-switch-qa.log; then
-  echo "FAIL: runtime bridge QA failed; after snapshots are not success evidence" >&2
-  exit 1
-fi
+qa_rc=0
+FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000 QA_CASE=stress \
+  QA_EVIDENCE_DIR=/tmp/bridge-switch-qa-evidence \
+  ./scripts/tests/bridge_runtime_switch_qa.sh 2>&1 |
+  tee /tmp/bridge-switch-qa.log || qa_rc=$?
 
-capture_switch_state after
-capture_kmemleak after
+after_label="$([ "$qa_rc" -eq 0 ] && echo after || echo after-failure)"
+capture_switch_state "$after_label"
+capture_kmemleak "$after_label"
 dmesg > /tmp/bridge-switch-dmesg.log
-diff -u "$SNAP.before.log" "$SNAP.after.log" > "$SNAP.state.diff" || true
-if [ -f "$SNAP.kmemleak.before" ] && [ -f "$SNAP.kmemleak.after" ]; then
-  diff -u "$SNAP.kmemleak.before" "$SNAP.kmemleak.after" \
+diff -u "$SNAP.before.log" "$SNAP.$after_label.log" > "$SNAP.state.diff" || true
+if [ -f "$SNAP.kmemleak.before" ] && [ -f "$SNAP.kmemleak.$after_label" ]; then
+  diff -u "$SNAP.kmemleak.before" "$SNAP.kmemleak.$after_label" \
     > "$SNAP.kmemleak.diff" || true
 fi
+[ "$qa_rc" -eq 0 ] || {
+  echo "FAIL: runtime bridge QA failed; after snapshots are failure evidence" >&2
+  exit "$qa_rc"
+}
 ```
 
 reference/leak 증거는 최소한 `/proc/modules`의 moal reference count, 두 netdev의 전후 존재/통계,
@@ -306,17 +311,91 @@ reference/leak 증거는 최소한 `/proc/modules`의 moal reference count, 두 
 `CONFIG_DEBUG_KMEMLEAK`를 제공하면 위 `capture_kmemleak` 결과도 전후로 보존한다. 제공하지 않으면 그 정확한 경로
 부재를 보고하고 leak 검증을 통과했다고 표시하지 않는다.
 
-성공 판정에는 스크립트 PASS, 최종 `bridge_iface=mlan0`, 예상 `switch_ok` 증가,
+성공 판정에는 스크립트 PASS, 최종 `bridge_iface=mlan0`(effective owner), 예상 `switch_ok` 증가,
 `switch_fail`/rollback counter 불변, 양방향 트래픽 결과, kernel warning 없음, thread/reference/leak
-전후 검토가 모두 필요하다. 전환은 synchronous이지만 teardown/init 사이에 짧은 패킷 중단 또는
+전후 검토가 모두 필요하다. `active=0`은 peer suspend 중에도 owner가 남아 있을 수 있으므로
+`bridge_iface=none`과 동의어가 아니다. 전환은 synchronous이지만 teardown/init 사이에 짧은 패킷 중단 또는
 손실이 가능하므로 무손실을 성공 기준으로 가정하지 않는다.
 
-스크립트는 시작 직전 전체 dmesg를 baseline으로 저장하고 종료 뒤 baseline과 정확히 같은 prefix
-다음의 모든 신규 메시지를 `/tmp/bridge-runtime-switch-dmesg-delta.log`에 보존·검사한다. 따라서
-마지막 200줄 방식처럼 긴 loop 초반 warning을 놓치지 않는다. 단, 실행 중 ring buffer가
-회전되거나 누군가 dmesg를 clear하여 prefix가 달라지면 안전하게 FAIL하며, 신규 메시지에 섞인
-동시 실행 타 subsystems의 warning은 자동으로 원인을 구분하지 못하므로 전체 delta를 수동 검토한다.
+스크립트는 `dmesg --follow-new`를 시험 시작 전에 실행하여 긴 loop 중 ring rotation과 무관하게
+새 kernel message를 evidence 디렉터리에 스트리밍한다. 스트리머를 시작할 수 없으면 시험은
+fail-closed 한다. EXIT trap은 원래 종료 코드를 먼저 보존하고 `set +e`로 전환한 뒤, 실패 당시
+state/full dmesg를 복구보다 먼저 저장한다. 자동 warning 판정은 unrelated historical warning을
+오탐하지 않도록 follow-new stream만 사용하며 full snapshots는 수동 증거로 보존한다. 현재
+binding이 stats상 `active=1`, `peer_released=0`이고 현재/원래 STA가
+UP/associated인 경우에만 원래 binding을 best-effort 복구하고 복구 후 state를 다시 저장한다.
+cleanup 실패는 성공을 실패로 승격하지만 원래 실패/시그널 종료 코드는 가리지 않는다.
 `SWITCH_LOOPS`는 leading zero 없는 canonical decimal `1..100000`만 허용한다.
+
+### T-15a — 파라미터화된 negative/concurrency/reset matrix
+
+아래 각 행은 **서로 독립된 target 실행**이다. 필요한 module reload와 링크 상태를 행마다 먼저
+준비하고 `QA_EVIDENCE_DIR`를 서로 다른 경로로 지정한다. 이 문서는 실행 결과를 주장하지 않는다.
+`reject`는 실제 target 이름과 예상 Linux errno 번호를 operator가 지정하므로 non-MOAL과 MOAL
+non-STA를 구분할 수 있다.
+
+| 케이스 | 사전 조건 / 실행 예 |
+|---|---|
+| gate off | active load-time bridge, `bridge_runtime_switch=0`; `QA_CASE=gate-off` (`EOPNOTSUPP`) |
+| no active bridge | `bridge_mode=0 bridge_runtime_switch=1`; `QA_CASE=no-active` (`ENODEV`) |
+| malformed | active bridge/gate 1; `QA_CASE=malformed` (space, slash, overlong: `EINVAL`) |
+| nonexistent | `QA_CASE=reject REJECT_TARGET=does-not-exist EXPECTED_ERRNO=19` |
+| non-MOAL | `QA_CASE=reject REJECT_TARGET=eth0 EXPECTED_ERRNO=19` |
+| MOAL non-STA | `QA_CASE=reject REJECT_TARGET=uap0 EXPECTED_ERRNO=22` (실제 non-STA 이름 사용) |
+| target down | target를 admin-down으로 준비; `QA_CASE=target-down TO_IF=mlan1` (`ENETDOWN`) |
+| disconnected | target는 UP이나 association 없음; `QA_CASE=target-disconnected TO_IF=mlan1` (`ENOLINK`) |
+| same target | active target 준비; `QA_CASE=same-target`; `switch_ok` 불변 확인 |
+| concurrent writers | 두 STA associated; `QA_CASE=concurrent SWITCH_LOOPS=1000`; real start barrier, release 직후 양 writer liveness, iteration evidence 및 terminal binding 확인. kernel-level syscall overlap은 trace로만 확정 가능. |
+| peer down/up | active bridge; `QA_CASE=peer-cycle PEER_IF=eth0`; `active=0 -> 1`, old peer DOWN write의 `ENETDOWN`, `switch_ok` 불변 확인 |
+| reset interaction | board-approved reset command를 `RESET_CMD`에 넣고 `QA_CASE=reset-interaction`; syscall-attempt marker 직후 writer liveness와 exact old owner/`active=1`/2 threads/module-loaded terminal state 확인 |
+| unload interaction | board-approved unload command를 `UNLOAD_CMD`에 넣고 `QA_CASE=unload-interaction`; syscall-attempt marker 직후 writer liveness, node/module/thread absence 확인 |
+
+예:
+
+```bash
+QA_CASE=reject REJECT_TARGET=eth0 EXPECTED_ERRNO=19 \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.non-moal \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+
+QA_CASE=reset-interaction RESET_CMD='mlanutl mlan0 hostcmd fw_reload.conf' \
+  SWITCH_LOOPS=100 QA_EVIDENCE_DIR=/tmp/bridge-qa.reset \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+
+QA_CASE=unload-interaction UNLOAD_CMD='modprobe -r moal' \
+  SWITCH_LOOPS=100 QA_EVIDENCE_DIR=/tmp/bridge-qa.unload \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+```
+
+reset/unload 동안 writer가 받은 `EBUSY`, `ENODEV`, `ESHUTDOWN`, 또는 signal interruption은 로그에
+보존한다. Kernel 내부 `-ERESTARTSYS`는 일반적인 sysfs `write(2)` 사용자에게 `EINTR`로 보일 수
+있으므로 둘을 서로 다른 driver 결과로 오판하지 않는다. 스크립트는 command timeout/nonzero, writer timeout/signal/expected errno 분류,
+writer hang/조기 실패, terminal owner/active/thread/module 불변식, follow-new warning을 검사한다.
+marker는 shell에서 가능한 syscall-attempt 직전 경계일 뿐 실제 in-kernel overlap 증거가 아니다.
+`WIFI_STATUS_OK`가 실패 뒤 오게시되지 않았는지와 structured suspend/restore log의 정확한 phase
+상관관계는 별도 target log/trace 검토 항목이며, 이 스크립트가 자동 증명하거나 PASS로 주장하지 않는다.
+
+### T-15b — QA-only target/rollback fault injection
+
+표준 산출물은 `CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n`이다. static gate는 parameter, mask variable,
+`xchg()` 및 두 injected branch가 모두 compile guard 안에 있는지와 host standard artifact의 symbol 부재를
+검사한다. guard failure 또는 stale artifact provenance는 source acceptance를 막거나 unverified로 기록한다.
+격리된 QA 산출물만 다음처럼 빌드한다. 이 산출물을 production에 배포하지 않는다.
+
+```bash
+make CONFIG_BRIDGE_SWITCH_FAULT_INJECT=y
+# 평소와 같은 보드별 packaging/load 후 두 STA를 associate한다.
+QA_CASE=fault-target QA_EVIDENCE_DIR=/tmp/bridge-qa.fault-target \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+QA_CASE=fault-double QA_EVIDENCE_DIR=/tmp/bridge-qa.fault-double \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+```
+
+QA-only root-writable `bridge_switch_fault_mask`는 validation/same-target 검사 뒤, teardown 직전에
+`xchg(..., 0)`으로 한 번만 소비된다. bit 0은 target init `ENOMEM`, bit 1은 rollback init
+`ENOMEM`을 합성한다. `fault-target`은 원 owner 복구, `switch_fail+1`, `rollback_ok+1`, 다음 정상
+전환 성공을 확인한다. `fault-double`은 `EIO`, effective owner `none`, inactive stats의
+`rollback_fail+1`을 확인한다. double failure 뒤에는 active owner가 없어 runtime write로 복구할
+수 없으므로 module reload로 configured policy를 다시 적용한다.
 
 ---
 

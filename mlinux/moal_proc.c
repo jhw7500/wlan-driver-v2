@@ -945,6 +945,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 			if (woal_switch_drv_mode(handle, config_data) !=
 			    MLAN_STATUS_SUCCESS) {
 				PRINTM(MERROR, "Could not switch drv mode\n");
+				ret = -EIO;
 			}
 	}
 #ifdef SDIO

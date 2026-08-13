@@ -3,7 +3,7 @@
 **Date:** 2026-08-13  
 **Repository:** `wlan-driver-v2`  
 **Target branch:** `main`  
-**Status:** Approved design; implementation pending
+**Status:** Implementation-aligned revision; target-board validation pending
 
 ## 1. Objective
 
@@ -26,8 +26,10 @@ bridge is restored whenever rollback succeeds.
 Existing behavior is the primary invariant.
 
 1. `bridge_runtime_switch` defaults to `0`.
-2. When it is `0`, bridge initialization, forwarding, parameters, and teardown
-   behave exactly as they do before this feature.
+2. When it is `0`, normal initialization/forwarding and runtime switch behavior
+   are unchanged. The always-on rule that a bridge must be drained before its
+   WLAN netdev/firmware/handle is destroyed also applies with the gate off;
+   this is a lifetime-safety invariant, not opt-in switching behavior.
 3. Writing `bridge_iface` never enables a disabled bridge. If no bridge is
    active, the operation fails.
 4. The target must already exist as a registered STA netdev and be operational
@@ -61,6 +63,13 @@ The gate is intentionally load-time-only. This prevents an application from
 changing lifecycle policy accidentally on a deployed system and makes legacy
 behavior the unconditional default.
 
+`bridge_iface` is runtime-only even though module-parameter callbacks also run
+during argument parsing. A default-zero `bridge_runtime_control_ready` flag is
+published only after `AddRemoveCardSem`, the handle table, module globals, and
+the module-level stats node are initialized. The setter checks it before any
+runtime lock and again after acquiring `AddRemoveCardSem`; a load argument is
+rejected with `EAGAIN`, and shutdown waiters are rejected with `ESHUTDOWN`.
+
 ### 3.2 Synchronous target parameter
 
 Add a custom module parameter:
@@ -71,9 +80,10 @@ Add a custom module parameter:
 
 - Implemented with `module_param_cb()`, not `charp`.
 - Permission: `0644` when compiled with runtime switching support.
-- Read returns the active bridge WLAN netdev name followed by a newline, for
-  example `mlan0`.
-- Read returns `none` when there is no active bridge.
+- Read returns the effective bridge owner's current WLAN netdev name followed
+  by a newline, for example `mlan0`. Binding identity is retained while
+  forwarding is transiently suspended (`active=0`, for example peer DOWN).
+- Read returns `none` only when there is no effective owner/binding.
 - Write accepts one interface name, with the sysfs trailing newline removed.
 - Names must fit `IFNAMSIZ` and resolve to a MOAL STA netdev.
 - Writing the already-active interface is a successful no-op.
@@ -179,23 +189,29 @@ The setter calls `moal_bridge_switch_iface()` in process context.
 1. Reject unless `bridge_runtime_switch == 1`.
 2. Parse and validate the requested interface name.
 3. Acquire `AddRemoveCardSem`, then `bridge_lifecycle_lock`.
-4. Verify an active, healthy bridge and capture a rollback snapshot:
+4. Verify an active bridge and capture a rollback snapshot:
    - old owner handle;
-   - old BSS index and WLAN name;
-   - peer interface name;
-   - effective bridge parameters that will be changed.
+   - old effective BSS index;
+   - a transaction-scoped reference to the exact peer `net_device` (names are
+     logging only);
+   - effective keepalive policy.
 5. Resolve and fully validate the target tuple.
 6. If the target equals the active WLAN, return success without teardown.
 7. Deactivate and fully deinitialize the old bridge using the existing order:
    forwarding stop, timer/notifier/capture removal, `synchronize_net()`, RCU
    pointer clear and `synchronize_rcu()`, kthread stop, and queue purge.
-8. Initialize a bridge on the target handle with the same peer interface and
-   effective keepalive/hairpin/debug policy.
-9. On success, update effective per-handle bridge ownership parameters:
-   old owner `bridge_mode=0`; new owner `bridge_mode=1`; new owner's
-   `bridge_wlan_idx` is the resolved BSS index. These are in-memory runtime
-   values only; persistent configuration is not rewritten.
-10. Release locks and return success.
+8. Initialize a bridge on the target handle using that referenced peer identity
+   and the effective keepalive policy.
+9. Under RTNL, revalidate the target handle/reset state, tuple identity,
+   netdev registration/presence/running/carrier, STA association, published
+   bridge identity, and peer registration/presence/running/carrier. This is the
+   success linearization point. A failure deinitializes the target and enters
+   rollback with its specific errno.
+10. Publish only `bridge_owner` and `bridge_effective_wlan_idx`; configured
+    `params.bridge_mode`, `bridge_wlan_idx`, peer, and keepalive values remain
+    immutable policy and same-card fallback input.
+11. Increment/log success only after terminal validation, release the pinned
+    peer reference and locks, and return.
 
 The setter must not hold RTNL across the entire transaction. Existing lifecycle
 helpers acquire RTNL only around operations that require it.
@@ -212,9 +228,13 @@ bridge untouched.
 | Empty, oversized, or malformed name | `-EINVAL` | unchanged |
 | Interface not found | `-ENODEV` | unchanged |
 | Interface is not a MOAL STA | `-EINVAL` | unchanged |
-| Target netdev not operational | `-ENETDOWN` | unchanged |
-| Target STA not associated | `-ENOLINK` | unchanged |
+| Target netdev admin-DOWN/not operational | `-ENETDOWN` | unchanged |
+| Target STA admin-UP but not associated | `-ENOLINK` | unchanged |
+| Current binding peer DOWN/not usable | `-ENETDOWN` | unchanged |
 | Driver/card reset or removal in progress | `-EBUSY` | unchanged |
+| Runtime control not initialized | `-EAGAIN` | unchanged |
+| Module shutdown won the semaphore race | `-ESHUTDOWN` | unchanged |
+| Semaphore wait interrupted (`write(2)` normally sees `EINTR`) | `-ERESTARTSYS` internally | unchanged |
 | Requested interface already active | success | unchanged |
 | New bridge initialization fails | original init errno | rollback attempted |
 
@@ -222,11 +242,13 @@ If new initialization fails after old teardown:
 
 1. restore the old effective parameters;
 2. reinitialize the old bridge from the rollback snapshot;
-3. return the new-target initialization errno.
+3. return the new-target initialization errno **only if rollback init and its terminal validation both succeed**.
 
-If rollback also fails, leave both `bridge_mode` effective states disabled,
-clear the global owner, log both errors at `MERROR`, and return `-EIO`. This is
-the only permitted failure mode where the previous bridge is not restored.
+Rollback uses the same referenced peer identity and receives the same terminal
+readiness validation. If it also fails, clear the global/effective owner, leave
+immutable configured policy intact, log both errors at `MERROR`, and return
+`-EIO`. This is the only permitted switch failure mode where the previous
+bridge is not restored.
 The application can distinguish it through errno and by reading
 `bridge_iface`, which returns `none`.
 
@@ -239,11 +261,13 @@ iface=mlan1 peer=eth0
 switch_ok=4 switch_fail=1 rollback_ok=1 rollback_fail=0
 ```
 
-Existing lines and their meanings remain unchanged. Counters are global across
-rebinds so operations can diagnose switching even though individual bridge
-contexts are replaced.
+Existing active lines and their meanings remain unchanged. The stats kobject is
+module-lifetime: while inactive it reports `bridge: inactive`,
+`iface=none peer=none`, and the four global counters. It is removed only during
+module cleanup, so double-failure remains observable.
 
-Kernel messages should record one line for request and one terminal result:
+Kernel messages record one request and one terminal result (including rejected
+and same-target requests):
 
 ```text
 bridge: runtime switch requested mlan0 -> mlan1
@@ -251,6 +275,32 @@ bridge: runtime switch complete mlan0 -> mlan1
 ```
 
 Failures include target, errno, and rollback result but no per-packet logging.
+`NETDEV_CHANGENAME` updates both cached WLAN and peer display names under a
+spinlock; getter/stats copy whole names under that lock. The transaction's held
+peer pointer, never a mutable cached string or reusable ifindex alone, is the
+binding/rollback identity.
+
+### 7.1 Reset, reload, driver-mode, and unload invariant
+
+Destructive firmware operations are not meaningfully rollbackable. Generic
+reload holds `AddRemoveCardSem` across the primary/companion transaction,
+suspends the one effective owner before pre-reset flush/firmware work, rebuilds
+all participating handles, then restores that exact effective snapshot once.
+On any failure it publishes recovery failure and leaves no effective owner;
+configured policy remains available for a later explicit reload.
+
+PCIe/SDIO callbacks aggregate prepare/reset/init/companion/bridge-restore
+results and publish `WIFI_STATUS_OK`/recovery-complete only on total success.
+Their firmware-init calls explicitly retain caller-owned `AddRemoveCardSem`, so
+the normal firmware callback cannot double-release it. Module exit first clears
+runtime readiness, then in a complete first pass drains every possible bridge
+owner and workqueue before shutting down the first firmware.
+
+`mlan_main_process()` cannot be blanket-disabled merely because `fw_reload` or
+`fw_reseting` is set: synchronous reset debug/IOCTL and firmware initialization
+use that engine to complete. Safety is instead established by draining the
+bridge timer/datapath before firmware work, holding the lifecycle semaphore,
+blocking new switches, and retaining the existing `surprise_removed` guard.
 
 ## 8. Files in Scope
 
@@ -262,6 +312,15 @@ Failures include target, errno, and rollback result but no per-packet logging.
 - `mlinux/moal_init.c`
   - `bridge_runtime_switch`, custom `bridge_iface` parameter ops, configuration
     parsing, and effective parameter setup.
+- `mlinux/moal_main.c`, `mlinux/moal_main.h`, `mlinux/moal_pcie.c`, and
+  `mlinux/moal_sdio_mmc.c`
+  - always-on destruction ordering, complete reload/reset result propagation,
+    semaphore ownership, and effective-owner restoration.
+- `Makefile`
+  - default-off, compile-time QA-only switch fault injection.
+- `scripts/tests/bridge_runtime_switch_qa.sh`
+  - parameterized target-only negative/concurrency/reset/fault matrix and
+    evidence-safe cleanup.
 - `scripts/tests/bridge_static_checks.sh`
   - lock/lifecycle/control-path invariants.
 - `docs/MOAL-Module-Parameters.md`
@@ -276,7 +335,7 @@ or persistent JSON rewriting are part of this driver change.
 
 ### 9.1 Static and build checks
 
-- Existing `scripts/tests/bridge_static_checks.sh` passes.
+- Existing and added `scripts/tests/bridge_static_checks.sh` checks must pass.
 - Add checks proving:
   - opt-in default is zero;
   - custom `module_param_cb` is used;
@@ -284,8 +343,8 @@ or persistent JSON rewriting are part of this driver change.
   - switch uses full deinit/init, not direct WLAN pointer replacement;
   - rollback path exists;
   - RCU and network drain ordering remains intact.
-- i.MX8 and i.MX93 driver builds pass using existing build gates.
-- `git diff --check` passes.
+- i.MX8 and i.MX93 driver builds must pass using existing build gates.
+- `git diff --check` must pass.
 
 ### 9.2 Target-board functional matrix
 
@@ -305,15 +364,22 @@ or persistent JSON rewriting are part of this driver change.
     newly bound WLAN.
 11. Module unload after switching: no stale sysfs node, handler, timer, thread,
     or netdev reference.
-12. Forced initialization failure: old bridge is restored; forced rollback
-    failure produces `EIO`, `bridge_iface=none`, and explicit error logging.
+12. Reset/reload and unload concurrent with writers: no deadlock, premature
+    success, stale owner, timer/thread/reference, or post-failure `WIFI_STATUS_OK`.
+13. QA-only forced initialization failure: old bridge is restored; forced
+    rollback init **or rollback terminal validation** failure produces `EIO`,
+    `bridge_iface=none`, readable inactive counters, and explicit error logging.
+    Standard builds may claim no hook only after the compile-guard and artifact
+    checks pass for the source/artifact under review.
 
 ### 9.3 Success criteria
 
-- With `bridge_runtime_switch=0`, binary behavior is unchanged except for the
-  inert read-only gate and documented control surface.
-- With the gate enabled, a successful sysfs write means the requested connected
-  STA is already forwarding in both directions.
+- With `bridge_runtime_switch=0`, forwarding and runtime switch behavior are
+  unchanged; only documented teardown-before-destruction safety and
+  module-lifetime inactive diagnostics are additionally observable.
+- With the gate enabled, a successful sysfs write means source-level terminal validation
+  accepted the requested connected STA. Bidirectional forwarding remains target-runtime
+  evidence and is not established by static checks alone.
 - All validation failures before teardown leave the active bridge untouched.
 - Any post-teardown failure restores the previous bridge unless rollback itself
   fails, which is explicit and observable.

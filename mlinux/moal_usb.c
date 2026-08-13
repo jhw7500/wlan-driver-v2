@@ -625,36 +625,25 @@ static void woal_usb_unlink_urb(void *card_desc)
 	int i;
 	ENTER();
 	if (cardp) {
-		/* Unlink Rx cmd URB */
-		if (atomic_read(&cardp->rx_cmd_urb_pending) &&
-		    cardp->rx_cmd.urb) {
+		/* usb_kill_urb() is also the completion barrier.  Do not use pending
+		 * counters as a shortcut: callbacks decrement them before their final
+		 * MLAN access/queue_work, so zero does not prove callback completion. */
+		if (cardp->rx_cmd.urb)
 			usb_kill_urb(cardp->rx_cmd.urb);
-		}
 		/* Unlink Rx data URBs */
-		if (atomic_read(&cardp->rx_data_urb_pending)) {
-			for (i = 0; i < MVUSB_RX_DATA_URB; i++) {
-				if (cardp->rx_data_list[i].urb)
-					usb_kill_urb(
-						cardp->rx_data_list[i].urb);
-			}
+		for (i = 0; i < MVUSB_RX_DATA_URB; i++) {
+			if (cardp->rx_data_list[i].urb)
+				usb_kill_urb(cardp->rx_data_list[i].urb);
 		}
 		/* Unlink Tx cmd URB */
-		if (atomic_read(&cardp->tx_cmd_urb_pending) &&
-		    cardp->tx_cmd.urb) {
+		if (cardp->tx_cmd.urb)
 			usb_kill_urb(cardp->tx_cmd.urb);
-		}
-		/* Unlink Tx data URBs */
-		if (atomic_read(&cardp->tx_data_urb_pending)) {
-			for (i = 0; i < MVUSB_TX_HIGH_WMARK; i++) {
-				if (cardp->tx_data_list[i].urb) {
-					usb_kill_urb(
-						cardp->tx_data_list[i].urb);
-				}
-				if (cardp->tx_data2_list[i].urb) {
-					usb_kill_urb(
-						cardp->tx_data2_list[i].urb);
-				}
-			}
+		/* Unlink Tx data URBs on both independent endpoints. */
+		for (i = 0; i < MVUSB_TX_HIGH_WMARK; i++) {
+			if (cardp->tx_data_list[i].urb)
+				usb_kill_urb(cardp->tx_data_list[i].urb);
+			if (cardp->tx_data2_list[i].urb)
+				usb_kill_urb(cardp->tx_data2_list[i].urb);
 		}
 	}
 	LEAVE();
@@ -1199,6 +1188,12 @@ static void woal_usb_disconnect(struct usb_interface *intf)
 	 *  Free all the URB's allocated
 	 */
 	phandle->surprise_removed = MTRUE;
+	/* USB completion handlers can dereference the MLAN adapter.  Drain every
+	 * URB before generic removal unregisters and frees that adapter. */
+	woal_kill_urbs(phandle);
+	/* Hang recovery owns only a raw global handle publication.  Stop and clear
+	 * that owner before woal_remove_card() can free the handle/card pair. */
+	woal_cancel_hang_work(phandle);
 
 	/* Card is removed and we can call wlan_remove_card */
 	PRINTM(MINFO, "Call remove card\n");
@@ -1235,25 +1230,34 @@ void woal_kill_urbs(moal_handle *handle)
  *
  *  @return 	   	  N/A
  */
-void woal_resubmit_urbs(moal_handle *handle)
+mlan_status woal_resubmit_urbs(moal_handle *handle)
 {
 	struct usb_card_rec *cardp = handle->card;
+	mlan_status status = MLAN_STATUS_SUCCESS;
 
 	ENTER();
 	handle->is_suspended = MFALSE;
 
 	if (!atomic_read(&cardp->rx_data_urb_pending)) {
 		/* Submit multiple Rx data URBs */
-		woal_usb_submit_rx_data_urbs(handle);
+		if (woal_usb_submit_rx_data_urbs(handle) != MLAN_STATUS_SUCCESS ||
+		    atomic_read(&cardp->rx_data_urb_pending) !=
+			    MVUSB_RX_DATA_URB)
+			status = MLAN_STATUS_FAILURE;
 	}
 	if (!atomic_read(&cardp->rx_cmd_urb_pending)) {
 		cardp->rx_cmd.pmbuf =
 			woal_alloc_mlan_buffer(handle, MLAN_RX_CMD_BUF_SIZE);
-		if (cardp->rx_cmd.pmbuf)
-			woal_usb_submit_rx_urb(&cardp->rx_cmd,
-					       MLAN_RX_CMD_BUF_SIZE);
+		if (!cardp->rx_cmd.pmbuf ||
+		    woal_usb_submit_rx_urb(&cardp->rx_cmd,
+					   MLAN_RX_CMD_BUF_SIZE) !=
+			    MLAN_STATUS_SUCCESS)
+			status = MLAN_STATUS_FAILURE;
 	}
+	if (status != MLAN_STATUS_SUCCESS)
+		woal_kill_urbs(handle);
 	LEAVE();
+	return status;
 }
 
 #ifdef CONFIG_PM
@@ -1695,9 +1699,12 @@ mlan_status woal_write_data_async(moal_handle *handle, mlan_buffer *pmbuf,
 
 	ENTER();
 
-	/* Check if device is removed */
-	if (handle->surprise_removed) {
-		PRINTM(MERROR, "Device removed\n");
+	/* Both removal and suspend are producer gates.  Read them explicitly: a
+	 * driver-mode rebuild can flush work which reaches this low-level path
+	 * after URBs were killed but before the old adapter is unregistered. */
+	if (READ_ONCE(handle->surprise_removed) ||
+	    READ_ONCE(handle->is_suspended)) {
+		PRINTM(MERROR, "Device removed or suspended\n");
 		ret = MLAN_STATUS_FAILURE;
 		goto tx_ret;
 	}

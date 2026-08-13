@@ -4,7 +4,7 @@
 
 **Goal:** Add an opt-in synchronous sysfs control that rebinds an active MOAL L2 bridge between connected STA interfaces such as `mlan0` and `mlan1`, with rollback and no driver reload.
 
-**Architecture:** Resolve the requested netdev to its DBDC `(moal_handle, bss_index, moal_private)` tuple, serialize lifecycle changes behind `AddRemoveCardSem` and a bridge mutex, and reuse complete bridge deinit/init rather than hot-swapping pointers. A guarded `module_param_cb()` makes successful application `write()` the linearization point for a completed switch.
+**Architecture:** Resolve the requested netdev to its DBDC `(moal_handle, bss_index, moal_private)` tuple, serialize lifecycle changes behind `AddRemoveCardSem` and a bridge mutex, and reuse complete bridge deinit/init rather than hot-swapping pointers. A guarded `module_param_cb()` returns success only after post-init target/peer revalidation at the transaction linearization point.
 
 **Tech Stack:** Linux kernel C, NXP MOAL/MLAN, sysfs module parameters, RCU/network synchronization, kthreads/hrtimer/netdev notifiers, Bash static and target QA scripts.
 
@@ -18,6 +18,12 @@
 - Only registered, present, running, associated MOAL STA interfaces are valid targets.
 - Same-interface writes succeed without teardown; validation failures leave the bridge untouched.
 - Post-teardown failure rolls back; rollback failure returns `-EIO` and leaves the bridge inactive.
+- Module-parameter parsing is pre-init: runtime readiness must be checked before
+  any semaphore and rechecked after acquiring it.
+- Configured bridge policy is immutable; effective owner/BSS/peer state is
+  separate and runtime selection is nonpersistent.
+- Teardown-before-netdev/firmware/handle destruction is always-on lifetime
+  safety, independent of the runtime opt-in gate.
 - Preserve existing RCU/network drains, thread/timer teardown, notifier removal, queue purge, peer references, DBDC guard, and packet-type fallback.
 - Switching may briefly drop packets and does not guarantee TCP continuity.
 - Prefix shell commands with `rtk`.
@@ -33,6 +39,9 @@
 - `scripts/tests/bridge_runtime_switch_qa.sh`: target-board functional/stress QA.
 - `docs/MOAL-Module-Parameters.md`: application contract and errors.
 - `docs/driver-bridge.qa-runbook.md`: target preparation and evidence.
+- `mlinux/moal_main.c`, `mlinux/moal_main.h`, `mlinux/moal_pcie.c`,
+  `mlinux/moal_sdio_mmc.c`: reload/reset/unload lifecycle and status integrity.
+- `Makefile`: default-off QA-only bridge transaction fault injection.
 
 ---
 
@@ -278,7 +287,7 @@ struct moal_bridge_switch_snapshot {
 	int old_bss_index;
 	char old_iface[IFNAMSIZ];
 	char peer[IFNAMSIZ];
-	int old_mode;
+	struct net_device *peer_dev;
 	int keepalive_ms;
 	int keepalive_idle_ms;
 };
@@ -294,7 +303,9 @@ Add `int bridge_runtime_switch;` beside the existing bridge globals in
 other bridge externs in `mlinux/moal_bridge.c`. Task 4 exposes this already
 defined, default-zero variable as a module parameter.
 
-Also preserve target handle's original `bridge_mode`, `bridge_wlan_idx`, `bridge_peer`, and keepalive values in function-local variables.
+**Superseded by the final integration amendment below:** do not mutate or copy
+configured target policy as effective ownership. Snapshot the active bridge's
+effective BSS/keepalive state and a referenced exact peer device instead.
 
 - [ ] **Step 4: Implement the effective-state getter**
 
@@ -302,18 +313,29 @@ Also preserve target handle's original `bridge_mode`, `bridge_wlan_idx`, `bridge
 int moal_bridge_get_iface(char *buf, size_t len)
 {
 	struct moal_bridge *br;
+	char wlan_name[IFNAMSIZ];
 	int ret;
 
 	if (!buf || !len)
 		return -EINVAL;
 	mutex_lock(&bridge_lifecycle_lock);
 	br = bridge_owner ? bridge_owner->bridge : NULL;
-	ret = scnprintf(buf, len, "%s\n",
-			br && atomic_read(&br->active) ? br->wlan_dev->name : "none");
+	if (!br) {
+		ret = scnprintf(buf, len, "none\n");
+	} else {
+		/* Copy the rename-updated cache under name_lock. */
+		copy_bridge_wlan_name_locked(br, wlan_name, sizeof(wlan_name));
+		ret = scnprintf(buf, len, "%s\n", wlan_name);
+	}
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
 }
 ```
+
+`active` is forwarding health, not ownership. A peer-DOWN bridge remains bound
+and the getter continues to report its current WLAN name; only an absent owner
+reports `none`. The helper name above is pseudocode for the implementation's
+spinlock-protected whole-name snapshot.
 
 - [ ] **Step 5: Implement the transaction in exact order**
 
@@ -534,8 +556,10 @@ Document:
 bridge_runtime_switch int 0 0444 global load-time opt-in
 bridge_iface custom string 0644 read effective target/write connected target
 EOPNOTSUPP gate off; ENODEV inactive/absent; EINVAL malformed/non-STA;
-ENETDOWN netdev down; ENOLINK disconnected; EBUSY reset/removal;
-EIO target init and rollback both failed
+ENETDOWN target netdev or current peer/binding down; ENOLINK disconnected;
+EBUSY reset/removal; EAGAIN pre-init; ESHUTDOWN teardown; EINTR user-visible
+form of internal -ERESTARTSYS; EIO target init/terminal validation and its
+rollback init/terminal validation both failed
 ```
 
 Include:
@@ -601,3 +625,90 @@ rtk git status --short --branch
 ```
 
 Report exact command outcomes, build artifacts, unrun target-only checks, commits, and residual risk. Never claim lossless switching or target-board success without evidence.
+
+---
+
+## Final Integration Amendment (2026-08-13)
+
+This amendment supersedes earlier snippets that used mutable names or
+`handle->params.bridge_*` as runtime ownership. Safety/correctness review
+expanded the production scope to the lifecycle paths that destroy bridge-owned
+netdevs or firmware state.
+
+### A. Pre-init callback boundary
+
+- Keep runtime readiness default zero during module argument parsing.
+- Publish it only after `AddRemoveCardSem`, handle/global state, proc state, and
+  module stats are initialized; clear it before exit takes the semaphore.
+- Check before any runtime lock and after the interruptible semaphore wait.
+- Structural negative fixtures must delete/reorder each check and prove the
+  gate fails. A load-time `bridge_iface=` is intentionally rejected.
+
+### B. Destructive lifecycle transactions
+
+- Generic primary/companion reload takes `AddRemoveCardSem` once after PCIe/
+  SDIO callback-driven early modes, suspends the exact effective owner before
+  pre-reset flush/firmware work, propagates both post-reset results, restores
+  the owner only after both rebuilds, and publishes OK only at the end.
+- `woal_post_reset()` returns status and never owns the semaphore recursively.
+- Driver-mode and PCIe/SDIO rebuilds mark every semaphore/reset/SW/FW/companion/
+  owner-restore failure. Synchronous firmware init explicitly retains the
+  caller's semaphore so the normal DPC/USB fast path cannot release it.
+- Firmware destruction has no claimed rollback. Terminal failure retains
+  configured policy but leaves the effective owner absent and publishes
+  recovery failure; no success event/status may follow a failed/skipped phase.
+- Exit uses a first pass over all handles to deinit bridges and flush workqueues
+  before shutting down the first firmware. Normal remove also invalidates a
+  suspended snapshot before freeing its handle.
+- Do not add a blanket `fw_reload/fw_reseting` return to
+  `woal_main_work_queue()`: reset debug/IOCTL/init completion requires
+  `mlan_main_process()`. Quiesce the bridge timer/datapath and keep the existing
+  `surprise_removed` transport guard instead.
+
+### C. Success and identity linearization
+
+- Pin the exact peer `net_device` under RTNL before old deinit and pass that
+  identity to target init and rollback. Cached names are logging/display only;
+  ifindex alone is insufficient because it can be reused.
+- Handle peer and WLAN `NETDEV_CHANGENAME`; register the notifier before the
+  RTNL-synchronized initial name snapshot and serialize full-name copies.
+- After target init, validate handle flags/hardware, tuple identity, target and
+  peer registration/presence/running/carrier, association, and published bridge
+  identity under RTNL. Validation failure fully deinitializes target before
+  rollback. Rollback receives the same terminal validation.
+- Increment `switch_ok` or print terminal success only after validation.
+
+### D. Effective/configured state and diagnostics
+
+- Leave configured `params.bridge_mode`, peer, BSS, and keepalive policy
+  immutable. Store effective BSS/owner/policy in bridge runtime state; this also
+  prevents same-card fallback from inheriting a transient runtime selection.
+- Keep `/sys/kernel/moal_bridge/stats` for module lifetime and publish an
+  inactive view with all outcome counters. Remove it only at module cleanup.
+- Log every parsed request and one terminal result. Document internal
+  `-ERESTARTSYS` versus user-visible `EINTR`, plus `EAGAIN`/`ESHUTDOWN`.
+- `bridge_iface` reports the effective owner/binding name even while its
+  forwarding `active` flag is zero; it reports `none` only when the owner is
+  absent. This supersedes the Step 4 `active ? name : none` sketch above.
+
+### E. Gate-zero scope and verification
+
+- Always-on teardown ordering is an invariant repair and remains active when
+  `bridge_runtime_switch=0`; it must not be reverted to reproduce unsafe legacy
+  ordering. Gate zero otherwise leaves normal forwarding and sysfs switching
+  semantics unchanged.
+- Static gates cover readiness/order, full reload ownership, deinit-before-
+  shutdown, callback semaphore ownership, terminal validation/deinit/rollback,
+  pinned identity/ref release, rename synchronization, immutable parameters,
+  reset aggregation, inactive stats, QA EXIT ordering, and gate-zero lifecycle
+  structure. Mutation fixtures are structural evidence, not runtime proof.
+- The target QA script is parameterized for gate-off/inactive/malformed/
+  invalid/non-MOAL/non-STA/down/disconnected/same-target/concurrent/peer-cycle/
+  reset/unload and QA-only target/rollback failures. Its EXIT trap captures
+  failure state/logs before best-effort restore and preserves the original rc.
+- `CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n` is the production default. When
+  explicitly built `y` for isolated QA, a root-only one-shot mask is consumed
+  after validation and immediately before teardown.
+- Final host gate: Bash syntax, full static checks, i.MX8 build, i.MX93 build,
+  `git diff --check`, and explicit lock/ref/status self-audit. Target-only QA is
+  recorded as unrun until it is actually executed on hardware.

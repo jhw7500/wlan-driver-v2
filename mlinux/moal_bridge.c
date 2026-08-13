@@ -24,12 +24,26 @@ static atomic_long_t bridge_switch_fail = ATOMIC_LONG_INIT(0);
 static atomic_long_t bridge_rollback_ok = ATOMIC_LONG_INIT(0);
 static atomic_long_t bridge_rollback_fail = ATOMIC_LONG_INIT(0);
 
+struct moal_bridge_suspended_owner {
+	moal_handle *handle;
+	struct net_device *peer_dev;
+	int wlan_bss_idx;
+	int keepalive_ms;
+	int keepalive_idle_ms;
+	bool valid;
+};
+
+static struct moal_bridge_suspended_owner bridge_suspended_owner;
+
 /** bridge_debug: runtime-changeable via /sys/module/moal/parameters/bridge_debug */
 extern int bridge_debug;
 extern int bridge_consume_link_local;
 /** bridge_keepalive_ms: module param default copied into handle->params at init */
 extern int bridge_keepalive_ms;
 extern int bridge_runtime_switch;
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+extern int bridge_switch_fault_mask;
+#endif
 #define BR_DBG(fmt, ...) do { \
 	if (bridge_debug) \
 		printk(KERN_INFO "bridge: " fmt, ##__VA_ARGS__); \
@@ -38,6 +52,7 @@ extern int bridge_runtime_switch;
 /* Forward declarations for helpers used by the w2p/p2w kthreads before
  * their definitions appear later in the file. */
 static inline bool moal_bridge_dev_ready(const struct net_device *dev);
+static void moal_bridge_peer_release_work(struct work_struct *work);
 
 struct moal_bridge_target {
 	moal_handle *handle;
@@ -51,7 +66,7 @@ struct moal_bridge_switch_snapshot {
 	int old_bss_index;
 	char old_iface[IFNAMSIZ];
 	char peer[IFNAMSIZ];
-	int old_mode;
+	struct net_device *peer_dev;
 	int keepalive_ms;
 	int keepalive_idle_ms;
 };
@@ -62,9 +77,10 @@ struct moal_bridge_switch_snapshot {
  * wifi-wbridge(pcap)가 빠른 이유: 지속적 eth0→mlan0 TX가 드라이버의
  * main_work(SDIO TX/RX 처리 루프)를 항상 active 상태로 유지.
  * 커널 브릿지의 비동기 포워딩은 미세한 gap이 있어 main_work가 sleep.
- * handle->params.bridge_keepalive_ms 주기 hrtimer로 main_work를 깨움.
- * 0=off, 1+=interval ms. config 파일의 값(있으면)을 우선 적용하고,
- * 그렇지 않으면 모듈 파라미터 기본값을 init 시 handle->params로 복사.
+ * effective bridge keepalive_ms 주기 hrtimer로 main_work를 깨움.
+ * 0=off, 1+=interval ms. configured policy is copied into each new bridge
+ * instance; a runtime rebind carries the active instance value without
+ * mutating handle->params.
  */
 
 static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
@@ -78,7 +94,7 @@ static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
 	if (atomic_read(&br->active) && handle->workqueue)
 		queue_work(handle->workqueue, &handle->main_work);
 
-	keepalive_ms = handle->params.bridge_keepalive_ms;
+	keepalive_ms = br->keepalive_ms;
 	if (keepalive_ms <= 0)
 		return HRTIMER_NORESTART;
 
@@ -88,7 +104,7 @@ static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
 	 * a truly idle link burns zero wakeups. Producers re-arm on the next
 	 * packet via moal_bridge_ka_kick(). idle_ms<=0 keeps the legacy
 	 * free-running behaviour (timer never stops on its own). */
-	idle_ms = handle->params.bridge_keepalive_idle_ms;
+	idle_ms = br->keepalive_idle_ms;
 	if (idle_ms > 0) {
 		s64 cutoff_us = (s64)idle_ms * 1000;
 		s64 idle_us = ktime_to_us(
@@ -152,10 +168,9 @@ static enum hrtimer_restart moal_bridge_keepalive(struct hrtimer *timer)
  */
 static inline void moal_bridge_ka_kick(struct moal_bridge *br)
 {
-	moal_handle *handle = (moal_handle *)br->handle;
-	int keepalive_ms = handle->params.bridge_keepalive_ms;
+	int keepalive_ms = br->keepalive_ms;
 
-	if (keepalive_ms <= 0 || handle->params.bridge_keepalive_idle_ms <= 0)
+	if (keepalive_ms <= 0 || br->keepalive_idle_ms <= 0)
 		return;
 
 	/* Publish the timestamp BEFORE arming. In Linux, atomic_cmpxchg is fully
@@ -319,7 +334,9 @@ static int moal_bridge_w2p_thread_fn(void *data)
 		cnt = 0;
 		while ((skb = skb_dequeue(&br->w2p_queue)) != NULL) {
 			atomic_dec(&br->w2p_qlen);
-			if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
+			if (unlikely(atomic_read(&br->peer_released) ||
+				     !atomic_read(&br->active) ||
+				     !moal_bridge_dev_ready(br->peer_dev))) {
 				atomic_long_inc(&br->wlan_to_peer.dropped);
 				dev_kfree_skb_any(skb);
 				cnt++;
@@ -385,7 +402,9 @@ static int moal_bridge_p2w_thread_fn(void *data)
 		cnt = 0;
 		while ((skb = skb_dequeue(&br->p2w_queue)) != NULL) {
 			atomic_dec(&br->p2w_qlen);
-			if (unlikely(!moal_bridge_dev_ready(br->wlan_dev))) {
+			if (unlikely(atomic_read(&br->peer_released) ||
+				     !atomic_read(&br->active) ||
+				     !moal_bridge_dev_ready(br->wlan_dev))) {
 				atomic_long_inc(&br->peer_to_wlan.dropped);
 				dev_kfree_skb_any(skb);
 				cnt++;
@@ -1292,32 +1311,67 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct moal_bridge *br = container_of(nb, struct moal_bridge,
 					      netdev_nb);
+	unsigned long flags;
+	struct sk_buff *skb;
 
-	if (dev != br->peer_dev)
+	if (dev != br->peer_dev && dev != br->wlan_dev)
 		return NOTIFY_DONE;
+
+	if (event == NETDEV_CHANGENAME) {
+		if (dev == br->peer_dev && atomic_read(&br->peer_released))
+			return NOTIFY_DONE;
+		spin_lock_irqsave(&br->name_lock, flags);
+		if (dev == br->wlan_dev)
+			strncpy(br->wlan_name, dev->name,
+				sizeof(br->wlan_name) - 1);
+		else
+			strncpy(br->peer_name, dev->name,
+				sizeof(br->peer_name) - 1);
+		br->wlan_name[sizeof(br->wlan_name) - 1] = '\0';
+		br->peer_name[sizeof(br->peer_name) - 1] = '\0';
+		spin_unlock_irqrestore(&br->name_lock, flags);
+		return NOTIFY_DONE;
+	}
 
 	switch (event) {
 	case NETDEV_DOWN:
-		PRINTM(MMSG, "bridge: peer '%s' went down, suspending\n",
+		if (dev == br->peer_dev && atomic_read(&br->peer_released))
+			break;
+		PRINTM(MMSG, "bridge: interface '%s' went down, suspending\n",
 		       dev->name);
 		atomic_set(&br->active, 0);
-		skb_queue_purge(&br->w2p_queue);
-		skb_queue_purge(&br->p2w_queue);
-		atomic_set(&br->w2p_qlen, 0);
-		atomic_set(&br->p2w_qlen, 0);
+		while ((skb = skb_dequeue(&br->w2p_queue)) != NULL) {
+			atomic_dec(&br->w2p_qlen);
+			dev_kfree_skb_any(skb);
+		}
+		while ((skb = skb_dequeue(&br->p2w_queue)) != NULL) {
+			atomic_dec(&br->p2w_qlen);
+			dev_kfree_skb_any(skb);
+		}
 		break;
 	case NETDEV_UP:
-		PRINTM(MMSG, "bridge: peer '%s' came up, resuming\n",
-		       dev->name);
-		/* IPv4 재캐시 (DHCP로 IP 변경 가능) */
+	case NETDEV_CHANGE:
+		if (atomic_read(&br->peer_released))
+			break;
+		/* A notifier replay during registration is allowed to refresh cached
+		 * state, but terminal init publication is the only activation point. */
 		WRITE_ONCE(br->peer_ipv4, moal_bridge_get_ipv4(br->peer_dev));
 		WRITE_ONCE(br->wlan_ipv4, moal_bridge_get_ipv4(br->wlan_dev));
-		atomic_set(&br->active, 1);
+		if (atomic_read(&br->published) &&
+		    moal_bridge_dev_ready(br->peer_dev) &&
+		    moal_bridge_dev_ready(br->wlan_dev) &&
+		    READ_ONCE(((moal_private *)br->wlan_priv)->media_connected) ==
+			    MTRUE)
+			atomic_set(&br->active, 1);
+		else
+			atomic_set(&br->active, 0);
 		break;
 	case NETDEV_UNREGISTER:
+		atomic_set(&br->active, 0);
+		if (dev != br->peer_dev)
+			break;
 		PRINTM(MMSG, "bridge: peer '%s' unregistered, disabling\n",
 		       dev->name);
-		atomic_set(&br->active, 0);
 		/* Called with RTNL held by the netdev notifier chain, so
 		 * handler unregister / dev_set_promiscuity are safe here. */
 		if (!atomic_read(&br->peer_released)) {
@@ -1326,12 +1380,40 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 			else
 				netdev_rx_handler_unregister(br->peer_dev);
 			dev_set_promiscuity(br->peer_dev, -1);
-			dev_put(br->peer_dev);
 			atomic_set(&br->peer_released, 1);
+			/* The notifier runs under RTNL.  Defer synchronize_net(), thread
+			 * stops and the final peer reference drop to process context. */
+			schedule_work(&br->peer_release_work);
 		}
 		break;
 	}
 	return NOTIFY_DONE;
+}
+
+static void moal_bridge_peer_release_work(struct work_struct *work)
+{
+	struct moal_bridge *br =
+		container_of(work, struct moal_bridge, peer_release_work);
+	struct sk_buff *skb;
+
+	synchronize_net();
+	if (br->w2p_thread) {
+		kthread_stop(br->w2p_thread);
+		br->w2p_thread = NULL;
+	}
+	if (br->p2w_thread) {
+		kthread_stop(br->p2w_thread);
+		br->p2w_thread = NULL;
+	}
+	while ((skb = skb_dequeue(&br->w2p_queue)) != NULL) {
+		atomic_dec(&br->w2p_qlen);
+		dev_kfree_skb_any(skb);
+	}
+	while ((skb = skb_dequeue(&br->p2w_queue)) != NULL) {
+		atomic_dec(&br->p2w_qlen);
+		dev_kfree_skb_any(skb);
+	}
+	dev_put(br->peer_dev);
 }
 
 /*
@@ -1351,6 +1433,9 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 {
 	struct moal_bridge *br;
 	moal_handle *handle;
+	char wlan_name[IFNAMSIZ];
+	char peer_name[IFNAMSIZ];
+	unsigned long flags;
 	ssize_t ret;
 	long w2p_n, p2w_n, w2p_avg, p2w_avg;
 	long rx_gap_n, rx_gap_avg;
@@ -1362,10 +1447,23 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 	rcu_read_lock();
 	br = rcu_dereference(moal_bridge_for_sysfs);
 	if (!br) {
-		ret = scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
+		ret = scnprintf(buf, PAGE_SIZE,
+				"bridge: inactive\n"
+				"iface=none peer=none\n"
+				"switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
+				atomic_long_read(&bridge_switch_ok),
+				atomic_long_read(&bridge_switch_fail),
+				atomic_long_read(&bridge_rollback_ok),
+				atomic_long_read(&bridge_rollback_fail));
 		goto out_rcu;
 	}
 	handle = (moal_handle *)br->handle;
+	spin_lock_irqsave(&br->name_lock, flags);
+	strncpy(wlan_name, br->wlan_name, sizeof(wlan_name) - 1);
+	wlan_name[sizeof(wlan_name) - 1] = '\0';
+	strncpy(peer_name, br->peer_name, sizeof(peer_name) - 1);
+	peer_name[sizeof(peer_name) - 1] = '\0';
+	spin_unlock_irqrestore(&br->name_lock, flags);
 
 	/* In-driver one-way dwell (producer entry -> dev_queue_xmit submit),
 	 * accumulated only while bridge_debug was on. avg = sum / cnt.
@@ -1443,8 +1541,8 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->hairpin_tx_fwd),
 			 atomic_long_read(&br->hairpin_arp_tee),
 			 atomic_long_read(&br->hairpin_arp_inject),
-			 br->wlan_name,
-			 br->peer_name,
+			 wlan_name,
+			 peer_name,
 			 atomic_long_read(&bridge_switch_ok),
 			 atomic_long_read(&bridge_switch_fail),
 			 atomic_long_read(&bridge_rollback_ok),
@@ -1467,14 +1565,17 @@ static int moal_bridge_sysfs_init(struct moal_bridge *br)
 	 * so a future 32-bit port fails loud instead of silently truncating
 	 * s64 ktime_to_us / overflowing the accumulators. */
 	BUILD_BUG_ON(sizeof(long) < 8);
-	moal_bridge_kobj = kobject_create_and_add("moal_bridge", kernel_kobj);
-	if (!moal_bridge_kobj)
-		return -ENOMEM;
-	ret = sysfs_create_file(moal_bridge_kobj, &stats_attr.attr);
-	if (ret) {
-		kobject_put(moal_bridge_kobj);
-		moal_bridge_kobj = NULL;
-		return ret;
+	if (!moal_bridge_kobj) {
+		moal_bridge_kobj =
+			kobject_create_and_add("moal_bridge", kernel_kobj);
+		if (!moal_bridge_kobj)
+			return -ENOMEM;
+		ret = sysfs_create_file(moal_bridge_kobj, &stats_attr.attr);
+		if (ret) {
+			kobject_put(moal_bridge_kobj);
+			moal_bridge_kobj = NULL;
+			return ret;
+		}
 	}
 	rcu_assign_pointer(moal_bridge_for_sysfs, br);
 	return 0;
@@ -1487,11 +1588,29 @@ static void moal_bridge_sysfs_deinit(void)
 	 * (and br->handle) before bridge teardown proceeds toward kfree(br). */
 	rcu_assign_pointer(moal_bridge_for_sysfs, NULL);
 	synchronize_rcu();
+}
+
+int moal_bridge_stats_init(void)
+{
+	int ret;
+
+	mutex_lock(&bridge_lifecycle_lock);
+	ret = moal_bridge_sysfs_init(NULL);
+	mutex_unlock(&bridge_lifecycle_lock);
+	return ret;
+}
+
+void moal_bridge_stats_cleanup(void)
+{
+	mutex_lock(&bridge_lifecycle_lock);
+	rcu_assign_pointer(moal_bridge_for_sysfs, NULL);
+	synchronize_rcu();
 	if (moal_bridge_kobj) {
 		sysfs_remove_file(moal_bridge_kobj, &stats_attr.attr);
 		kobject_put(moal_bridge_kobj);
 		moal_bridge_kobj = NULL;
 	}
+	mutex_unlock(&bridge_lifecycle_lock);
 }
 
 /* Caller holds AddRemoveCardSem. */
@@ -1516,6 +1635,7 @@ static int moal_bridge_find_target(const char *ifname,
 			if (priv->bss_type != MLAN_BSS_TYPE_STA)
 				return -EINVAL;
 			if (handle->surprise_removed || handle->fw_reseting ||
+			    handle->fw_reload || handle->driver_status ||
 			    handle->hardware_status != HardwareStatusReady)
 				return -EBUSY;
 			if (priv->netdev->reg_state != NETREG_REGISTERED ||
@@ -1524,6 +1644,8 @@ static int moal_bridge_find_target(const char *ifname,
 				return -ENETDOWN;
 			if (READ_ONCE(priv->media_connected) != MTRUE)
 				return -ENOLINK;
+			if (!netif_carrier_ok(priv->netdev))
+				return -ENETDOWN;
 			target->handle = handle;
 			target->priv = priv;
 			target->dev = priv->netdev;
@@ -1545,10 +1667,16 @@ static int moal_bridge_find_target(const char *ifname,
  * Plan SC: SC-04 (bridge_mode=0 시 미호출), SC-06 (자원 관리)
  */
 static int __moal_bridge_init_locked(moal_handle *handle,
-				     const char *peer_name, int wlan_bss_idx)
+				     const char *peer_name,
+				     struct net_device *peer_identity,
+				     int wlan_bss_idx, int keepalive_ms,
+				     int keepalive_idle_ms)
 {
 	struct moal_bridge *br;
 	struct net_device *peer;
+	char wlan_log_name[IFNAMSIZ];
+	char peer_log_name[IFNAMSIZ];
+	unsigned long flags;
 	int ret;
 
 	PRINTM(MMSG, "bridge: init (peer=%s, wlan_bss=%d)\n",
@@ -1570,8 +1698,21 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 		return -ENODEV;
 	}
 
-	/* 2. peer netdev 검색 — dev_get_by_name()이 dev_hold() 수행 */
-	peer = dev_get_by_name(&init_net, peer_name);
+	/* 2. Peer lookup remains name based for the load-time public API.  A
+	 * runtime transaction supplies the already-pinned exact device identity;
+	 * take this bridge instance's own reference only while RTNL confirms that
+	 * identity is still registered. */
+	peer = NULL;
+	if (peer_identity) {
+		rtnl_lock();
+		if (peer_identity->reg_state == NETREG_REGISTERED) {
+			peer = peer_identity;
+			dev_hold(peer);
+		}
+		rtnl_unlock();
+	} else {
+		peer = dev_get_by_name(&init_net, peer_name);
+	}
 	if (!peer) {
 		PRINTM(MERROR, "bridge: peer '%s' not found\n", peer_name);
 		atomic_set(&bridge_instance_active, 0);
@@ -1591,13 +1732,20 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 	br->wlan_dev = handle->priv[wlan_bss_idx]->netdev;
 	br->wlan_priv = handle->priv[wlan_bss_idx];
 	br->handle = handle;
-	strncpy(br->wlan_name, br->wlan_dev->name,
-		sizeof(br->wlan_name) - 1);
-	br->wlan_name[sizeof(br->wlan_name) - 1] = '\0';
-	strncpy(br->peer_name, br->peer_dev->name,
-		sizeof(br->peer_name) - 1);
-	br->peer_name[sizeof(br->peer_name) - 1] = '\0';
+	br->keepalive_ms = keepalive_ms;
+	br->keepalive_idle_ms = keepalive_idle_ms;
+	spin_lock_init(&br->name_lock);
 	atomic_set(&br->active, 0);
+	atomic_set(&br->published, 0);
+	atomic_set(&br->peer_released, 0);
+	INIT_WORK(&br->peer_release_work, moal_bridge_peer_release_work);
+	/* Initialize every timer field reachable from exposed callbacks before
+	 * capture or either notifier is registered.  Arming remains deferred until
+	 * terminal publication below. */
+	hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	br->keepalive_timer.function = moal_bridge_keepalive;
+	br->ka_last_fwd = ktime_get();
+	atomic_set(&br->ka_armed, 0);
 
 	skb_queue_head_init(&br->w2p_queue);
 	atomic_set(&br->w2p_qlen, 0);
@@ -1634,10 +1782,6 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 	ether_addr_copy(br->wlan_mac, br->wlan_dev->dev_addr);
 	ether_addr_copy(br->peer_mac, br->peer_dev->dev_addr);
 
-	/* IPv4 주소 캐시 */
-	br->wlan_ipv4 = moal_bridge_get_ipv4(br->wlan_dev);
-	br->peer_ipv4 = moal_bridge_get_ipv4(br->peer_dev);
-
 	/* 5. RTNL 락 하에서 promiscuous + rx_handler 등록 (RTNL 필수)
 	 * dev_set_promiscuity, netdev_rx_handler_register 모두 RTNL 보유 필요 */
 	br->use_packet_type = 0;
@@ -1652,69 +1796,115 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 		br->peer_pt.type = htons(ETH_P_ALL);
 		br->peer_pt.func = moal_bridge_peer_pt_func;
 		br->peer_pt.dev = peer;
+		rtnl_lock();
 		dev_add_pack(&br->peer_pt);
+		rtnl_unlock();
 	}
 
 	/* 6. netdev notifier 등록 */
 	br->netdev_nb.notifier_call = moal_bridge_netdev_event;
-	register_netdevice_notifier(&br->netdev_nb);
-
-	/* 6b. inetaddr notifier 등록 (DHCP 완료 시 IP 재캐시) */
+	ret = register_netdevice_notifier(&br->netdev_nb);
+	if (ret)
+		goto err_capture;
 	br->inet_nb.notifier_call = moal_bridge_inetaddr_event;
-	register_inetaddr_notifier(&br->inet_nb);
+	ret = register_inetaddr_notifier(&br->inet_nb);
+	if (ret)
+		goto err_netdev_notifier;
+	/* register_netdevice_notifier() takes RTNL internally.  Snapshot names and
+	 * validate both identities under a following RTNL section so neither a
+	 * rename nor unregister can fall between the final check and publication.
+	 * The notifier may have consumed the bridge-owned peer reference on an
+	 * unregister delivered during registration; peer_released distinguishes
+	 * that path and prevents resurrection of an inactive/stale bridge. */
+	rtnl_lock();
+	if (atomic_read(&br->peer_released) ||
+	    br->peer_dev->reg_state != NETREG_REGISTERED ||
+	    br->wlan_dev->reg_state != NETREG_REGISTERED ||
+	    !netif_device_present(br->peer_dev) ||
+	    !netif_device_present(br->wlan_dev)) {
+		rtnl_unlock();
+		ret = atomic_read(&br->peer_released) ? -ENODEV : -ENETDOWN;
+		goto err_inet_notifier;
+	}
+	spin_lock_irqsave(&br->name_lock, flags);
+	strncpy(br->wlan_name, br->wlan_dev->name,
+		sizeof(br->wlan_name) - 1);
+	br->wlan_name[sizeof(br->wlan_name) - 1] = '\0';
+	strncpy(br->peer_name, br->peer_dev->name,
+		sizeof(br->peer_name) - 1);
+	br->peer_name[sizeof(br->peer_name) - 1] = '\0';
+	spin_unlock_irqrestore(&br->name_lock, flags);
+	/* No address-change event can be missed now that the inet notifier is
+	 * registered; take the authoritative initial snapshot under RTNL. */
+	br->wlan_ipv4 = moal_bridge_get_ipv4(br->wlan_dev);
+	br->peer_ipv4 = moal_bridge_get_ipv4(br->peer_dev);
 
 	/* 7. keepalive timer — keeps the SDIO main_work warm.
 	 *    idle_ms<=0: free-running (legacy) — start now, never self-stops.
 	 *    idle_ms>0 : adaptive — armed by the first forwarded packet
 	 *                (moal_bridge_ka_kick) and self-stops after idle_ms of
 	 *                no traffic, so a truly idle link costs zero wakeups. */
-	if (handle->params.bridge_keepalive_ms > 0) {
-		hrtimer_init(&br->keepalive_timer, CLOCK_MONOTONIC,
-			     HRTIMER_MODE_REL);
-		br->keepalive_timer.function = moal_bridge_keepalive;
-		br->ka_last_fwd = ktime_get();
-		if (handle->params.bridge_keepalive_idle_ms > 0) {
-			atomic_set(&br->ka_armed, 0);
+	if (keepalive_ms > 0) {
+			if (keepalive_idle_ms > 0) {
 			PRINTM(MMSG,
 			       "bridge:   keepalive  = %dms (adaptive, idle %dms)\n",
-			       handle->params.bridge_keepalive_ms,
-			       handle->params.bridge_keepalive_idle_ms);
+			       keepalive_ms, keepalive_idle_ms);
 			/* idle_ms < keepalive_ms → 타이머가 매 tick 마다
 			 * idle_us < cutoff 로 판정되어 legacy 속도로 계속 돎
 			 * (자가정지 안 됨) → 절감 무력화. 경고만, 동작은 유지. */
-			if (handle->params.bridge_keepalive_idle_ms <
-			    handle->params.bridge_keepalive_ms)
+			if (keepalive_idle_ms < keepalive_ms)
 				PRINTM(MWARN,
 				       "bridge: keepalive_idle_ms(%d) < keepalive_ms(%d) — timer re-arms every tick; power saving ineffective\n",
-				       handle->params.bridge_keepalive_idle_ms,
-				       handle->params.bridge_keepalive_ms);
+				       keepalive_idle_ms, keepalive_ms);
 		} else {
 			ktime_t interval = ns_to_ktime(
-				(u64)handle->params.bridge_keepalive_ms *
+				(u64)keepalive_ms *
 				NSEC_PER_MSEC);
 			atomic_set(&br->ka_armed, 1);
 			hrtimer_start(&br->keepalive_timer, interval,
 				      HRTIMER_MODE_REL);
 			PRINTM(MMSG, "bridge:   keepalive  = %dms\n",
-			       handle->params.bridge_keepalive_ms);
+			       keepalive_ms);
 		}
 	} else {
 		PRINTM(MMSG, "bridge:   keepalive  = off\n");
 	}
 
-	/* 8. 활성화 — rcu_assign_pointer publishes br before readers may observe it */
+	/* 8. 활성화 — RTNL is retained from the final identity check through
+	 * publication, so the notifier cannot invalidate either device first. */
 	rcu_assign_pointer(handle->bridge, br);
-	atomic_set(&br->active, 1);
+	handle->bridge_effective_wlan_idx = wlan_bss_idx;
+	atomic_set(&br->published, 1);
+	/* Generic load-time binding may be created before association.  It remains
+	 * owned but inactive until notifier-observed state makes both endpoints
+	 * usable; runtime switching applies its stricter validation separately. */
+	if (moal_bridge_dev_ready(br->peer_dev) &&
+	    moal_bridge_dev_ready(br->wlan_dev) &&
+	    READ_ONCE(((moal_private *)br->wlan_priv)->media_connected) == MTRUE)
+		atomic_set(&br->active, netif_running(br->peer_dev) ? 1 : 0);
+	else
+		atomic_set(&br->active, 0);
+	rtnl_unlock();
 
 	/* 8b. sysfs stats node (best-effort; log but do not fail init) */
 	if (moal_bridge_sysfs_init(br))
 		PRINTM(MMSG, "bridge: sysfs stats node unavailable\n");
 
+	/* The notifier is live at this point, so names may change concurrently.
+	 * Take one protected logging snapshot instead of formatting the mutable
+	 * cache directly.  Device identity remains pointer based. */
+	spin_lock_irqsave(&br->name_lock, flags);
+	strncpy(wlan_log_name, br->wlan_name, sizeof(wlan_log_name) - 1);
+	wlan_log_name[sizeof(wlan_log_name) - 1] = '\0';
+	strncpy(peer_log_name, br->peer_name, sizeof(peer_log_name) - 1);
+	peer_log_name[sizeof(peer_log_name) - 1] = '\0';
+	spin_unlock_irqrestore(&br->name_lock, flags);
+
 	PRINTM(MMSG, "bridge: === Configuration ===\n");
 	PRINTM(MMSG, "bridge:   mode        = %d\n", 1);
 	PRINTM(MMSG, "bridge:   wlan_bss    = %d (%s)\n",
-	       wlan_bss_idx, br->wlan_name);
-	PRINTM(MMSG, "bridge:   peer        = %s\n", br->peer_name);
+	       wlan_bss_idx, wlan_log_name);
+	PRINTM(MMSG, "bridge:   peer        = %s\n", peer_log_name);
 	PRINTM(MMSG, "bridge:   wlan_mac    = " MACSTR "\n",
 	       MAC2STR(br->wlan_mac));
 	PRINTM(MMSG, "bridge:   peer_mac    = " MACSTR "\n",
@@ -1727,6 +1917,40 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 	PRINTM(MMSG, "bridge: === Activated ===\n");
 
 	return 0;
+
+err_inet_notifier:
+	unregister_inetaddr_notifier(&br->inet_nb);
+err_netdev_notifier:
+	atomic_set(&br->active, 0);
+	unregister_netdevice_notifier(&br->netdev_nb);
+
+err_capture:
+	atomic_set(&br->active, 0);
+	if (!atomic_read(&br->peer_released)) {
+		rtnl_lock();
+		if (br->use_packet_type)
+			dev_remove_pack(&br->peer_pt);
+		else
+			netdev_rx_handler_unregister(br->peer_dev);
+		dev_set_promiscuity(br->peer_dev, -1);
+		rtnl_unlock();
+	}
+	/* netdev_rx_handler_unregister/dev_remove_pack only stop new delivery.
+	 * Drain callbacks which already obtained br before releasing its device
+	 * reference or storage. */
+	synchronize_net();
+	flush_work(&br->peer_release_work);
+	if (br->w2p_thread)
+		kthread_stop(br->w2p_thread);
+	if (br->p2w_thread)
+		kthread_stop(br->p2w_thread);
+	skb_queue_purge(&br->w2p_queue);
+	skb_queue_purge(&br->p2w_queue);
+	if (!atomic_read(&br->peer_released))
+		dev_put(br->peer_dev);
+	kfree(br);
+	atomic_set(&bridge_instance_active, 0);
+	return ret;
 }
 
 /**
@@ -1748,6 +1972,7 @@ static void __moal_bridge_deinit_locked(moal_handle *handle)
 
 	/* 1. 포워딩 비활성화 + keepalive timer 중지 + sysfs 노드 제거 */
 	atomic_set(&br->active, 0);
+	atomic_set(&br->published, 0);
 	moal_bridge_sysfs_deinit();
 	if (br->keepalive_timer.function)
 		hrtimer_cancel(&br->keepalive_timer);
@@ -1755,6 +1980,7 @@ static void __moal_bridge_deinit_locked(moal_handle *handle)
 	/* 2. notifier 해제 */
 	unregister_inetaddr_notifier(&br->inet_nb);
 	unregister_netdevice_notifier(&br->netdev_nb);
+	flush_work(&br->peer_release_work);
 
 	/* 3. ETH→WLAN 경로 해제 + promiscuous 해제 (RTNL 하에서).
 	 *    peer_released=1이면 NETDEV_UNREGISTER 경로에서 이미 정리됨. */
@@ -1778,6 +2004,7 @@ static void __moal_bridge_deinit_locked(moal_handle *handle)
 	 *    race 가 원천 차단된다. synchronize_net 이 네트 경로를 드레인한
 	 *    뒤이지만, 이 단계를 kthread_stop 앞으로 당겨야 설계 의도가 명확. */
 	rcu_assign_pointer(handle->bridge, NULL);
+	handle->bridge_effective_wlan_idx = -1;
 	synchronize_rcu();
 
 	/* 5b. keepalive: in adaptive mode an in-flight producer may have
@@ -1847,7 +2074,10 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 	if (!handle)
 		return -EINVAL;
 	mutex_lock(&bridge_lifecycle_lock);
-	ret = __moal_bridge_init_locked(handle, peer_name, wlan_bss_idx);
+	ret = __moal_bridge_init_locked(
+		handle, peer_name, NULL, wlan_bss_idx,
+		handle->params.bridge_keepalive_ms,
+		handle->params.bridge_keepalive_idle_ms);
 	if (!ret)
 		bridge_owner = handle;
 	mutex_unlock(&bridge_lifecycle_lock);
@@ -1868,124 +2098,399 @@ void moal_bridge_deinit(void *phandle)
 	mutex_unlock(&bridge_lifecycle_lock);
 }
 
+static bool moal_bridge_handles_related(moal_handle *left, moal_handle *right)
+{
+	return left && right &&
+	       (left == right || left->pref_mac == right || right->pref_mac == left);
+}
+
+static int __moal_bridge_suspend_owner(void *expected_handle,
+				       bool allow_companion)
+{
+	moal_handle *expected = expected_handle;
+	struct moal_bridge *br;
+	unsigned long flags;
+
+	mutex_lock(&bridge_lifecycle_lock);
+	if (bridge_suspended_owner.valid) {
+		if (allow_companion &&
+		    moal_bridge_handles_related(bridge_suspended_owner.handle,
+						expected)) {
+			mutex_unlock(&bridge_lifecycle_lock);
+			return 0;
+		}
+		mutex_unlock(&bridge_lifecycle_lock);
+		return -EBUSY;
+	}
+	br = bridge_owner ? bridge_owner->bridge : NULL;
+	if (!br) {
+		mutex_unlock(&bridge_lifecycle_lock);
+		return 0;
+	}
+	if (expected &&
+	    ((!allow_companion && bridge_owner != expected) ||
+	     (allow_companion &&
+	      !moal_bridge_handles_related(bridge_owner, expected)))) {
+		mutex_unlock(&bridge_lifecycle_lock);
+		return 0;
+	}
+	memset(&bridge_suspended_owner, 0,
+	       sizeof(bridge_suspended_owner));
+	bridge_suspended_owner.handle = bridge_owner;
+	bridge_suspended_owner.wlan_bss_idx =
+		bridge_owner->bridge_effective_wlan_idx;
+	bridge_suspended_owner.keepalive_ms = br->keepalive_ms;
+	bridge_suspended_owner.keepalive_idle_ms = br->keepalive_idle_ms;
+	/* NETDEV_UNREGISTER and rename are RTNL-serialized.  Pin the exact peer
+	 * while RTNL excludes unregister; this reference survives full deinit. */
+	rtnl_lock();
+	spin_lock_irqsave(&br->name_lock, flags);
+	bridge_suspended_owner.peer_dev = br->peer_dev;
+	if (atomic_read(&br->peer_released) ||
+	    br->peer_dev->reg_state != NETREG_REGISTERED)
+		bridge_suspended_owner.peer_dev = NULL;
+	else
+		dev_hold(bridge_suspended_owner.peer_dev);
+	spin_unlock_irqrestore(&br->name_lock, flags);
+	rtnl_unlock();
+	if (!bridge_suspended_owner.peer_dev) {
+		memset(&bridge_suspended_owner, 0,
+		       sizeof(bridge_suspended_owner));
+		mutex_unlock(&bridge_lifecycle_lock);
+		return -ENODEV;
+	}
+	bridge_suspended_owner.valid = true;
+	__moal_bridge_deinit_locked(bridge_owner);
+	bridge_owner = NULL;
+	mutex_unlock(&bridge_lifecycle_lock);
+	return 0;
+}
+
+int moal_bridge_suspend_owner(void)
+{
+	return __moal_bridge_suspend_owner(NULL, false);
+}
+
+int moal_bridge_suspend_owner_for(void *handle)
+{
+	return __moal_bridge_suspend_owner(handle, false);
+}
+
+int moal_bridge_suspend_owner_for_reset(void *handle)
+{
+	return __moal_bridge_suspend_owner(handle, true);
+}
+
+static int __moal_bridge_resume_owner(void *expected_handle,
+				      bool allow_companion)
+{
+	struct moal_bridge_suspended_owner saved;
+	char peer_name[IFNAMSIZ];
+	int ret;
+
+	mutex_lock(&bridge_lifecycle_lock);
+	if (!bridge_suspended_owner.valid) {
+		mutex_unlock(&bridge_lifecycle_lock);
+		return 0;
+	}
+	if (expected_handle &&
+	    ((!allow_companion &&
+	      bridge_suspended_owner.handle != expected_handle) ||
+	     (allow_companion &&
+	      !moal_bridge_handles_related(bridge_suspended_owner.handle,
+					   expected_handle)))) {
+		mutex_unlock(&bridge_lifecycle_lock);
+		return -EBUSY;
+	}
+	saved = bridge_suspended_owner;
+	memset(&bridge_suspended_owner, 0,
+	       sizeof(bridge_suspended_owner));
+	rtnl_lock();
+	strncpy(peer_name, saved.peer_dev->name, sizeof(peer_name) - 1);
+	peer_name[sizeof(peer_name) - 1] = '\0';
+	rtnl_unlock();
+	ret = __moal_bridge_init_locked(
+		saved.handle, peer_name, saved.peer_dev,
+		saved.wlan_bss_idx, saved.keepalive_ms,
+		saved.keepalive_idle_ms);
+	if (!ret)
+		bridge_owner = saved.handle;
+	dev_put(saved.peer_dev);
+	mutex_unlock(&bridge_lifecycle_lock);
+	return ret;
+}
+
+int moal_bridge_resume_owner(void)
+{
+	return __moal_bridge_resume_owner(NULL, false);
+}
+
+int moal_bridge_resume_owner_for(void *handle)
+{
+	return __moal_bridge_resume_owner(handle, false);
+}
+
+static void __moal_bridge_discard_suspended_owner(void *expected_handle,
+						   bool allow_companion)
+{
+	mutex_lock(&bridge_lifecycle_lock);
+	if (expected_handle && bridge_suspended_owner.valid &&
+	    ((!allow_companion &&
+	      bridge_suspended_owner.handle != expected_handle) ||
+	     (allow_companion &&
+	      !moal_bridge_handles_related(bridge_suspended_owner.handle,
+					   expected_handle)))) {
+		mutex_unlock(&bridge_lifecycle_lock);
+		return;
+	}
+	if (bridge_suspended_owner.peer_dev)
+		dev_put(bridge_suspended_owner.peer_dev);
+	memset(&bridge_suspended_owner, 0,
+	       sizeof(bridge_suspended_owner));
+	mutex_unlock(&bridge_lifecycle_lock);
+}
+
+void moal_bridge_discard_suspended_owner(void)
+{
+	__moal_bridge_discard_suspended_owner(NULL, false);
+}
+
+void moal_bridge_discard_suspended_owner_for_reset(void *handle)
+{
+	__moal_bridge_discard_suspended_owner(handle, true);
+}
+
+void moal_bridge_forget_handle(void *phandle)
+{
+	moal_handle *handle = phandle;
+
+	if (!handle)
+		return;
+	mutex_lock(&bridge_lifecycle_lock);
+	if (bridge_owner == handle) {
+		__moal_bridge_deinit_locked(handle);
+		bridge_owner = NULL;
+	}
+	if (bridge_suspended_owner.handle == handle) {
+		if (bridge_suspended_owner.peer_dev)
+			dev_put(bridge_suspended_owner.peer_dev);
+		memset(&bridge_suspended_owner, 0,
+		       sizeof(bridge_suspended_owner));
+	}
+	mutex_unlock(&bridge_lifecycle_lock);
+}
+
 int moal_bridge_get_iface(char *buf, size_t len)
 {
 	struct moal_bridge *br;
+	char wlan_name[IFNAMSIZ];
+	unsigned long flags;
 	int ret;
 
 	if (!buf || !len)
 		return -EINVAL;
 	mutex_lock(&bridge_lifecycle_lock);
 	br = bridge_owner ? bridge_owner->bridge : NULL;
-	ret = scnprintf(buf, len, "%s\n",
-			br && atomic_read(&br->active) ? br->wlan_name : "none");
+	if (!br) {
+		ret = scnprintf(buf, len, "none\n");
+	} else {
+		spin_lock_irqsave(&br->name_lock, flags);
+		strncpy(wlan_name, br->wlan_name, sizeof(wlan_name) - 1);
+		wlan_name[sizeof(wlan_name) - 1] = '\0';
+		spin_unlock_irqrestore(&br->name_lock, flags);
+		ret = scnprintf(buf, len, "%s\n", wlan_name);
+	}
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
+}
+
+static int moal_bridge_validate_binding_locked(
+	const struct moal_bridge_target *target, struct net_device *peer)
+{
+	if (!target || !target->handle || !target->priv || !target->dev || !peer)
+		return -ENODEV;
+	if (target->handle->surprise_removed || target->handle->fw_reseting ||
+	    target->handle->fw_reload || target->handle->driver_status ||
+	    target->handle->hardware_status != HardwareStatusReady)
+		return -EBUSY;
+	if (target->bss_index < 0 ||
+	    target->bss_index >= MLAN_MAX_BSS_NUM ||
+	    target->priv->netdev != target->dev ||
+	    target->handle->priv[target->bss_index] != target->priv)
+		return -ENODEV;
+	if (bridge_owner || !target->handle->bridge ||
+	    target->handle->bridge->wlan_dev != target->dev ||
+	    target->handle->bridge->peer_dev != peer ||
+	    atomic_read(&target->handle->bridge->peer_released))
+		return -EBUSY;
+	if (target->dev->reg_state != NETREG_REGISTERED ||
+	    !netif_device_present(target->dev) ||
+	    !netif_running(target->dev))
+		return -ENETDOWN;
+	if (READ_ONCE(target->priv->media_connected) != MTRUE)
+		return -ENOLINK;
+	if (!netif_carrier_ok(target->dev))
+		return -ENETDOWN;
+	if (peer->reg_state != NETREG_REGISTERED ||
+	    !netif_device_present(peer) || !moal_bridge_dev_ready(peer))
+		return -ENETDOWN;
+	if (!atomic_read(&target->handle->bridge->published) ||
+	    !atomic_read(&target->handle->bridge->active))
+		return -EBUSY;
+	return 0;
 }
 
 int moal_bridge_switch_iface(const char *ifname)
 {
 	struct moal_bridge_switch_snapshot old;
 	struct moal_bridge_target target;
+	struct moal_bridge_target rollback_target;
 	struct moal_bridge *br;
-	char target_bridge_peer[IFNAMSIZ];
-	int target_mode;
-	int target_wlan_idx;
-	int target_keepalive_ms;
-	int target_keepalive_idle_ms;
+	unsigned long flags;
 	int target_ret;
 	int rollback_ret;
 	int ret;
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+	int fault_mask = 0;
+#endif
+	bool terminal_logged = false;
 
-	if (READ_ONCE(bridge_runtime_switch) != 1)
+	if (!ifname || !ifname[0])
+		return -EINVAL;
+	PRINTM(MMSG, "bridge: runtime switch requested target=%s\n", ifname);
+	if (!READ_ONCE(bridge_runtime_control_ready)) {
+		PRINTM(MERROR, "bridge: runtime switch rejected target=%s err=%d\n",
+		       ifname, -EAGAIN);
+		return -EAGAIN;
+	}
+	if (READ_ONCE(bridge_runtime_switch) != 1) {
+		PRINTM(MERROR, "bridge: runtime switch rejected target=%s err=%d\n",
+		       ifname, -EOPNOTSUPP);
 		return -EOPNOTSUPP;
-	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
+	}
+	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
+		PRINTM(MERROR, "bridge: runtime switch interrupted target=%s err=%d\n",
+		       ifname, -ERESTARTSYS);
 		return -ERESTARTSYS;
+	}
+	if (!READ_ONCE(bridge_runtime_control_ready)) {
+		ret = -ESHUTDOWN;
+		goto out_card;
+	}
 
 	mutex_lock(&bridge_lifecycle_lock);
 	br = bridge_owner ? bridge_owner->bridge : NULL;
-	if (!br || !atomic_read(&br->active)) {
+	if (!br) {
 		ret = -ENODEV;
 		goto out_unlock;
 	}
 
+	rtnl_lock();
 	ret = moal_bridge_find_target(ifname, &target);
+	rtnl_unlock();
 	if (ret)
 		goto out_unlock;
-	if (target.dev == bridge_owner->bridge->wlan_dev) {
-		ret = 0;
-		goto out_unlock;
-	}
 
 	old.old_owner = bridge_owner;
-	old.old_bss_index = old.old_owner->params.bridge_wlan_idx;
+	old.old_bss_index = old.old_owner->bridge_effective_wlan_idx;
+	rtnl_lock();
+	spin_lock_irqsave(&br->name_lock, flags);
 	strncpy(old.old_iface, br->wlan_name, sizeof(old.old_iface) - 1);
 	old.old_iface[sizeof(old.old_iface) - 1] = '\0';
 	strncpy(old.peer, br->peer_name, sizeof(old.peer) - 1);
 	old.peer[sizeof(old.peer) - 1] = '\0';
-	old.old_mode = old.old_owner->params.bridge_mode;
-	old.keepalive_ms = old.old_owner->params.bridge_keepalive_ms;
-	old.keepalive_idle_ms =
-		old.old_owner->params.bridge_keepalive_idle_ms;
+	old.peer_dev = br->peer_dev;
+	if (atomic_read(&br->peer_released) ||
+	    !atomic_read(&br->active) ||
+	    br->peer_dev->reg_state != NETREG_REGISTERED ||
+	    !netif_device_present(br->peer_dev) ||
+	    !moal_bridge_dev_ready(br->peer_dev))
+		old.peer_dev = NULL;
+	else
+		dev_hold(old.peer_dev);
+	spin_unlock_irqrestore(&br->name_lock, flags);
+	rtnl_unlock();
+	if (!old.peer_dev) {
+		ret = atomic_read(&br->peer_released) ? -ENODEV : -ENETDOWN;
+		goto out_unlock;
+	}
+	old.keepalive_ms = br->keepalive_ms;
+	old.keepalive_idle_ms = br->keepalive_idle_ms;
+	if (target.dev == bridge_owner->bridge->wlan_dev) {
+		ret = 0;
+		terminal_logged = true;
+		PRINTM(MMSG,
+		       "bridge: runtime switch complete target=%s (no-op)\n",
+		       ifname);
+		goto out_peer;
+	}
 
-	target_mode = target.handle->params.bridge_mode;
-	target_wlan_idx = target.handle->params.bridge_wlan_idx;
-	strncpy(target_bridge_peer, target.handle->params.bridge_peer,
-		sizeof(target_bridge_peer) - 1);
-	target_bridge_peer[sizeof(target_bridge_peer) - 1] = '\0';
-	target_keepalive_ms = target.handle->params.bridge_keepalive_ms;
-	target_keepalive_idle_ms =
-		target.handle->params.bridge_keepalive_idle_ms;
-
-	PRINTM(MMSG, "bridge: runtime switch requested %s -> %s\n",
-	       old.old_iface, target.dev->name);
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+	/* QA-only and one-shot.  Consume only after all non-destructive checks and
+	 * the exact peer reference are complete, immediately before teardown. */
+	fault_mask = xchg(&bridge_switch_fault_mask, 0);
+#endif
 
 	__moal_bridge_deinit_locked(old.old_owner);
 	bridge_owner = NULL;
 
-	target.handle->params.bridge_mode = 1;
-	target.handle->params.bridge_wlan_idx = target.bss_index;
-	strncpy(target.handle->params.bridge_peer, old.peer,
-		sizeof(target.handle->params.bridge_peer) - 1);
-	target.handle->params.bridge_peer[
-		sizeof(target.handle->params.bridge_peer) - 1] = '\0';
-	target.handle->params.bridge_keepalive_ms = old.keepalive_ms;
-	target.handle->params.bridge_keepalive_idle_ms = old.keepalive_idle_ms;
-
-	ret = __moal_bridge_init_locked(target.handle, old.peer,
-					 target.bss_index);
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+	if (fault_mask & BIT(0))
+		ret = -ENOMEM;
+	else
+#endif
+		ret = __moal_bridge_init_locked(
+			target.handle, old.peer, old.peer_dev, target.bss_index,
+			old.keepalive_ms, old.keepalive_idle_ms);
 	if (!ret) {
-		if (old.old_owner != target.handle)
-			old.old_owner->params.bridge_mode = 0;
-		target.handle->params.bridge_mode = 1;
+		rtnl_lock();
+		ret = moal_bridge_validate_binding_locked(&target, old.peer_dev);
+		rtnl_unlock();
+		if (ret) {
+			__moal_bridge_deinit_locked(target.handle);
+			goto rollback;
+		}
 		bridge_owner = target.handle;
 		atomic_long_inc(&bridge_switch_ok);
 		PRINTM(MMSG, "bridge: runtime switch complete %s -> %s\n",
-		       old.old_iface, target.dev->name);
-		goto out_unlock;
+		       old.old_iface, ifname);
+		terminal_logged = true;
+		goto out_peer;
 	}
 
+	rollback:
 	target_ret = ret;
-	target.handle->params.bridge_mode = target_mode;
-	target.handle->params.bridge_wlan_idx = target_wlan_idx;
-	strncpy(target.handle->params.bridge_peer, target_bridge_peer,
-		sizeof(target.handle->params.bridge_peer) - 1);
-	target.handle->params.bridge_peer[
-		sizeof(target.handle->params.bridge_peer) - 1] = '\0';
-	target.handle->params.bridge_keepalive_ms = target_keepalive_ms;
-	target.handle->params.bridge_keepalive_idle_ms = target_keepalive_idle_ms;
-
-	rollback_ret = __moal_bridge_init_locked(old.old_owner, old.peer,
-					   old.old_bss_index);
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+	if (fault_mask & BIT(1))
+		rollback_ret = -ENOMEM;
+	else
+#endif
+		rollback_ret = __moal_bridge_init_locked(
+			old.old_owner, old.peer, old.peer_dev,
+			old.old_bss_index, old.keepalive_ms,
+			old.keepalive_idle_ms);
 	if (!rollback_ret) {
-		old.old_owner->params.bridge_mode = old.old_mode;
+		rollback_target.handle = old.old_owner;
+		rollback_target.bss_index = old.old_bss_index;
+		rollback_target.priv =
+			old.old_bss_index >= 0 &&
+			old.old_bss_index < MLAN_MAX_BSS_NUM ?
+			old.old_owner->priv[old.old_bss_index] : NULL;
+		rollback_target.dev = rollback_target.priv ?
+			rollback_target.priv->netdev : NULL;
+		rtnl_lock();
+		rollback_ret = moal_bridge_validate_binding_locked(
+			&rollback_target, old.peer_dev);
+		rtnl_unlock();
+		if (rollback_ret)
+			__moal_bridge_deinit_locked(old.old_owner);
+	}
+	if (!rollback_ret) {
 		bridge_owner = old.old_owner;
 		atomic_long_inc(&bridge_switch_fail);
 		atomic_long_inc(&bridge_rollback_ok);
 		ret = target_ret;
 	} else {
-		old.old_owner->params.bridge_mode = 0;
-		target.handle->params.bridge_mode = 0;
 		bridge_owner = NULL;
 		atomic_long_inc(&bridge_switch_fail);
 		atomic_long_inc(&bridge_rollback_fail);
@@ -1994,10 +2499,25 @@ int moal_bridge_switch_iface(const char *ifname)
 	PRINTM(MERROR,
 	       "bridge: runtime switch failed %s -> %s "
 	       "target_err=%d rollback_err=%d\n",
-	       old.old_iface, target.dev->name, target_ret, rollback_ret);
+	       old.old_iface, ifname, target_ret, rollback_ret);
+	terminal_logged = true;
+
+out_peer:
+	dev_put(old.peer_dev);
 
 out_unlock:
+	if (ret && !terminal_logged) {
+		PRINTM(MERROR,
+		       "bridge: runtime switch rejected target=%s err=%d\n",
+		       ifname, ret);
+		terminal_logged = true;
+	}
 	mutex_unlock(&bridge_lifecycle_lock);
+out_card:
+	if (ret && !terminal_logged)
+		PRINTM(MERROR,
+		       "bridge: runtime switch rejected target=%s err=%d\n",
+		       ifname, ret);
 	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	return ret;
 }

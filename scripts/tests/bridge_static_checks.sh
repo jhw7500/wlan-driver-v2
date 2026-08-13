@@ -97,29 +97,6 @@ check_no_direct_return_while_locked() {
   '
 }
 
-check_switch_success_contract() {
-  local success_block guarded_control old_mode_clear_count
-
-  success_block="$(extract_c_block "$1" \
-    '^[[:space:]]*if \(!ret\) \{')" || return 1
-  guarded_control="$(extract_guarded_control "$success_block" \
-    '^[[:space:]]*if \(old\.old_owner != target\.handle\)')" || return 1
-  printf '%s\n' "$guarded_control" | \
-    grep -Fq 'old.old_owner->params.bridge_mode = 0' || return 1
-  if printf '%s\n' "$guarded_control" | \
-      grep -Fq 'target.handle->params.bridge_mode = 1'; then
-    return 1
-  fi
-  old_mode_clear_count="$(printf '%s\n' "$success_block" | \
-    grep -Fc 'old.old_owner->params.bridge_mode = 0' || true)"
-  [ "$old_mode_clear_count" -eq 1 ] || return 1
-  printf '%s\n' "$success_block" | \
-    grep -Fq 'target.handle->params.bridge_mode = 1' || return 1
-  printf '%s\n' "$success_block" | \
-    grep -Fq 'bridge_owner = target.handle' || return 1
-  printf '%s\n' "$success_block" | \
-    grep -Fq 'atomic_long_inc(&bridge_switch_ok)' || return 1
-}
 
 check_bridge_iface_set_contract() {
   local setter="$1" gate_control null_control bound_control edge_control
@@ -166,309 +143,648 @@ check_bridge_iface_set_contract() {
   '
 }
 
-check_stats_rcu_lifetime_contract() {
-  local stats="$1" sysfs_deinit="$2" lifecycle_deinit="$3" remove_card="$4"
+check_ready_switch_contract() {
+  local setter="$1" switch="$2"
 
-  printf '%s\n' "$stats" | awk '
-    /rcu_read_lock\(\)/ { lock=NR }
-    /rcu_dereference\(moal_bridge_for_sysfs\)/ { deref=NR }
-    /handle = .*br->handle/ { handle=NR }
-    /ret = scnprintf/ { format=NR }
-    /rcu_read_unlock\(\)/ { unlock=NR }
-    END { exit !(lock && deref && handle && format && unlock &&
-                 lock < deref && deref < handle && handle < format &&
-                 format < unlock) }
+  printf '%s\n' "$setter" | awk '
+    /READ_ONCE\(bridge_runtime_control_ready\)/ { ready=NR }
+    /READ_ONCE\(bridge_runtime_switch\)/ { gate=NR }
+    /moal_bridge_switch_iface\(ifname\)/ { call=NR }
+    END { exit !(ready && gate && call && ready < gate && gate < call) }
   ' || return 1
-  printf '%s\n' "$stats" | grep -Fq 'return scnprintf' && return 1
-  [ "$(printf '%s\n' "$stats" | grep -c 'rcu_read_unlock()' || true)" -eq 1 ] || \
-    return 1
-  printf '%s\n' "$stats" | awk '
-    /rcu_read_lock\(\)/ { acquired=1; next }
-    /rcu_read_unlock\(\)/ { acquired=0 }
-    acquired && /^[[:space:]]*return[[:space:]]/ { bad=1 }
-    /goto out_rcu/ { shared_exit=1 }
-    /^out_rcu:/ { label=1 }
-    END { exit (bad || !shared_exit || !label || acquired) }
-  ' || return 1
-  printf '%s\n' "$sysfs_deinit" | awk '
-    /rcu_assign_pointer\(moal_bridge_for_sysfs, NULL\)/ { clear=NR }
-    /synchronize_rcu\(\)/ { drain=NR }
-    /sysfs_remove_file/ { remove=NR }
-    END { exit !(clear && drain && remove && clear < drain && drain < remove) }
-  ' || return 1
-  printf '%s\n' "$lifecycle_deinit" | awk '
-    /moal_bridge_sysfs_deinit\(\)/ { drain=NR }
-    /kfree\(br\)/ { free=NR }
-    END { exit !(drain && free && drain < free) }
-  ' || return 1
-  printf '%s\n' "$remove_card" | awk '
-    /moal_bridge_deinit\(handle\)/ { bridge_deinit=NR }
-    /woal_free_moal_handle\(handle\)/ { handle_free=NR }
-    END { exit !(bridge_deinit && handle_free && bridge_deinit < handle_free) }
-  '
-}
-
-check_bridge_name_snapshot_contract() {
-  printf '%s\n' "$1" | awk '
-    /peer = dev_get_by_name/ { peer_ref=NR }
-    /br->peer_dev = peer/ { peer_assign=NR }
-    /br->wlan_dev = / { wlan_assign=NR }
-    /strncpy\(br->wlan_name, br->wlan_dev->name/ { iface_copy=NR }
-    /br->wlan_name\[sizeof\(br->wlan_name\) - 1\] = '\''\\0'\'';/ { iface_nul=NR }
-    /strncpy\(br->peer_name, br->peer_dev->name/ { peer_copy=NR }
-    /br->peer_name\[sizeof\(br->peer_name\) - 1\] = '\''\\0'\'';/ { peer_nul=NR }
-    /register_netdevice_notifier/ { notifier=NR }
-    END { exit !(peer_ref && peer_assign && wlan_assign && iface_copy &&
-                 iface_nul && peer_copy && peer_nul && notifier &&
-                 peer_ref < peer_assign && peer_ref < wlan_assign &&
-                 peer_assign < iface_copy && wlan_assign < iface_copy &&
-                 iface_copy < iface_nul && iface_nul < peer_copy &&
-                 peer_copy < peer_nul && peer_nul < notifier) }
-  '
-}
-
-check_no_post_release_peer_name_deref() {
-  local notifier="$1" lifecycle_deinit="$2"
-
-  printf '%s\n' "$notifier" | awk '
-    /dev_put\(br->peer_dev\)/ { released=1; next }
-    released && /br->peer_dev->name/ { bad=1 }
-    END { exit bad }
-  ' || return 1
-  ! grep -Fq 'br->peer_dev->name' <<< "$lifecycle_deinit"
-}
-
-check_reset_teardown_order() {
-  printf '%s\n' "$1" | awk '
-    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { card_lock=NR }
-    /moal_bridge_deinit\(handle\)/ {
-      deinit_count++
-      if (!first_deinit) first_deinit=NR
-      last_deinit=NR
+  printf '%s\n' "$switch" | awk '
+    /READ_ONCE\(bridge_runtime_control_ready\)/ {
+      ready_count++
+      if (ready_count == 1) pre=NR
+      if (ready_count == 2) post=NR
     }
-    /woal_remove_interface\(handle,/ && !remove { remove=NR }
-    /woal_free_moal_handle\(handle\)/ && !free_handle { free_handle=NR }
-    END { exit !(card_lock && first_deinit && remove &&
-                 card_lock < first_deinit && first_deinit < remove &&
-                 (!free_handle || (deinit_count >= 2 &&
-                  remove < last_deinit && last_deinit < free_handle))) }
+    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { lock=NR }
+    /mutex_lock\(&bridge_lifecycle_lock\)/ { lifecycle=NR }
+    END { exit !(pre && lock && post && lifecycle &&
+                 pre < lock && lock < post && post < lifecycle) }
   '
 }
 
-check_post_reset_bridge_contract() {
-  local post_reset="$1" rebuild add_loop add_failure mode_block
-  local acquire_failure_control acquire_failure_tail
+check_cleanup_transaction() {
+  printf '%s\n' "$1" | awk '
+    /WRITE_ONCE\(bridge_runtime_control_ready, 0\)/ { clear=NR }
+	/WRITE_ONCE\(driver_exit_in_progress, 1\)/ { exit_gate=NR }
+	/flush_workqueue\(register_workqueue\)/ && !register_drain { register_drain=NR }
+	/flush_workqueue\(hang_workqueue\)/ && !hang_drain { hang_drain=NR }
+	/woal_quiesce_reset_work\(m_handle\[index\]\)/ { reset_drain=NR }
+    /down\(&AddRemoveCardSem\)/ { lock=NR }
+	lock && /for \(index = 0; index < MAX_MLAN_ADAPTER; index\+\+\)/ {
+      loops++
+      if (loops == 2) second_pass=NR
+    }
+    loops == 1 && /moal_bridge_deinit\(handle\)/ { deinit=NR }
+    loops == 1 && /woal_flush_workqueue\(handle\)/ { flush=NR }
+    /woal_shutdown_fw/ && !shutdown { shutdown=NR }
+    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { unlock=NR }
+	END { exit !(clear && exit_gate && register_drain && hang_drain && reset_drain &&
+		 lock && deinit && flush && second_pass && shutdown &&
+                 unlock && clear < lock && lock < deinit && deinit < flush &&
+		 exit_gate < register_drain && register_drain < hang_drain &&
+		 hang_drain < reset_drain && reset_drain < lock &&
+		 flush < second_pass && second_pass < shutdown && shutdown < unlock) }
+  '
+}
 
-  rebuild="$(extract_c_block "$post_reset" \
-    '^[[:space:]]*if \(!handle->wifi_hal_flag\) \{')" || return 1
-  add_loop="$(extract_c_block "$rebuild" \
-    '^[[:space:]]*for \(intf_num = 0; intf_num < handle->drv_mode.intf_num;')" || \
-    return 1
-  add_failure="$(extract_c_block "$add_loop" \
-    '^[[:space:]]*if \(!woal_add_interface\(handle, handle->priv_num,')" || \
-    return 1
-  mode_block="$(extract_c_block "$rebuild" \
-    '^[[:space:]]*if \(handle->params.bridge_mode\) \{')" || return 1
-  acquire_failure_control="$(extract_guarded_control "$rebuild" \
-    '^[[:space:]]*if \(MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)\)')" || \
-    return 1
-  printf '%s\n' "$acquire_failure_control" | \
-    grep -Eq '^[[:space:]]*goto card_sem_acquire_failed;' || return 1
-  acquire_failure_tail="$(printf '%s\n' "$post_reset" | awk '
-    /^card_sem_acquire_failed:/ { in_tail=1 }
-    in_tail { print }
-    END { exit !in_tail }
-  ')" || return 1
-  printf '%s\n' "$acquire_failure_tail" | \
-    grep -Eq '^out:$' || return 1
-  printf '%s\n' "$acquire_failure_tail" | \
-    grep -Eq '(^|[^[:alnum:]_])(handle|priv)([^[:alnum:]_]|$)' && return 1
-  printf '%s\n' "$acquire_failure_tail" | \
-    grep -Fq 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' && return 1
+check_terminal_switch_contract() {
+  printf '%s\n' "$1" | awk '
+    /ret = __moal_bridge_init_locked/ && !target_init { target_init=NR }
+    /ret = moal_bridge_validate_binding_locked/ && !validate { validate=NR }
+    validate && /__moal_bridge_deinit_locked\(target.handle\)/ && !target_deinit {
+      target_deinit=NR
+    }
+    /^[[:space:]]*rollback:/ { rollback=NR }
+    /bridge_owner = target.handle/ { owner=NR }
+    /atomic_long_inc\(&bridge_switch_ok\)/ { success=NR }
+	/rollback_ret = __moal_bridge_init_locked/ { rollback_init=NR }
+	/rollback_ret = moal_bridge_validate_binding_locked/ { rollback_validate=NR }
+	rollback_validate && /__moal_bridge_deinit_locked\(old.old_owner\)/ {
+	  rollback_deinit=NR
+	}
+	/bridge_owner = old.old_owner/ { rollback_owner=NR }
+    END { exit !(target_init && validate && target_deinit && rollback && owner &&
+		 success && rollback_init && rollback_validate && rollback_deinit &&
+		 rollback_owner && target_init < validate && validate < target_deinit &&
+                 target_deinit < rollback && validate < owner && owner < success &&
+                 rollback < rollback_init && rollback_init < rollback_validate &&
+                 rollback_validate < rollback_deinit && rollback_deinit < rollback_owner) }
+  ' || return 1
+  printf '%s\n' "$1" | awk '
+    /rtnl_lock\(\)/ && !target_lock { target_lock=NR }
+    /^[[:space:]]*ret = moal_bridge_validate_binding_locked/ && !target_validate { target_validate=NR }
+    /rtnl_unlock\(\)/ && target_validate && !target_unlock { target_unlock=NR }
+    /rtnl_lock\(\)/ && target_unlock && !rollback_lock { rollback_lock=NR }
+    /rollback_ret = moal_bridge_validate_binding_locked/ { rollback_validate=NR }
+    /rtnl_unlock\(\)/ && rollback_validate && !rollback_unlock { rollback_unlock=NR }
+    /bridge_owner = old.old_owner/ { rollback_owner=NR }
+    END { exit !(target_lock && target_validate && target_unlock && rollback_lock &&
+                 rollback_validate && rollback_unlock && rollback_owner &&
+                 target_lock < target_validate && target_validate < target_unlock &&
+                 target_unlock < rollback_lock && rollback_lock < rollback_validate &&
+                 rollback_validate < rollback_unlock && rollback_unlock < rollback_owner) }
+  '
+}
 
-  [ "$(printf '%s\n' "$post_reset" | \
-    grep -Fc 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || true)" -eq 1 ] || \
-    return 1
-  [ "$(printf '%s\n' "$rebuild" | \
-    grep -Fc 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || true)" -eq 1 ] || \
-    return 1
-  [ "$(printf '%s\n' "$post_reset" | \
-    grep -Fc 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' || true)" -eq 1 ] || \
-    return 1
-  [ "$(printf '%s\n' "$post_reset" | \
-    grep -Fc 'moal_bridge_init(handle,' || true)" -eq 1 ] || return 1
-  printf '%s\n' "$post_reset" | \
-    grep -Eq '^[[:space:]]*bool card_sem_held = false;' || return 1
-  printf '%s\n' "$post_reset" | awk '
-    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { acquire=NR }
-    /card_sem_held = true/ { held=NR }
-    /moal_bridge_deinit\(handle\)/ { deinit=NR }
-    /woal_remove_interface\(handle,/ && !remove { remove=NR }
-    /woal_add_interface\(handle,/ { add=NR }
-    /if \(handle->params.bridge_mode\)/ { mode=NR }
-    /moal_bridge_init\(handle,/ { init=NR }
-    /^done:/ { done=NR }
-    /if \(card_sem_held\)/ { release_guard=NR }
+check_fault_hook_compile_guard() {
+  local source="$1"
+
+  printf '%s\n' "$source" | awk '
+    /^#ifdef BRIDGE_SWITCH_FAULT_INJECT/ { guarded=1; seen_guard=1; next }
+    /^#endif/ && guarded { guarded=0; next }
+    /int fault_mask = 0;/ { variable=1; if (!guarded) bad=1 }
+    /xchg\(&bridge_switch_fault_mask, 0\)/ { consume=1; if (!guarded) bad=1 }
+    /if \(fault_mask & BIT\(0\)\)/ { target=1; if (!guarded) bad=1 }
+    /if \(fault_mask & BIT\(1\)\)/ { rollback=1; if (!guarded) bad=1 }
+    END { exit !(seen_guard && variable && consume && target && rollback && !bad) }
+  '
+}
+
+check_standard_artifact_fault_absence() {
+  local artifact found=0
+  shopt -s nullglob
+  for artifact in "$ROOT"/moal.ko "$ROOT"/bin_wlan/*.ko; do
+    [ -f "$artifact" ] || continue
+    found=1
+    if strings "$artifact" | grep -Fq 'bridge_switch_fault_mask'; then
+      fail "runtime-switch: standard artifact exposes fault symbol: $artifact"
+    fi
+    printf 'PASS: runtime-switch standard artifact has no fault symbol: %s (freshness not established)\n' "$artifact"
+  done
+  shopt -u nullglob
+  [ "$found" -eq 1 ] || printf 'INFO: runtime-switch no host standard artifact available for fault-symbol absence check\n'
+}
+
+check_peer_identity_contract() {
+	local switch="$1" init="$2" flat
+
+  printf '%s\n' "$switch" | awk '
+    /dev_hold\(old.peer_dev\)/ { hold=NR }
+    /__moal_bridge_deinit_locked\(old.old_owner\)/ && !deinit { deinit=NR }
+    /^out_peer:/ { shared=NR }
+    /dev_put\(old.peer_dev\)/ { put=NR; puts++ }
+    END { exit !(hold && deinit && shared && put && puts == 1 &&
+                 hold < deinit && deinit < shared && shared < put) }
+  ' || return 1
+	[ "$(grep -Fc 'old.peer_dev' <<< "$switch" || true)" -ge 6 ] || return 1
+	grep -Fq 'dev_get_by_name' <<< "$switch" && return 1
+	flat="$(printf '%s\n' "$switch" | tr '\n' ' ' |
+	  sed 's/[[:space:]][[:space:]]*/ /g')"
+	grep -Fq \
+	  'target.handle, old.peer, old.peer_dev, target.bss_index' <<< "$flat" || return 1
+	grep -Fq \
+	  'old.old_owner, old.peer, old.peer_dev, old.old_bss_index' <<< "$flat" || return 1
+	grep -Fq 'struct net_device *peer_identity' <<< "$init" || return 1
+	grep -Fq 'peer_identity->reg_state == NETREG_REGISTERED' <<< "$init" || return 1
+	grep -Fq 'dev_hold(peer)' <<< "$init" || return 1
+}
+
+# The final RTNL identity check must complete before the bridge pointer is RCU
+# published; operational readiness then gates the active publication.  Treat
+# these as separate publication steps: a load-time owner can exist inactive,
+# but active forwarding cannot be advertised before final device/media checks.
+check_init_readiness_publication_contract() {
+  local init="$1"
+
+  printf '%s\n' "$init" | awk '
+    /register_inetaddr_notifier/ { inet_notifier=NR }
+    inet_notifier && /rtnl_lock\(\)/ && !final_rtnl { final_rtnl=NR }
+    final_rtnl && /atomic_read\(&br->peer_released\)/ && !peer_released { peer_released=NR }
+    final_rtnl && /br->peer_dev->reg_state != NETREG_REGISTERED/ { peer_reg=NR }
+    final_rtnl && /br->wlan_dev->reg_state != NETREG_REGISTERED/ { wlan_reg=NR }
+    final_rtnl && /!netif_device_present\(br->peer_dev\)/ { peer_present=NR }
+    final_rtnl && /!netif_device_present\(br->wlan_dev\)/ { wlan_present=NR }
+    /rcu_assign_pointer\(handle->bridge, br\)/ { rcu_publish=NR }
+    /atomic_set\(&br->published, 1\)/ { published=NR }
+    /if \(moal_bridge_dev_ready\(br->peer_dev\)/ { operational=NR }
+    operational && /moal_bridge_dev_ready\(br->wlan_dev\)/ { wlan_ready=NR }
+    operational && /media_connected/ { associated=NR }
+    /atomic_set\(&br->active, netif_running\(br->peer_dev\) \? 1 : 0\)/ { active=NR }
+    /rtnl_unlock\(\)/ && active && !final_unlock { final_unlock=NR }
+    END {
+      exit !(final_rtnl && peer_released && peer_reg && wlan_reg &&
+             peer_present && wlan_present && rcu_publish && published &&
+             operational && wlan_ready && associated && active && final_unlock &&
+             final_rtnl < peer_released && peer_released < rcu_publish &&
+             peer_reg < rcu_publish && wlan_reg < rcu_publish &&
+             peer_present < rcu_publish && wlan_present < rcu_publish &&
+             rcu_publish < published && published < operational &&
+             operational < wlan_ready && wlan_ready < associated &&
+             associated < active && active < final_unlock)
+    }
+  '
+}
+
+check_name_sync_contract() {
+  local notifier="$1" init="$2" getter="$3" stats="$4"
+
+  printf '%s\n' "$notifier" | grep -Fq 'NETDEV_CHANGENAME' || return 1
+  printf '%s\n' "$notifier" | grep -Fq 'dev == br->wlan_dev' || return 1
+  printf '%s\n' "$notifier" | grep -Fq 'dev != br->peer_dev' || return 1
+  printf '%s\n' "$notifier" | grep -Fq 'spin_lock_irqsave(&br->name_lock' || return 1
+  printf '%s\n' "$init" | awk '
+	/ret = register_netdevice_notifier/ { notifier=NR }
+    notifier && /rtnl_lock\(\)/ && !rtnl { rtnl=NR }
+    /strncpy\(br->wlan_name, br->wlan_dev->name/ { wlan=NR }
+    /strncpy\(br->peer_name, br->peer_dev->name/ { peer=NR }
+    END { exit !(notifier && rtnl && wlan && peer &&
+                 notifier < rtnl && rtnl < wlan && wlan < peer) }
+  ' || return 1
+  printf '%s\n' "$getter" | grep -Fq 'spin_lock_irqsave(&br->name_lock' || return 1
+  printf '%s\n' "$stats" | grep -Fq 'spin_lock_irqsave(&br->name_lock' || return 1
+}
+
+check_fw_sem_ownership() {
+  local dpc="$1" init_fw="$2"
+
+  printf '%s\n' "$dpc" | awk '
+    /if \(!READ_ONCE\(handle->fw_init_card_sem_owned\)\)/ { guard=NR }
     /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { release=NR }
-    /^card_sem_acquire_failed:/ { acquire_failed=NR }
-    /^out:/ { out=NR }
-    /^[[:space:]]*return;/ { final_return=NR }
-    END { exit !(acquire && held && deinit && remove && add && mode && init &&
-                 done && release_guard && release && acquire_failed && out &&
-                 final_return &&
-                 acquire < held && held < deinit && deinit < remove &&
-                 remove < add && add < mode && mode < init && init < done &&
-                 done < release_guard && release_guard < release &&
-                 release < acquire_failed && acquire_failed < out &&
-                 out < final_return) }
+    END { exit !(guard && release && guard < release) }
   ' || return 1
-  printf '%s\n' "$post_reset" | awk '
-    /card_sem_held = true/ { held=1; next }
-    /^done:/ { done=1 }
-    held && !done && /^[[:space:]]*goto[[:space:]]/ &&
-      !/^[[:space:]]*goto done;/ { bad=1 }
-    held && !done && /^[[:space:]]*return/ { bad=1 }
-    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { released=1; next }
-    released && /handle->/ { bad=1 }
-    END { exit bad }
+  printf '%s\n' "$init_fw" | awk '
+    /if \(!READ_ONCE\(handle->fw_init_card_sem_owned\)\)/ { guard=NR }
+    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { release=NR }
+    END { exit !(guard && release && guard < release) }
   ' || return 1
-  printf '%s\n' "$add_loop" | grep -Fq 'moal_bridge_init(handle,' && return 1
-  printf '%s\n' "$add_failure" | grep -Eq '^[[:space:]]*goto done;' || \
-    return 1
-  printf '%s\n' "$add_failure" | grep -Fq 'moal_bridge_init(handle,' && return 1
-  [ "$(printf '%s\n' "$mode_block" | \
-    grep -Fc 'moal_bridge_init(handle,' || true)" -eq 1 ] || return 1
-  extract_guarded_control "$post_reset" \
-    '^[[:space:]]*if \(card_sem_held\)' | \
-    grep -Fq 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' || return 1
+  for caller in "$DRV_MODE_BLOCK" "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK"; do
+    printf '%s\n' "$caller" | awk '
+      /WRITE_ONCE\(handle->fw_init_card_sem_owned, MTRUE\)/ { own=NR }
+      /woal_init_fw\(handle\)/ { init=NR }
+      /WRITE_ONCE\(handle->fw_init_card_sem_owned, MFALSE\)/ && init { clear=NR }
+      END { exit !(own && init && clear && own < init && init < clear) }
+    ' || return 1
+  done
 }
 
-check_sdio_flr_sem_exit_contract() {
-  local sdio_flr="$1" null_adapter
-
-  null_adapter="$(extract_c_block "$sdio_flr" \
-    '^[[:space:]]*if \(!\(handle->pmlan_adapter\)\) \{')" || return 1
-  printf '%s\n' "$null_adapter" | grep -Eq '^[[:space:]]*goto exit;' || \
-    return 1
-  printf '%s\n' "$null_adapter" | \
-    grep -Eq '^[[:space:]]*return[[:space:]]' && return 1
-  printf '%s\n' "$sdio_flr" | awk '
-    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { acquire=NR }
-    /if \(!\(handle->pmlan_adapter\)\)/ { null_adapter=NR }
-    /^exit:/ { common_exit=NR }
-    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ && !release { release=NR }
-    END { exit !(acquire && null_adapter && common_exit && release &&
-                 acquire < null_adapter && null_adapter < common_exit &&
-                 common_exit < release) }
+check_qa_cleanup_contract() {
+  printf '%s\n' "$1" | awk '
+    /original_status=\$\?/ { status=NR }
+    /trap - EXIT/ { untrap=NR }
+    /set \+e/ { no_errexit=NR }
+    /capture_state "final-before-restore"/ { before=NR }
+    /current_binding=/ { current=NR }
+    /current_binding.*!= none/ { active=NR }
+    /binding_ready "\$INITIAL_BINDING"/ { ready=NR }
+    /> "\$IFACE_PARAM"/ { restore=NR }
+    /capture_state "final-after-restore"/ { after=NR }
+    /kill "\$DMESG_STREAM_PID"/ { stop=NR }
+    /wait "\$DMESG_STREAM_PID"/ { wait=NR }
+    /exit "\$final_status"/ { exit_line=NR }
+    END { exit !(status == 2 && untrap && no_errexit && before && current &&
+                 active && ready && restore && after && stop && wait && exit_line &&
+                 status < untrap && untrap < no_errexit && no_errexit < before &&
+                 before < current && current < active && active < ready &&
+                 ready < restore && restore < after && after < stop &&
+                 stop < wait && wait < exit_line) }
   '
 }
 
-grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
-grep -q 'if (params->bridge_keepalive_ms_present)' "$INIT_C" || fail "explicit keepalive override guard missing"
+# Fast-path excerpts are shared by the legacy packet/RCU checks below. Keep
+# their windows explicit so a later function growth cannot silently turn a
+# missing declaration into an unbound-variable false gate.
 KEEPALIVE_BLOCK="$(grep -n -A80 -m1 'static enum hrtimer_restart moal_bridge_keepalive' "$BRIDGE_C")"
-
-printf '%s\n' "$KEEPALIVE_BLOCK" | \
-  grep -Eq '=\s*handle->params\.bridge_keepalive_ms\b' || \
-  fail "timer callback is not reading handle->params.bridge_keepalive_ms"
-
-printf '%s\n' "$KEEPALIVE_BLOCK" | \
-  grep -Eq '(^|[^[:alnum:]_>.-])bridge_keepalive_ms([^[:alnum:]_]|$)' && \
-  fail "timer callback reads global bridge_keepalive_ms"
-
-grep -q 'MOAL_BR_W2P_QUEUE_MAX' "$ROOT/mlinux/moal_bridge.h" || fail "w2p queue max missing"
-grep -q 'MOAL_BR_P2W_QUEUE_MAX' "$ROOT/mlinux/moal_bridge.h" || fail "p2w queue max missing"
-
-# -A170: peer_ipv4 가드 확장(2026-06-10)으로 rx_fast 본문이 길어짐 (bridge_debug 블록 +137줄)
 W2P_FAST_BLOCK="$(grep -n -A170 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -q 'atomic_inc_return(&br->w2p_qlen)' || \
-  fail "w2p queue length guard missing (rx_fast)"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -q 'MOAL_BR_W2P_QUEUE_MAX' || \
-  fail "w2p queue max not used in guard (rx_fast)"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -q 'moal_bridge_arp_is_for_self(br, skb, l3_off)' || \
-  fail "w2p fast path missing ARP self skip"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -q 'l3_off = VLAN_ETH_HLEN' || \
-  fail "w2p fast path missing VLAN-aware L3 offset"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -Eq 'iph = \(struct iphdr \*\)\(skb->data \+ l3_off\);|iph = \(struct iphdr \*\)\(skb->data \+ l3_off\)' || \
-  fail "w2p fast path still uses fixed L3 offset"
-
-# 창 크기: local hairpin(SELF-ARP REPLY inject) 분기 추가로 함수가 길어져
-# 200 → 260 확장 (docstring 773 → clone path 978 = 205줄, 여유 포함)
 P2W_RX_HANDLER_BLOCK="$(grep -n -A260 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -Eq 'struct sk_buff \*skb2\s*=\s*skb_clone\b' || \
-  fail "p2w rx_handler clone path missing"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -q 'atomic_inc_return(&br->p2w_qlen)' || \
-  fail "p2w queue length guard missing (rx_handler)"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -q 'MOAL_BR_P2W_QUEUE_MAX' || \
-  fail "p2w queue max not used in guard (rx_handler)"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -Eq 'dev_kfree_skb_any\(skb2\)' || \
-  fail "p2w rx_handler overflow drop missing"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -Eq 'return\s+RX_HANDLER_PASS\s*;' || \
-  fail "p2w rx_handler overflow return missing"
-
-# 창 크기: hairpin pt inject 분기(+20줄) 여유 포함 160 → 220
 P2W_PACKET_TYPE_BLOCK="$(grep -n -A220 -m1 'moal_bridge_peer_pt_func' "$BRIDGE_C")"
-printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -q 'atomic_inc_return(&br->p2w_qlen)' || \
-  fail "p2w queue length guard missing (packet_type)"
-printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -q 'MOAL_BR_P2W_QUEUE_MAX' || \
-  fail "p2w queue max not used in guard (packet_type)"
-printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -Eq 'dev_kfree_skb_any\(skb\)' || \
-  fail "p2w packet_type overflow drop missing"
-printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -Eq 'return\s+0\s*;' || \
-  fail "p2w packet_type overflow return missing"
 
-grep -q 'net_xmit_eval(err)' "$BRIDGE_C" || fail "net_xmit_eval usage missing"
-grep -Eq 'atomic_long_add\([^,]+,\s*&br->wlan_to_peer\.fwd_bytes\);' "$BRIDGE_C" || \
-  fail "w2p byte accounting missing"
-grep -Eq 'atomic_long_add\([^,]+,\s*&br->peer_to_wlan\.fwd_bytes\);' "$BRIDGE_C" || \
-  fail "p2w byte accounting missing"
-
-# --- v3 D3: legacy moal_bridge_rx / moal_bridge_should_forward removed ---
-grep -Eq '^int moal_bridge_rx\(' "$BRIDGE_C" && \
-  fail "legacy moal_bridge_rx must be removed"
-grep -q 'moal_bridge_should_forward' "$BRIDGE_C" && \
-  fail "legacy moal_bridge_should_forward must be removed"
-grep -q 'int moal_bridge_rx(' "$ROOT/mlinux/moal_bridge.h" && \
-  fail "moal_bridge_rx decl must be removed from header"
-
-grep -q 'bridge: wlan BSS\[%d\] not ready' "$BRIDGE_C" || fail "wlan BSS guard site missing"
-grep -q 'atomic_set(&bridge_instance_active, 0);' "$BRIDGE_C" || fail "bridge instance guard reset missing"
-
-# --- runtime-switch Task 2: serialized bridge lifecycle ownership ---
-grep -q 'DEFINE_MUTEX(bridge_lifecycle_lock)' "$BRIDGE_C" || fail "runtime-switch: lifecycle mutex missing"
-grep -q 'static moal_handle \*bridge_owner' "$BRIDGE_C" || fail "runtime-switch: owner missing"
-grep -q '^static int __moal_bridge_init_locked' "$BRIDGE_C" || fail "runtime-switch: locked init missing"
-grep -q '^static void __moal_bridge_deinit_locked' "$BRIDGE_C" || fail "runtime-switch: locked deinit missing"
-INIT_WRAP="$(grep -n -A20 -m1 '^int moal_bridge_init' "$BRIDGE_C")"
-DEINIT_WRAP="$(grep -n -A20 -m1 '^void moal_bridge_deinit' "$BRIDGE_C")"
-printf '%s\n' "$INIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: init unlocked"
-printf '%s\n' "$DEINIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: deinit unlocked"
-
-# --- runtime-switch Task 3: synchronous rebind transaction ---
-grep -q 'moal_bridge_switch_iface' "$ROOT/mlinux/moal_bridge.h" || fail "runtime-switch: switch declaration missing"
-grep -q 'moal_bridge_get_iface' "$ROOT/mlinux/moal_bridge.h" || fail "runtime-switch: getter declaration missing"
+# Extract scoped subjects once. Every subsequent source-order and mutation check
+# uses these exact functions rather than a whole-file token match.
+SETTER_BLOCK="$(extract_c_function '^static int bridge_iface_set' "$INIT_C")"
+INIT_MODULE_BLOCK="$(extract_c_function '^static int woal_init_module' "$MAIN_C")"
+CLEANUP_MODULE_BLOCK="$(extract_c_function '^static void woal_cleanup_module' "$MAIN_C")"
+REQUEST_RELOAD_BLOCK="$(extract_c_function '^int woal_request_fw_reload' "$MAIN_C")"
+PRE_RESET_BLOCK="$(extract_c_function '^static void woal_pre_reset' "$MAIN_C")"
+POST_RESET_BLOCK="$(extract_c_function '^static int woal_post_reset' "$MAIN_C")"
+MAIN_WORK_BLOCK="$(extract_c_function '^t_void woal_main_work_queue' "$MAIN_C")"
+FW_DPC_BLOCK="$(extract_c_function '^static mlan_status woal_request_fw_dpc' "$MAIN_C")"
+INIT_FW_BLOCK="$(extract_c_function '^mlan_status woal_init_fw' "$MAIN_C")"
+DRV_MODE_BLOCK="$(extract_c_function '^mlan_status woal_switch_drv_mode' "$MAIN_C")"
 SWITCH_BLOCK="$(extract_switch_block "$BRIDGE_C")"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || fail "runtime-switch: card semaphore missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: lifecycle lock missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q '__moal_bridge_deinit_locked' || fail "runtime-switch: full deinit missing"
-[ "$(printf '%s\n' "$SWITCH_BLOCK" | grep -c '__moal_bridge_init_locked' || true)" -ge 2 ] || fail "runtime-switch: target init and rollback required"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q -- '-EIO' || fail "runtime-switch: rollback failure EIO missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q '^.*out_unlock:' || fail "runtime-switch: shared unlock path missing"
-[ "$(printf '%s\n' "$SWITCH_BLOCK" | grep -c 'mutex_unlock(&bridge_lifecycle_lock)' || true)" -eq 1 ] || fail "runtime-switch: lifecycle mutex must have one shared release"
-[ "$(printf '%s\n' "$SWITCH_BLOCK" | grep -c 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' || true)" -eq 1 ] || fail "runtime-switch: card semaphore must have one shared release"
+VALIDATE_BLOCK="$(extract_c_function '^static int moal_bridge_validate_binding_locked' "$BRIDGE_C")"
+BRIDGE_INIT_BLOCK="$(extract_c_function '^static int __moal_bridge_init_locked' "$BRIDGE_C")"
+LIFECYCLE_DEINIT_BLOCK="$(extract_c_function '^static void __moal_bridge_deinit_locked' "$BRIDGE_C")"
+NETDEV_EVENT_BLOCK="$(extract_c_function '^static int moal_bridge_netdev_event' "$BRIDGE_C")"
+GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_iface' "$BRIDGE_C")"
+STATS_SHOW_BLOCK="$(extract_c_function '^static ssize_t stats_show' "$BRIDGE_C")"
+SYSFS_DEINIT_BLOCK="$(extract_c_function '^static void moal_bridge_sysfs_deinit' "$BRIDGE_C")"
+STATS_CLEANUP_BLOCK="$(extract_c_function '^void moal_bridge_stats_cleanup' "$BRIDGE_C")"
+SUSPEND_OWNER_BLOCK="$(extract_c_function '^static int __moal_bridge_suspend_owner' "$BRIDGE_C")"
+REMOVE_CARD_BLOCK="$(extract_c_function '^mlan_status woal_remove_card' "$MAIN_C")"
+PCIE_FLR_BLOCK="$(extract_c_function '^static mlan_status __woal_do_flr' "$PCIE_C")"
+PCIE_PREP_BLOCK="$(extract_c_function '^static void woal_pcie_reset_prepare' "$PCIE_C")"
+PCIE_DONE_BLOCK="$(extract_c_function '^static void woal_pcie_reset_done' "$PCIE_C")"
+PCIE_NOTIFY_BLOCK="$(extract_c_function '^static void woal_pcie_reset_notify' "$PCIE_C")"
+PCIE_WORK_BLOCK="$(extract_c_function '^static void woal_pcie_work\(struct work_struct \*work\)$' "$PCIE_C")"
+SDIO_FLR_BLOCK="$(extract_c_function '^static mlan_status __woal_do_sdiommc_flr' "$SDIO_C")"
+SDIO_WORK_BLOCK="$(extract_c_function '^static void woal_sdiommc_work\(struct work_struct \*work\)$' "$SDIO_C")"
+SDIO_REMOVE_BLOCK="$(extract_c_function '^void woal_sdio_remove\(struct sdio_func \*func\)$' "$SDIO_C")"
+QA_CLEANUP_BLOCK="$(extract_c_function '^cleanup\(\)' "$QA_SCRIPT")"
+
+# Invoke all defined strong structural helpers; their focused mutations below
+# make these source-order checks regression gates rather than dead declarations.
+check_standard_artifact_fault_absence
+check_fault_hook_compile_guard "$SWITCH_BLOCK" ||
+  fail "runtime-switch: every fault declaration and injected branch must be inside BRIDGE_SWITCH_FAULT_INJECT"
+
+# A: module-argument parsing cannot reach an uninitialized semaphore, and exit
+# closes the post-wait race before destructive teardown.
+grep -q '^int bridge_runtime_control_ready;' "$INIT_C" || \
+  fail "runtime-switch: runtime-control readiness flag missing"
+check_ready_switch_contract "$SETTER_BLOCK" "$SWITCH_BLOCK" || \
+  fail "runtime-switch: readiness pre/post semaphore contract missing"
+printf '%s\n' "$INIT_MODULE_BLOCK" | awk '
+  /MOAL_INIT_SEMAPHORE\(&AddRemoveCardSem\)/ { sem=NR }
+  /moal_bridge_stats_init\(\)/ { stats=NR }
+  /WRITE_ONCE\(bridge_runtime_control_ready, 1\)/ { ready=NR }
+  END { exit !(sem && stats && ready && sem < stats && stats < ready) }
+' || fail "runtime-switch: readiness published before required module state"
+check_cleanup_transaction "$CLEANUP_MODULE_BLOCK" || \
+  fail "runtime-switch: unload does not drain every owner before first shutdown"
+
+SETTER_NO_READY="$(printf '%s\n' "$SETTER_BLOCK" |
+  sed 's/if (!READ_ONCE(bridge_runtime_control_ready))/if (0)/')"
+if check_ready_switch_contract "$SETTER_NO_READY" "$SWITCH_BLOCK"; then
+  fail "runtime-switch: missing pre-init setter readiness fixture accepted"
+fi
+printf 'PASS: runtime-switch pre-init readiness mutation rejected\n'
+SWITCH_ONE_READY="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /READ_ONCE\(bridge_runtime_control_ready\)/ { n++ }
+  n == 2 { sub(/READ_ONCE\(bridge_runtime_control_ready\)/, "0") }
+  { print }
+')"
+if check_ready_switch_contract "$SETTER_BLOCK" "$SWITCH_ONE_READY"; then
+  fail "runtime-switch: missing post-wait readiness fixture accepted"
+fi
+printf 'PASS: runtime-switch post-wait readiness mutation rejected\n'
+
+# B/E/F: reload/reset/unload own complete effective-state transitions; firmware
+# init never releases a semaphore retained by a destructive caller.
+printf '%s\n' "$PRE_RESET_BLOCK" | awk '
+  /moal_bridge_deinit\(handle\)/ { deinit=NR }
+  /woal_flush_workqueue\(handle\)/ && !flush { flush=NR }
+  END { exit !(deinit && flush && deinit < flush) }
+' || fail "runtime-switch: pre-reset bridge is not drained before workqueue"
+printf '%s\n' "$REQUEST_RELOAD_BLOCK" | awk '
+  /mode != FW_RELOAD_NO_EMULATION/ { mode_check=NR }
+  /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { lock=NR }
+  /moal_bridge_suspend_owner\(\)/ { suspend=NR }
+  /woal_pre_reset\(handle\)/ { pre=NR }
+  /woal_post_reset\(handle\)/ { post=NR }
+  /moal_bridge_resume_owner\(\)/ { resume=NR }
+  /wifi_status = WIFI_STATUS_OK/ { ok=NR }
+  /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { unlock=NR }
+  END { exit !(mode_check && lock && suspend && pre && post && resume && ok &&
+               unlock && mode_check < lock && lock < suspend && suspend < pre &&
+               pre < post && post < resume && resume < ok && ok < unlock) }
+' || fail "runtime-switch: generic reload is not a complete serialized transaction"
+printf '%s\n' "$REQUEST_RELOAD_BLOCK" | awk '
+  /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { lock=NR }
+  /m_handle\[index\] == phandle/ { member=NR }
+  /handle = \(moal_handle \*\)phandle->pref_mac/ { companion=NR }
+  /moal_bridge_suspend_owner\(\)/ { suspend=NR }
+  /destructive_started = true/ { destructive=NR }
+  END { exit !(lock && member && suspend && destructive &&
+               lock < member && member < suspend && suspend < destructive &&
+               (!companion || lock < companion)) }
+' || fail "runtime-switch: reload handle/pair is not validated under card lock"
+printf '%s\n' "$REQUEST_RELOAD_BLOCK" | grep -Fq 'WIFI_STATUS_FW_RECOVERY_FAIL' || \
+  fail "runtime-switch: reload failure status missing"
+printf '%s\n' "$POST_RESET_BLOCK" | grep -Fq 'return ret;' || \
+  fail "runtime-switch: post-reset status not propagated"
+printf '%s\n' "$POST_RESET_BLOCK" | grep -Eq 'MOAL_ACQ_SEMAPHORE|down\(&AddRemoveCardSem\)|MOAL_REL_SEMAPHORE' && \
+  fail "runtime-switch: post-reset recursively owns card semaphore"
+printf '%s\n' "$MAIN_WORK_BLOCK" | grep -Eq 'fw_reload|fw_reseting' && \
+  fail "runtime-switch: unsafe blanket main_work reset guard added"
+printf '%s\n' "$MAIN_WORK_BLOCK" | grep -Fq 'handle->surprise_removed == MTRUE' || \
+  fail "runtime-switch: main_work removal guard missing"
+check_fw_sem_ownership "$FW_DPC_BLOCK" "$INIT_FW_BLOCK" || \
+  fail "runtime-switch: synchronous firmware-init semaphore ownership ambiguous"
+for flr in "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK"; do
+  printf '%s\n' "$flr" | grep -Fq 'down(&AddRemoveCardSem)' || \
+    fail "runtime-switch: destructive FLR lock is interruptible/missing"
+  printf '%s\n' "$flr" | grep -Fq 'status = MLAN_STATUS_FAILURE' || \
+    fail "runtime-switch: FLR failure propagation missing"
+done
+printf '%s\n' "$DRV_MODE_BLOCK" | grep -Fq 'mlan_status status = MLAN_STATUS_FAILURE' || \
+  fail "runtime-switch: driver-mode defaults to false success"
+printf '%s\n' "$DRV_MODE_BLOCK" | grep -c 'status = MLAN_STATUS_FAILURE' |
+  awk '$1 >= 3 { ok=1 } END { exit !ok }' ||
+  fail "runtime-switch: driver-mode init failures can return stale success"
+printf '%s\n' "$DRV_MODE_BLOCK" | grep -Fq 'moal_bridge_suspend_owner_for(handle)' || \
+  fail "runtime-switch: driver-mode does not snapshot only its effective owner"
+for outer in "$PCIE_DONE_BLOCK" "$PCIE_NOTIFY_BLOCK" "$PCIE_WORK_BLOCK" "$SDIO_WORK_BLOCK"; do
+  printf '%s\n' "$outer" | grep -Fq 'WIFI_STATUS_FW_RECOVERY_FAIL' || \
+    fail "runtime-switch: reset outer path lacks recovery-failure terminal state"
+	printf '%s\n' "$outer" | grep -Fq 'moal_bridge_resume_owner()' || \
+    fail "runtime-switch: reset outer path does not restore owner after participants"
+	printf '%s\n' "$outer" | awk '
+	  /down\(&AddRemoveCardSem\)/ { lock=NR }
+	  /moal_bridge_resume_owner\(\)/ { resume=NR }
+	  /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { unlock=NR }
+	  END { exit !(lock && resume && unlock && lock < resume && resume < unlock) }
+	' || fail "runtime-switch: reset outer path does not pin pair lifetime"
+done
+printf '%s\n' "$PCIE_PREP_BLOCK" | grep -Fq 'fw_reset_prepare_failed' || \
+  fail "runtime-switch: void PCIe prepare failure is not carried to post"
+printf '%s\n' "$PCIE_WORK_BLOCK" | grep -Fq 'card->work_flags = MFALSE' || \
+  fail "runtime-switch: PCIe reset work flag not cleared on terminal path"
+printf '%s\n' "$SDIO_WORK_BLOCK" | grep -Fq 'card->work_flags = MFALSE' || \
+  fail "runtime-switch: SDIO reset work flag not cleared on terminal path"
+printf '%s\n' "$SDIO_REMOVE_BLOCK" | awk '
+  /cancel_work_sync\(&card->reset_work\)/ { cancel=NR }
+  /woal_remove_card\(card\)/ { remove=NR }
+  /kfree\(card\)/ { free=NR }
+  END { exit !(cancel && remove && free && cancel < remove && remove < free) }
+' || fail "runtime-switch: SDIO reset work can outlive card removal"
+
+DPC_NO_OWNER_GUARD="$(printf '%s\n' "$FW_DPC_BLOCK" |
+  sed 's/if (!READ_ONCE(handle->fw_init_card_sem_owned))/if (1)/')"
+if check_fw_sem_ownership "$DPC_NO_OWNER_GUARD" "$INIT_FW_BLOCK"; then
+  fail "runtime-switch: firmware DPC double-release mutation accepted"
+fi
+printf 'PASS: runtime-switch firmware semaphore mutation rejected\n'
+CLEANUP_LATE_DEINIT="$(printf '%s\n' "$CLEANUP_MODULE_BLOCK" | awk '
+  /moal_bridge_deinit\(handle\)/ && !saved { saved=$0; next }
+  /woal_shutdown_fw/ && saved && !moved { print; print saved; moved=1; next }
+  { print }
+  END { exit !moved }
+')"
+if check_cleanup_transaction "$CLEANUP_LATE_DEINIT"; then
+  fail "runtime-switch: unload shutdown-before-deinit mutation accepted"
+fi
+printf 'PASS: runtime-switch unload ordering mutation rejected\n'
+
+# C/D: exact identity is pinned before teardown; target and rollback are each
+# terminally revalidated before an owner/counter can be published.
+for token in 'surprise_removed' 'fw_reseting' 'fw_reload' 'driver_status' \
+             'HardwareStatusReady' 'NETREG_REGISTERED' \
+             'netif_device_present' 'moal_bridge_dev_ready' \
+             'media_connected' 'peer_released'; do
+  printf '%s\n' "$VALIDATE_BLOCK" | grep -Fq "$token" || \
+    fail "runtime-switch: terminal validator missing $token"
+done
+check_terminal_switch_contract "$SWITCH_BLOCK" || \
+  fail "runtime-switch: target validation/deinit/rollback/success order invalid"
+check_peer_identity_contract "$SWITCH_BLOCK" "$BRIDGE_INIT_BLOCK" || \
+  fail "runtime-switch: peer identity/ref lifetime contract missing"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /!atomic_read\(&br->active\)/ { active=NR }
+  /!netif_device_present\(br->peer_dev\)/ { present=NR }
+  /!moal_bridge_dev_ready\(br->peer_dev\)/ { ready=NR }
+  /dev_hold\(old.peer_dev\)/ { hold=NR }
+  /__moal_bridge_deinit_locked\(old.old_owner\)/ && !deinit { deinit=NR }
+  END { exit !(active && present && ready && hold && deinit &&
+               active < hold && present < hold && ready < hold && hold < deinit) }
+' || fail "runtime-switch: unhealthy old peer can reach destructive switch"
+check_name_sync_contract "$NETDEV_EVENT_BLOCK" "$BRIDGE_INIT_BLOCK" \
+  "$GETTER_BLOCK" "$STATS_SHOW_BLOCK" || \
+  fail "runtime-switch: rename-safe synchronized display names missing"
+check_init_readiness_publication_contract "$BRIDGE_INIT_BLOCK" ||
+  fail "runtime-switch: final readiness/publication ordering invalid"
+printf '%s\n' "$BRIDGE_INIT_BLOCK" | awk '
+	/ret = register_netdevice_notifier/ { notifier=NR }
+  /atomic_read\(&br->peer_released\)/ && notifier && !released { released=NR }
+  /br->peer_dev->reg_state != NETREG_REGISTERED/ { peer_reg=NR }
+  /br->wlan_dev->reg_state != NETREG_REGISTERED/ { wlan_reg=NR }
+  /rcu_assign_pointer\(handle->bridge, br\)/ { publish=NR }
+	/atomic_set\(&br->active, netif_running\(br->peer_dev\) \? 1 : 0\)/ { active=NR }
+	/rtnl_unlock\(\)/ && active && !unlock { unlock=NR }
+  /^err_netdev_notifier:/ { unwind=NR }
+  END { exit !(notifier && released && peer_reg && wlan_reg && publish && active &&
+               unlock && unwind && notifier < released && released < publish &&
+               publish < active && active < unlock && unlock < unwind) }
+' || fail "runtime-switch: init can publish after peer/WLAN unregister"
+printf '%s\n' "$SWITCH_BLOCK" | grep -Eq 'params\.bridge_(mode|peer|wlan_idx|keepalive)' && \
+  fail "runtime-switch: effective switch mutates configured bridge policy"
+printf '%s\n' "$LIFECYCLE_DEINIT_BLOCK" | grep -Fq 'bridge_effective_wlan_idx = -1' || \
+  fail "runtime-switch: effective BSS is not cleared on deinit"
+printf '%s\n' "$SUSPEND_OWNER_BLOCK" | grep -Fq 'dev_hold(bridge_suspended_owner.peer_dev)' || \
+  fail "runtime-switch: reset snapshot does not pin exact peer identity"
+printf '%s\n' "$REMOVE_CARD_BLOCK" | awk '
+  /moal_bridge_forget_handle\(handle\)/ { forget=NR }
+  /woal_remove_interface\(handle,/ && !remove { remove=NR }
+  /woal_free_moal_handle\(handle\)/ { free=NR }
+  END { exit !(forget && remove && free && forget < remove && remove < free) }
+' || fail "runtime-switch: remove does not invalidate effective/suspended owner before free"
+printf '%s\n' "$REMOVE_CARD_BLOCK" | grep -Fq 'bridge_runtime_switch' && \
+  fail "runtime-switch: destruction safety was incorrectly gated off"
+grep -Fq 'bridge_runtime_switch' "$SHIM_C" && \
+  fail "runtime-switch: opt-in gate leaked into normal forwarding"
+
+SWITCH_NO_VALIDATE="$(printf '%s\n' "$SWITCH_BLOCK" |
+  sed '0,/ret = moal_bridge_validate_binding_locked/s//ret = 0 \/\* missing terminal validation \*\//')"
+if check_terminal_switch_contract "$SWITCH_NO_VALIDATE"; then
+  fail "runtime-switch: missing terminal validation mutation accepted"
+fi
+printf 'PASS: runtime-switch terminal validation mutation rejected\n'
+SWITCH_NO_TARGET_DEINIT="$(printf '%s\n' "$SWITCH_BLOCK" |
+  sed 's/__moal_bridge_deinit_locked(target.handle);/\/\* missing target deinit \*\//')"
+if check_terminal_switch_contract "$SWITCH_NO_TARGET_DEINIT"; then
+  fail "runtime-switch: validation-failure target-deinit mutation accepted"
+fi
+printf 'PASS: runtime-switch validation-failure deinit mutation rejected\n'
+ROLLBACK_OWNER_EARLY="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /rollback_ret = moal_bridge_validate_binding_locked/ && !moved {
+    print "		bridge_owner = old.old_owner; /* invalid early publication */"
+    moved=1
+  }
+  /bridge_owner = old.old_owner/ && moved { next }
+  { print }
+  END { exit !moved }
+')"
+if check_terminal_switch_contract "$ROLLBACK_OWNER_EARLY"; then
+  fail "runtime-switch: rollback owner-before-validation mutation accepted"
+fi
+printf 'PASS: runtime-switch rollback owner ordering mutation rejected\n'
+ROLLBACK_NO_RTNL="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /rtnl_lock\(\)/ { locks++; if (locks == 3) next }
+  /rtnl_unlock\(\)/ { unlocks++; if (unlocks == 3) next }
+  { print }
+')"
+if check_terminal_switch_contract "$ROLLBACK_NO_RTNL"; then
+  fail "runtime-switch: rollback RTNL bracket removal mutation accepted"
+fi
+printf 'PASS: runtime-switch rollback RTNL mutation rejected\n'
+SWITCH_LATE_HOLD="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /dev_hold\(old.peer_dev\)/ { saved=$0; next }
+  /__moal_bridge_deinit_locked\(old.old_owner\)/ && saved && !moved {
+    print
+    print saved
+    moved=1
+    next
+  }
+  { print }
+  END { exit !moved }
+')"
+if check_peer_identity_contract "$SWITCH_LATE_HOLD" "$BRIDGE_INIT_BLOCK"; then
+  fail "runtime-switch: peer pin-after-teardown mutation accepted"
+fi
+printf 'PASS: runtime-switch peer identity ordering mutation rejected\n'
+INIT_PUBLISH_BEFORE_READY="$(printf '%s\n' "$BRIDGE_INIT_BLOCK" | awk '
+  /rcu_assign_pointer\(handle->bridge, br\)/ && !saved { saved=$0; next }
+  /atomic_set\(&br->active, netif_running\(br->peer_dev\) \? 1 : 0\)/ && saved && !moved {
+    print
+    print saved
+    moved=1
+    next
+  }
+  { print }
+  END { exit !moved }
+')"
+if check_init_readiness_publication_contract "$INIT_PUBLISH_BEFORE_READY"; then
+  fail "runtime-switch: readiness-before-publication mutation accepted"
+fi
+printf 'PASS: runtime-switch readiness-before-publication mutation rejected\n'
+SWITCH_NO_PEER_PUT="$(printf '%s\n' "$SWITCH_BLOCK" | sed 's/dev_put(old.peer_dev);/\/\* missing peer ref unwind \*\//')"
+if check_peer_identity_contract "$SWITCH_NO_PEER_PUT" "$BRIDGE_INIT_BLOCK"; then
+  fail "runtime-switch: peer ref-unwind mutation accepted"
+fi
+printf 'PASS: runtime-switch peer ref-unwind mutation rejected\n'
+INIT_NAMES_BEFORE_NOTIFIER="$(printf '%s\n' "$BRIDGE_INIT_BLOCK" | awk '
+	/ret = register_netdevice_notifier/ && !saved { saved=$0; next }
+  /strncpy\(br->peer_name, br->peer_dev->name/ && saved && !moved {
+    print saved
+    print
+    moved=1
+    next
+  }
+  { print }
+  END { exit !moved }
+')"
+if check_name_sync_contract "$NETDEV_EVENT_BLOCK" "$INIT_NAMES_BEFORE_NOTIFIER" \
+    "$GETTER_BLOCK" "$STATS_SHOW_BLOCK"; then
+  fail "runtime-switch: rename missed-window mutation accepted"
+fi
+printf 'PASS: runtime-switch rename-window mutation rejected\n'
+
+# G: inactive counters persist for module life; QA covers every target-only
+# matrix entry and its EXIT path captures failure evidence before safe restore.
+printf '%s\n' "$STATS_SHOW_BLOCK" | grep -Fq 'bridge: inactive' || \
+  fail "runtime-switch: inactive stats state missing"
+printf '%s\n' "$STATS_SHOW_BLOCK" | grep -Fq 'iface=none peer=none' || \
+  fail "runtime-switch: inactive identity stats missing"
+for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok bridge_rollback_fail; do
+  printf '%s\n' "$STATS_SHOW_BLOCK" | grep -Fq "atomic_long_read(&$counter)" || \
+    fail "runtime-switch: stats does not read $counter while module lives"
+  grep -Fq "atomic_long_set(&$counter" "$BRIDGE_C" && \
+    fail "runtime-switch: persistent counter $counter is reset"
+done
+printf '%s\n' "$SYSFS_DEINIT_BLOCK" | awk '
+  /rcu_assign_pointer\(moal_bridge_for_sysfs, NULL\)/ { clear=NR }
+  /synchronize_rcu\(\)/ { drain=NR }
+  END { exit !(clear && drain && clear < drain) }
+' || fail "runtime-switch: inactive stats RCU pointer is not drained"
+printf '%s\n' "$SYSFS_DEINIT_BLOCK" | grep -Fq 'sysfs_remove_file' && \
+  fail "runtime-switch: per-instance deinit removes module-lifetime stats"
+printf '%s\n' "$STATS_CLEANUP_BLOCK" | grep -Fq 'sysfs_remove_file' || \
+  fail "runtime-switch: module cleanup does not remove stats"
+printf '%s\n' "$STATS_SHOW_BLOCK" | awk '
+  /rcu_read_lock\(\)/ { lock=NR }
+  /rcu_dereference\(moal_bridge_for_sysfs\)/ { deref=NR }
+  /rcu_read_unlock\(\)/ { unlock=NR }
+  END { exit !(lock && deref && unlock && lock < deref && deref < unlock) }
+' || fail "runtime-switch: stats bridge/handle RCU lifetime missing"
+check_qa_cleanup_contract "$QA_CLEANUP_BLOCK" || \
+  fail "runtime-switch: QA cleanup status/evidence/restore ordering invalid"
+for qa_case in stress same-target concurrent peer-cycle gate-off no-active malformed \
+               reject target-down target-disconnected fault-target fault-double \
+               reset-interaction unload-interaction; do
+  grep -Fq "$qa_case" "$QA_SCRIPT" || \
+    fail "runtime-switch: QA case $qa_case missing"
+done
+grep -Fq 'dmesg --follow-new' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA does not stream kernel logs"
+grep -Fq 'write_expect_errno' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA negative cases do not assert write errno"
+test -x "$QA_SCRIPT" || fail "runtime-switch: QA script is not executable"
+grep -q '^CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n' "$ROOT/Makefile" || \
+  fail "runtime-switch: production fault injection default is not off"
+grep -q '^ifeq ($(CONFIG_BRIDGE_SWITCH_FAULT_INJECT),y)' "$ROOT/Makefile" || \
+  fail "runtime-switch: fault macro is not confined to explicit QA build"
+grep -Fq '#ifdef BRIDGE_SWITCH_FAULT_INJECT' "$INIT_C" || \
+  fail "runtime-switch: fault parameter is compiled into production"
+printf '%s\n' "$SWITCH_BLOCK" | grep -Fq '#ifdef BRIDGE_SWITCH_FAULT_INJECT' || \
+  fail "runtime-switch: fault behavior is compiled into production"
+grep -q 'module_param(bridge_switch_fault_mask, int, 0600)' "$INIT_C" || \
+  fail "runtime-switch: QA fault mask is not root-only"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /target\.dev == bridge_owner->bridge->wlan_dev/ { same=NR }
+  /fault_mask = xchg\(&bridge_switch_fault_mask, 0\)/ { consume=NR }
+  /__moal_bridge_deinit_locked\(old.old_owner\)/ && !deinit { deinit=NR }
+  END { exit !(same && consume && deinit && same < consume && consume < deinit) }
+' || fail "runtime-switch: fault mask is not one-shot at destructive boundary"
+for errno in EOPNOTSUPP ENODEV EINVAL ENETDOWN ENOLINK EBUSY EAGAIN ESHUTDOWN EINTR EIO; do
+  grep -Fq "\`$errno\`" "$PARAM_DOC" || \
+    fail "runtime-switch: parameter docs missing $errno"
+done
+for evidence in 'QA_CASE=gate-off' 'QA_CASE=no-active' 'QA_CASE=malformed' \
+                'QA_CASE=concurrent' 'QA_CASE=peer-cycle' \
+                'QA_CASE=fault-target' 'QA_CASE=fault-double' \
+                'QA_CASE=reset-interaction' 'QA_CASE=unload-interaction'; do
+  grep -Fq "$evidence" "$QA_RUNBOOK" || \
+    fail "runtime-switch: runbook matrix missing $evidence"
+done
+
+QA_RESTORE_BEFORE_CAPTURE="$(printf '%s\n' "$QA_CLEANUP_BLOCK" | awk '
+  /capture_state "final-before-restore"/ { saved=$0; next }
+  /> "\$IFACE_PARAM"/ && saved && !moved { print; print saved; moved=1; next }
+  { print }
+  END { exit !moved }
+')"
+if check_qa_cleanup_contract "$QA_RESTORE_BEFORE_CAPTURE"; then
+  fail "runtime-switch: QA restore-before-evidence mutation accepted"
+fi
+printf 'PASS: runtime-switch QA evidence ordering mutation rejected\n'
+
+# Existing strict parser and shared-release contracts remain in force.
+check_bridge_iface_set_contract "$SETTER_BLOCK" || \
+  fail "runtime-switch: strict parser/synchronous setter contract missing"
+check_no_direct_return_while_locked "$SWITCH_BLOCK" || \
+  fail "runtime-switch: direct return bypasses lifecycle release"
 printf '%s\n' "$SWITCH_BLOCK" | awk '
   /MOAL_ACQ_SEMAPHORE_BLOCK/ { card_lock=NR }
   /mutex_lock\(&bridge_lifecycle_lock\)/ { lifecycle_lock=NR }
@@ -477,516 +793,7 @@ printf '%s\n' "$SWITCH_BLOCK" | awk '
   END { exit !(card_lock && lifecycle_lock && lifecycle_unlock && card_unlock &&
                card_lock < lifecycle_lock && lifecycle_lock < lifecycle_unlock &&
                lifecycle_unlock < card_unlock) }
-' || fail "runtime-switch: lock acquire/release order is not card -> lifecycle -> lifecycle -> card"
-printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /if \(READ_ONCE\(bridge_runtime_switch\) != 1\)/ { gate=NR }
-  /return -EOPNOTSUPP;/ { gate_return=NR }
-  /MOAL_ACQ_SEMAPHORE_BLOCK/ { card_lock=NR }
-  END { exit !(gate && gate_return && card_lock &&
-               gate < gate_return && gate_return < card_lock) }
-' || fail "runtime-switch: exact opt-in rejection must precede lock acquisition"
-check_no_direct_return_while_locked "$SWITCH_BLOCK" || \
-  fail "runtime-switch: direct return bypasses shared releases"
-
-NEGATIVE_SOURCE="$(mktemp)"
-trap 'rm -f "$NEGATIVE_SOURCE"' EXIT
-awk '
-  /^int moal_bridge_switch_iface/ { in_switch=1 }
-  { print }
-  in_switch && /mutex_lock\(&bridge_lifecycle_lock\)/ && !injected {
-    print "\treturn -EINVAL;"
-    injected=1
-  }
-  END { exit !injected }
-' "$BRIDGE_C" > "$NEGATIVE_SOURCE"
-NEGATIVE_SWITCH_BLOCK="$(extract_switch_block "$NEGATIVE_SOURCE")"
-if check_no_direct_return_while_locked "$NEGATIVE_SWITCH_BLOCK"; then
-  fail "runtime-switch: direct-return negative fixture was accepted"
-fi
-rm -f "$NEGATIVE_SOURCE"
-trap - EXIT
-printf 'PASS: runtime-switch direct-return negative fixture rejected\n'
-printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /moal_bridge_find_target/ { find=NR }
-  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
-  END { exit !(find && deinit && find < deinit) }
-' || fail "runtime-switch: target validation must precede teardown"
-printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /target\.dev == bridge_owner->bridge->wlan_dev/ { same=NR }
-  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
-  END { exit !(same && deinit && same < deinit) }
-' || fail "runtime-switch: same-target no-op must precede teardown"
-SAME_TARGET_BLOCK="$(extract_c_block "$SWITCH_BLOCK" '^[[:space:]]*if \(target\.dev == bridge_owner->bridge->wlan_dev\) \{')"
-printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq 'ret = 0' || fail "runtime-switch: same-target branch must succeed"
-printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq 'goto out_unlock' || fail "runtime-switch: same-target branch must use shared releases"
-printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq '__moal_bridge_deinit_locked' && fail "runtime-switch: same-target branch must not tear down"
-printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /target_keepalive_idle_ms =/ { target_snapshot=NR }
-  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
-  END { exit !(target_snapshot && deinit && target_snapshot < deinit) }
-' || fail "runtime-switch: old/target snapshots must complete before teardown"
-printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
-  /bridge_owner = NULL/ && !owner_clear { owner_clear=NR }
-  /target\.handle->params\.bridge_mode = 1/ && !target_policy { target_policy=NR }
-  /ret = __moal_bridge_init_locked/ && !target_init { target_init=NR }
-  END { exit !(deinit && owner_clear && target_policy && target_init &&
-               deinit < owner_clear && owner_clear < target_policy &&
-               target_policy < target_init) }
-' || fail "runtime-switch: teardown/owner-clear/target-bind order is invalid"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_bridge_peer' || fail "runtime-switch: target peer snapshot missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_keepalive_ms' || fail "runtime-switch: target keepalive snapshot missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_keepalive_idle_ms' || fail "runtime-switch: target idle keepalive snapshot missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_mode = target_mode' || fail "runtime-switch: target mode restoration missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_wlan_idx = target_wlan_idx' || fail "runtime-switch: target index restoration missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'strncpy(target.handle->params.bridge_peer, target_bridge_peer' || fail "runtime-switch: target peer restoration missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_keepalive_ms = target_keepalive_ms' || fail "runtime-switch: target keepalive restoration missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_keepalive_idle_ms = target_keepalive_idle_ms' || fail "runtime-switch: target idle keepalive restoration missing"
-printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /ret = __moal_bridge_init_locked/ && !target_init { target_init=NR }
-  /target_ret = ret/ { target_error=NR }
-  /target\.handle->params\.bridge_mode = target_mode/ { mode=NR }
-  /target\.handle->params\.bridge_wlan_idx = target_wlan_idx/ { bss_idx=NR }
-  /strncpy\(target\.handle->params\.bridge_peer, target_bridge_peer/ { peer=NR }
-  /target\.handle->params\.bridge_keepalive_ms = target_keepalive_ms/ { keepalive=NR }
-  /target\.handle->params\.bridge_keepalive_idle_ms = target_keepalive_idle_ms/ { idle=NR }
-  /rollback_ret = __moal_bridge_init_locked/ { rollback_init=NR }
-  END { exit !(target_init && target_error && mode && bss_idx && peer &&
-               keepalive && idle && rollback_init && target_init < target_error &&
-               target_error < mode && target_error < bss_idx && target_error < peer &&
-               target_error < keepalive && target_error < idle &&
-               mode < rollback_init && bss_idx < rollback_init &&
-               peer < rollback_init && keepalive < rollback_init && idle < rollback_init) }
-' || fail "runtime-switch: target parameters must be restored before rollback init"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = NULL' || fail "runtime-switch: owner clear missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = target.handle' || fail "runtime-switch: target owner publish missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = old.old_owner' || fail "runtime-switch: rollback owner restore missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'if (old.old_owner != target.handle)' || fail "runtime-switch: same-handle mode preservation missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: rollback-failure target disable missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'br->wlan_dev = target' && fail "runtime-switch: direct wlan pointer hot-swap forbidden"
-
-check_switch_success_contract "$SWITCH_BLOCK" || \
-  fail "runtime-switch: target success branch contract missing"
-
-# Mutation pair: ordinary braces around the alias guard must remain valid,
-# while moving old-mode clear outside that guard must be rejected.
-POSITIVE_BRACED_SWITCH="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /if \(old\.old_owner != target\.handle\)/ {
-    print $0 " {"
-    bracing=1
-    next
-  }
-  bracing && /old\.old_owner->params\.bridge_mode = 0/ {
-    print
-    print "\t\t}"
-    bracing=0
-    braced=1
-    next
-  }
-  { print }
-  END { exit !braced }
-')"
-check_switch_success_contract "$POSITIVE_BRACED_SWITCH" || \
-  fail "runtime-switch: equivalent braced-guard positive fixture was rejected"
-printf 'PASS: runtime-switch equivalent braced-guard positive fixture accepted\n'
-
-NEGATIVE_ALIAS_SWITCH="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /if \(old\.old_owner != target\.handle\)/ {
-    print
-    swapping=1
-    next
-  }
-  swapping && /old\.old_owner->params\.bridge_mode = 0/ {
-    print "\t\ttarget.handle->params.bridge_mode = 1;"
-    next
-  }
-  swapping && /target\.handle->params\.bridge_mode = 1/ {
-    print "\t\told.old_owner->params.bridge_mode = 0;"
-    swapping=0
-    swapped=1
-    next
-  }
-  { print }
-  END { exit !swapped }
-')"
-if check_switch_success_contract "$NEGATIVE_ALIAS_SWITCH"; then
-  fail "runtime-switch: unconditional old-mode-clear negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch unconditional old-mode-clear negative fixture rejected\n'
-
-ROLLBACK_OK_BLOCK="$(extract_c_block "$SWITCH_BLOCK" '^[[:space:]]*if \(!rollback_ret\) \{')"
-printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = old.old_mode' || fail "runtime-switch: old mode restore must be in rollback-success branch"
-printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'bridge_owner = old.old_owner' || fail "runtime-switch: old owner restore must be in rollback-success branch"
-printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_fail)' || fail "runtime-switch: switch_fail must count rollback success"
-printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_rollback_ok)' || fail "runtime-switch: rollback_ok must be in rollback-success branch"
-printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'ret = target_ret' || fail "runtime-switch: rollback success must preserve target errno"
-
-ROLLBACK_FAIL_BLOCK="$(extract_c_block "$SWITCH_BLOCK" '^[[:space:]]*} else \{')"
-printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable must be in rollback-failure branch"
-printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: target mode disable must be in rollback-failure branch"
-printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'bridge_owner = NULL' || fail "runtime-switch: owner clear must be in rollback-failure branch"
-printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_fail)' || fail "runtime-switch: switch_fail must count rollback failure"
-printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_rollback_fail)' || fail "runtime-switch: rollback_fail must be in rollback-failure branch"
-printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'ret = -EIO' || fail "runtime-switch: rollback failure must return EIO"
-
-GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_iface' "$BRIDGE_C")"
-printf '%s\n' "$GETTER_BLOCK" | grep -Pzq 'ret = scnprintf\(buf, len, "%s\\n",\s*br && atomic_read\(&br->active\) \? br->wlan_name : "none"\);' || fail "runtime-switch: getter must report effective active state from stable name"
-
-# --- runtime-switch Task 4: opt-in synchronous sysfs contract ---
-grep -q 'int bridge_runtime_switch;' "$INIT_C" || fail "runtime-switch: gate missing"
-grep -q 'module_param(bridge_runtime_switch, int, 0444)' "$INIT_C" || fail "runtime-switch: gate permissions wrong"
-grep -q 'module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644)' "$INIT_C" || fail "runtime-switch: callback parameter missing"
-grep -q 'module_param(bridge_iface, charp' "$INIT_C" && fail "runtime-switch: charp forbidden"
-
-SETTER_BLOCK="$(extract_c_function '^static int bridge_iface_set' "$INIT_C")"
-GETTER_PARAM_BLOCK="$(extract_c_function '^static int bridge_iface_get' "$INIT_C")"
-PARAM_OPS_BLOCK="$(extract_c_block "$(cat "$INIT_C")" \
-  '^static const struct kernel_param_ops bridge_iface_ops')"
-check_bridge_iface_set_contract "$SETTER_BLOCK" || \
-  fail "runtime-switch: setter-local strict parse/synchronous contract missing"
-printf '%s\n' "$GETTER_PARAM_BLOCK" | \
-  grep -Fq 'return moal_bridge_get_iface(buf, PAGE_SIZE);' || \
-  fail "runtime-switch: getter callback is not effective-state based"
-printf '%s\n' "$PARAM_OPS_BLOCK" | grep -Fq '.set = bridge_iface_set' || \
-  fail "runtime-switch: callback ops setter binding missing"
-printf '%s\n' "$PARAM_OPS_BLOCK" | grep -Fq '.get = bridge_iface_get' || \
-  fail "runtime-switch: callback ops getter binding missing"
-
-# Focused mutation fixtures prove the callback-local checks reject the edge
-# cases that unscoped greps used to miss, without attempting to emulate C.
-SETTER_NO_TRAILING_REJECT="$(printf '%s\n' "$SETTER_BLOCK" |
-  sed 's/if (!len || val\[end\])/if (!len)/')"
-if check_bridge_iface_set_contract "$SETTER_NO_TRAILING_REJECT"; then
-  fail "runtime-switch: trailing-data rejection negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch trailing-data rejection negative fixture rejected\n'
-
-SETTER_NO_BOUND="$(printf '%s\n' "$SETTER_BLOCK" |
-  sed 's/len >= sizeof(ifname) - 1/len > sizeof(ifname) - 1/')"
-if check_bridge_iface_set_contract "$SETTER_NO_BOUND"; then
-  fail "runtime-switch: overlong-name negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch overlong-name negative fixture rejected\n'
-
-SETTER_ASYNC="$(printf '%s\n' "$SETTER_BLOCK" |
-  sed 's/return moal_bridge_switch_iface(ifname);/moal_bridge_switch_iface(ifname); return 0;/')"
-if check_bridge_iface_set_contract "$SETTER_ASYNC"; then
-  fail "runtime-switch: asynchronous-setter negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch asynchronous-setter negative fixture rejected\n'
-
-# --- runtime-switch Task 5: observability and target QA ---
-STATS_SHOW_BLOCK="$(extract_c_function '^static ssize_t stats_show' "$BRIDGE_C")"
-SYSFS_DEINIT_BLOCK="$(extract_c_function '^static void moal_bridge_sysfs_deinit' "$BRIDGE_C")"
-LIFECYCLE_DEINIT_BLOCK="$(extract_c_function '^static void __moal_bridge_deinit_locked' "$BRIDGE_C")"
-REMOVE_CARD_BLOCK="$(extract_c_function '^mlan_status woal_remove_card' "$MAIN_C")"
-grep -Fq 'static struct moal_bridge __rcu *moal_bridge_for_sysfs' "$BRIDGE_C" || \
-  fail "runtime-switch: stats bridge pointer is not RCU annotated"
-check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$SYSFS_DEINIT_BLOCK" \
-  "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_BLOCK" || \
-  fail "runtime-switch: stats RCU lifetime/drain-before-free contract missing"
-RCU_DEINIT_NO_DRAIN="$(printf '%s\n' "$SYSFS_DEINIT_BLOCK" |
-  sed 's/synchronize_rcu();/\/\* removed drain \*\//')"
-if check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$RCU_DEINIT_NO_DRAIN" \
-    "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_BLOCK"; then
-  fail "runtime-switch: undrained stats lifetime negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch undrained stats lifetime negative fixture rejected\n'
-STATS_EARLY_RETURN="$(printf '%s\n' "$STATS_SHOW_BLOCK" |
-  sed '0,/goto out_rcu;/s//return ret;/')"
-if check_stats_rcu_lifetime_contract "$STATS_EARLY_RETURN" "$SYSFS_DEINIT_BLOCK" \
-    "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_BLOCK"; then
-  fail "runtime-switch: stats early-return negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch stats early-return negative fixture rejected\n'
-REMOVE_CARD_FREE_FIRST="$(printf '%s\n' "$REMOVE_CARD_BLOCK" | awk '
-  /moal_bridge_deinit\(handle\)/ { saved=$0; next }
-  /woal_free_moal_handle\(handle\)/ { print; print saved; moved=1; next }
-  { print }
-  END { exit !moved }
-')"
-if check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$SYSFS_DEINIT_BLOCK" \
-    "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_FREE_FIRST"; then
-  fail "runtime-switch: handle-free-before-bridge-deinit negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch handle-free ordering negative fixture rejected\n'
-printf '%s\n' "$STATS_SHOW_BLOCK" | \
-  grep -q 'switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld' || \
-  fail "runtime-switch: outcome stats missing"
-printf '%s\n' "$STATS_SHOW_BLOCK" | grep -q 'iface=%s peer=%s' || \
-  fail "runtime-switch: iface stats missing"
-printf '%s\n' "$STATS_SHOW_BLOCK" | \
-  grep -Fq 'br->wlan_name' || \
-  fail "runtime-switch: stats cached iface name missing"
-printf '%s\n' "$STATS_SHOW_BLOCK" | \
-  grep -Fq 'br->peer_name' || \
-  fail "runtime-switch: stats cached peer name missing"
-BRIDGE_INIT_BLOCK="$(extract_c_function '^static int __moal_bridge_init_locked' "$BRIDGE_C")"
-check_bridge_name_snapshot_contract "$BRIDGE_INIT_BLOCK" || \
-  fail "runtime-switch: per-bridge name mapping/termination/publication order invalid"
-BRIDGE_INIT_SWAPPED_NAMES="$(printf '%s\n' "$BRIDGE_INIT_BLOCK" |
-  sed -e 's/br->wlan_dev->name/br->swap_dev->name/' \
-      -e 's/br->peer_dev->name/br->wlan_dev->name/' \
-      -e 's/br->swap_dev->name/br->peer_dev->name/')"
-if check_bridge_name_snapshot_contract "$BRIDGE_INIT_SWAPPED_NAMES"; then
-  fail "runtime-switch: swapped per-bridge-name negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch swapped per-bridge-name negative fixture rejected\n'
-BRIDGE_INIT_NO_PEER_NUL="$(printf '%s\n' "$BRIDGE_INIT_BLOCK" |
-  sed "s/br->peer_name\[sizeof(br->peer_name) - 1\] = '\\\\0';/\/\* missing peer terminator \*\//")"
-if check_bridge_name_snapshot_contract "$BRIDGE_INIT_NO_PEER_NUL"; then
-  fail "runtime-switch: unterminated peer-name negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch unterminated peer-name negative fixture rejected\n'
-NETDEV_EVENT_BLOCK="$(extract_c_function '^static int moal_bridge_netdev_event' "$BRIDGE_C")"
-check_no_post_release_peer_name_deref "$NETDEV_EVENT_BLOCK" \
-  "$LIFECYCLE_DEINIT_BLOCK" || \
-  fail "runtime-switch: peer_dev name dereferenced after peer reference release"
-POST_RELEASE_NAME_DEREF="$(printf '%s\n' "$LIFECYCLE_DEINIT_BLOCK" | awk '
-  { print }
-  /\/\* 7\. 통계 출력 \*\// && !injected {
-    print "\tPRINTM(MMSG, \"%s\\n\", br->peer_dev->name);"
-    injected=1
-  }
-  END { exit !injected }
- ')"
-if check_no_post_release_peer_name_deref "$NETDEV_EVENT_BLOCK" \
-    "$POST_RELEASE_NAME_DEREF"; then
-  fail "runtime-switch: post-release peer-name negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-release peer-name negative fixture rejected\n'
-
-# Every reset path that destroys WLAN interfaces owns AddRemoveCardSem before
-# entering the bridge lifecycle lock. The direct post-reset rebuild acquires it
-# itself and keeps it through teardown, every add, and the optional re-init.
-PCIE_FLR_BLOCK="$(extract_c_function '^static mlan_status woal_do_flr' "$PCIE_C")"
-SDIO_FLR_BLOCK="$(extract_c_function '^static mlan_status woal_do_sdiommc_flr' "$SDIO_C")"
-DRV_MODE_BLOCK="$(extract_c_function '^mlan_status woal_switch_drv_mode' "$MAIN_C")"
-POST_RESET_BLOCK="$(extract_c_function '^static void woal_post_reset' "$MAIN_C")"
-for reset_contract in "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK" "$DRV_MODE_BLOCK"; do
-  check_reset_teardown_order "$reset_contract" || \
-    fail "runtime-switch: reset path removes interfaces before bridge teardown"
-done
-check_post_reset_bridge_contract "$POST_RESET_BLOCK" || \
-  fail "runtime-switch: post-reset bridge teardown/recreate ordering invalid"
-check_sdio_flr_sem_exit_contract "$SDIO_FLR_BLOCK" || \
-  fail "runtime-switch: SDIO FLR null-adapter path leaks card semaphore"
-
-PCIE_FLR_NO_DEINIT="$(printf '%s\n' "$PCIE_FLR_BLOCK" |
-  sed 's/moal_bridge_deinit(handle);/\/\* missing bridge teardown \*\//')"
-if check_reset_teardown_order "$PCIE_FLR_NO_DEINIT"; then
-  fail "runtime-switch: PCIe FLR missing-deinit negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch PCIe FLR missing-deinit negative fixture rejected\n'
-
-SDIO_FLR_LATE_DEINIT="$(printf '%s\n' "$SDIO_FLR_BLOCK" | awk '
-  /moal_bridge_deinit\(handle\)/ { saved=$0; next }
-  /woal_remove_interface\(handle,/ { print; print saved; moved=1; next }
-  { print }
-  END { exit !moved }
-')"
-if check_reset_teardown_order "$SDIO_FLR_LATE_DEINIT"; then
-  fail "runtime-switch: SDIO FLR late-deinit negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch SDIO FLR late-deinit negative fixture rejected\n'
-
-POST_RESET_NO_REINIT="$(printf '%s\n' "$POST_RESET_BLOCK" |
-  sed 's/moal_bridge_init(handle,/missing_bridge_init(handle,/')"
-if check_post_reset_bridge_contract "$POST_RESET_NO_REINIT"; then
-  fail "runtime-switch: post-reset missing-reinit negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-reset missing-reinit negative fixture rejected\n'
-
-POST_RESET_NO_ACQUIRE="$(printf '%s\n' "$POST_RESET_BLOCK" |
-  sed 's/MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)/missing_card_sem_acquire()/')"
-if check_post_reset_bridge_contract "$POST_RESET_NO_ACQUIRE"; then
-  fail "runtime-switch: post-reset missing-acquire negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-reset missing-acquire negative fixture rejected\n'
-
-POST_RESET_NO_RELEASE="$(printf '%s\n' "$POST_RESET_BLOCK" |
-  sed 's/MOAL_REL_SEMAPHORE(&AddRemoveCardSem)/missing_card_sem_release()/')"
-if check_post_reset_bridge_contract "$POST_RESET_NO_RELEASE"; then
-  fail "runtime-switch: post-reset missing-release negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-reset missing-release negative fixture rejected\n'
-
-POST_RESET_FAILED_ACQUIRE_TO_CLEANUP="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
-  /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { in_acquire=1 }
-  in_acquire && /goto card_sem_acquire_failed;/ && !mutated {
-    sub(/goto card_sem_acquire_failed;/, "goto done;")
-    mutated=1
-  }
-  { print }
-  END { exit !mutated }
-')"
-if check_post_reset_bridge_contract "$POST_RESET_FAILED_ACQUIRE_TO_CLEANUP"; then
-  fail "runtime-switch: post-reset failed-acquire cleanup mutation was accepted"
-fi
-printf 'PASS: runtime-switch post-reset failed-acquire cleanup mutation rejected\n'
-
-POST_RESET_ACQUIRE_FAILURE_HANDLE_TOUCH="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
-  /^card_sem_acquire_failed:/ && !injected {
-    print
-    print "\thandle->fw_reload = MFALSE;"
-    injected=1
-    next
-  }
-  { print }
-  END { exit !injected }
-')"
-if check_post_reset_bridge_contract "$POST_RESET_ACQUIRE_FAILURE_HANDLE_TOUCH"; then
-  fail "runtime-switch: post-reset acquire-failure handle touch was accepted"
-fi
-printf 'PASS: runtime-switch post-reset acquire-failure handle-touch mutation rejected\n'
-
-POST_RESET_DUPLICATE_INIT="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
-  /if \(moal_bridge_init\(handle,/ && !injected {
-    print "\t\t\tmoal_bridge_init(handle, handle->params.bridge_peer,"
-    print "\t\t\t\t\t handle->params.bridge_wlan_idx);"
-    injected=1
-  }
-  { print }
-  END { exit !injected }
-')"
-if check_post_reset_bridge_contract "$POST_RESET_DUPLICATE_INIT"; then
-  fail "runtime-switch: post-reset duplicate-init negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-reset duplicate-init negative fixture rejected\n'
-
-POST_RESET_PREMATURE_INIT="$(printf '%s\n' "$POST_RESET_BLOCK" |
-  sed 's/moal_bridge_init(handle,/deferred_bridge_init(handle,/' | awk '
-    /if \(!woal_add_interface\(handle, handle->priv_num,/ && !injected {
-      print "\t\t\tmoal_bridge_init(handle, handle->params.bridge_peer,"
-      print "\t\t\t\t\t handle->params.bridge_wlan_idx);"
-      injected=1
-    }
-    { print }
-    END { exit !injected }
-  ')"
-if check_post_reset_bridge_contract "$POST_RESET_PREMATURE_INIT"; then
-  fail "runtime-switch: post-reset premature-init negative fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-reset premature-init negative fixture rejected\n'
-
-POST_RESET_ADD_FAILURE_FALLTHROUGH="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
-  /if \(!woal_add_interface\(handle, handle->priv_num,/ { in_failure=1 }
-  in_failure && /goto done;/ && !mutated {
-    sub(/goto done;/, "continue;")
-    mutated=1
-  }
-  { print }
-  END { exit !mutated }
-')"
-if check_post_reset_bridge_contract "$POST_RESET_ADD_FAILURE_FALLTHROUGH"; then
-  fail "runtime-switch: post-reset add-failure fallthrough fixture was accepted"
-fi
-printf 'PASS: runtime-switch post-reset add-failure fallthrough fixture rejected\n'
-
-SDIO_FLR_NULL_ADAPTER_RETURN="$(printf '%s\n' "$SDIO_FLR_BLOCK" | awk '
-  /if \(!\(handle->pmlan_adapter\)\)/ { in_null_adapter=1 }
-  in_null_adapter && /goto exit;/ && !mutated {
-    sub(/goto exit;/, "return status;")
-    mutated=1
-  }
-  { print }
-  END { exit !mutated }
-')"
-if check_sdio_flr_sem_exit_contract "$SDIO_FLR_NULL_ADAPTER_RETURN"; then
-  fail "runtime-switch: SDIO FLR null-adapter return leak fixture was accepted"
-fi
-printf 'PASS: runtime-switch SDIO FLR null-adapter return leak fixture rejected\n'
-for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok \
-               bridge_rollback_fail; do
-  printf '%s\n' "$STATS_SHOW_BLOCK" | \
-    grep -Fq "atomic_long_read(&$counter)" || \
-    fail "runtime-switch: stats does not atomically read $counter"
-  grep -Fq "atomic_long_set(&$counter" "$BRIDGE_C" && \
-    fail "runtime-switch: persistent counter $counter is reset"
-done
-test -x "$QA_SCRIPT" || \
-  fail "runtime-switch: executable QA script missing"
-grep -Fq '[ "$(id -u)" -eq 0 ]' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA root preflight missing"
-grep -Fq '[ -e "$IFACE_PARAM" ]' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA interface parameter preflight missing"
-grep -Fq '[ -e "$GATE_PARAM" ]' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA gate preflight missing"
-grep -Fq 'ip link show "$FROM_IF"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA FROM_IF preflight missing"
-grep -Fq 'ip link show "$TO_IF"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA TO_IF preflight missing"
-grep -Fq 'require_associated "$FROM_IF"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA FROM_IF association preflight missing"
-grep -Fq 'require_associated "$TO_IF"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA TO_IF association preflight missing"
-grep -Eq 'ip[[:space:]]+link[[:space:]]+set|iw[[:space:]].*[[:space:]]connect|wpa_cli|nmcli' "$QA_SCRIPT" && \
-  fail "runtime-switch: QA script must not configure or associate links"
-grep -Fq 'cat "$STATS"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA stats capture missing"
-QA_SWITCH_HELPER="$(extract_c_function '^switch_iface\(\)' "$QA_SCRIPT")" || \
-  fail "runtime-switch: QA contextual switch helper missing"
-printf '%s\n' "$QA_SWITCH_HELPER" | \
-  grep -Fq 'if ! printf' || \
-  fail "runtime-switch: QA writes are not contextually guarded"
-[ "$(grep -Fc '> "$IFACE_PARAM"' "$QA_SCRIPT" || true)" -eq 1 ] || \
-  fail "runtime-switch: every QA sysfs write must use switch_iface"
-printf '%s\n' "$QA_SWITCH_HELPER" | grep -Fq 'iteration=$iteration' || \
-  fail "runtime-switch: QA write failure omits iteration context"
-grep -Fq 'MAX_SWITCH_LOOPS=' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA loop upper bound missing"
-grep -Fq '10#$SWITCH_LOOPS' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA loop count is not canonicalized as decimal"
-grep -Fq 'SWITCH_LOOPS must use canonical decimal' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA canonical decimal rejection missing"
-grep -Fq 'dmesg > "$DMESG_BASELINE"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA dmesg baseline missing"
-grep -Fq 'head -n "$dmesg_baseline_lines" "$DMESG_AFTER"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA dmesg prefix/rotation validation missing"
-grep -Fq 'tail -n "+$((dmesg_baseline_lines + 1))"' "$QA_SCRIPT" || \
-  fail "runtime-switch: QA full dmesg delta extraction missing"
-grep -Fq "grep -E 'BUG:|WARNING:|use-after-free|lockdep'" "$QA_SCRIPT" || \
-  fail "runtime-switch: QA kernel-warning check missing"
-grep -Fq 'tail -200' "$QA_SCRIPT" && \
-  fail "runtime-switch: QA warning scan is still tail-limited"
-
-grep -Fq '`bridge_runtime_switch` | int | 0444' "$PARAM_DOC" || \
-  fail "runtime-switch: parameter docs missing 0444 gate semantics"
-grep -Fq '`bridge_iface` | custom string | 0644' "$PARAM_DOC" || \
-  fail "runtime-switch: parameter docs missing 0644 callback semantics"
-for errno in EOPNOTSUPP ENODEV EINVAL ENETDOWN ENOLINK EBUSY EIO; do
-  grep -Fq "\`$errno\`" "$PARAM_DOC" || \
-    fail "runtime-switch: parameter docs missing $errno"
-done
-grep -Fq 'FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000' "$QA_RUNBOOK" || \
-  fail "runtime-switch: runbook stress command missing"
-grep -Fq 'iw dev mlan0 link' "$QA_RUNBOOK" || \
-  fail "runtime-switch: runbook mlan0 association check missing"
-grep -Fq 'iw dev mlan1 link' "$QA_RUNBOOK" || \
-  fail "runtime-switch: runbook mlan1 association check missing"
-T15_RUNBOOK_BLOCK="$(awk '
-  /^## T-15 / { in_section=1 }
-  in_section && /^---$/ { exit }
-  in_section { print }
-' "$QA_RUNBOOK")"
-grep -Fq 'set -o pipefail' <<< "$T15_RUNBOOK_BLOCK" || \
-  fail "runtime-switch: runbook QA pipeline does not preserve failure"
-grep -Fq '2>&1 | tee /tmp/bridge-switch-qa.log' <<< "$T15_RUNBOOK_BLOCK" || \
-  fail "runtime-switch: runbook QA pipeline does not capture stderr"
-grep -Fq 'exit 1' <<< "$T15_RUNBOOK_BLOCK" || \
-  fail "runtime-switch: runbook does not stop after QA failure"
-printf '%s\n' "$T15_RUNBOOK_BLOCK" | awk '
-  /set -o pipefail/ { pipefail=NR }
-  /if ! FROM_IF=/ { guarded=NR }
-  /bridge_runtime_switch_qa\.sh 2>&1 \| tee/ { pipeline=NR }
-  /exit 1/ { stop=NR }
-  /^fi$/ && stop && !closed { closed=NR }
-  /capture_switch_state after/ { after=NR }
-  END { exit !(pipefail && guarded && pipeline && stop && closed && after &&
-               pipefail < guarded && guarded < pipeline && pipeline < stop &&
-               stop < closed && closed < after) }
-' || fail "runtime-switch: runbook failure guard must precede after-snapshots"
+' || fail "runtime-switch: card/lifecycle release order invalid"
 
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \
@@ -1010,7 +817,7 @@ printf '%s\n' "$DBDC_BLOCK" | grep -q 'MERROR' || \
 grep -Eq 'atomic_t\s+peer_released' "$ROOT/mlinux/moal_bridge.h" || \
   fail "peer_released must be atomic_t (F1) in struct moal_bridge"
 
-UNREG_BLOCK="$(grep -n -A20 -m1 'case NETDEV_UNREGISTER:' "$BRIDGE_C")"
+UNREG_BLOCK="$(grep -n -A55 -m1 'case NETDEV_UNREGISTER:' "$BRIDGE_C")"
 printf '%s\n' "$UNREG_BLOCK" | \
   grep -Eq 'netdev_rx_handler_unregister\(br->peer_dev\)|dev_remove_pack\(&br->peer_pt\)' || \
   fail "NETDEV_UNREGISTER branch must unregister handler"
@@ -1020,6 +827,15 @@ printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_put(br->peer_dev)' || \
   fail "NETDEV_UNREGISTER branch must dev_put peer"
 printf '%s\n' "$UNREG_BLOCK" | grep -q 'atomic_set(&br->peer_released, 1)' || \
   fail "NETDEV_UNREGISTER branch must atomic_set peer_released = 1 (F1)"
+printf '%s\n' "$UNREG_BLOCK" | awk '
+  /atomic_set\(&br->peer_released, 1\)/ { released=NR }
+  /synchronize_net\(\)/ { drain=NR }
+  /kthread_stop\(br->w2p_thread\)/ { w2p=NR }
+  /kthread_stop\(br->p2w_thread\)/ { p2w=NR }
+  /dev_put\(br->peer_dev\)/ { put=NR }
+  END { exit !(released && drain && w2p && p2w && put &&
+               released < drain && drain < w2p && w2p < p2w && p2w < put) }
+' || fail "NETDEV_UNREGISTER must drain workers before peer ref release"
 
 DEINIT_BLOCK="$(grep -n -A90 -m1 'void __moal_bridge_deinit_locked' "$BRIDGE_C")"
 printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!atomic_read(&br->peer_released))' || \
@@ -1043,16 +859,18 @@ grep -Eq 'atomic_dec\(&br->p2w_qlen\)' "$BRIDGE_C" || \
 grep -q 'skb_queue_len_lockless' "$BRIDGE_C" && \
   fail "skb_queue_len_lockless must be fully replaced by atomic qlen"
 
-# --- v2 B4: NETDEV_DOWN purges both queues ---
-DOWN_BLOCK="$(grep -n -A8 -m1 'case NETDEV_DOWN:' "$BRIDGE_C")"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_queue_purge(&br->w2p_queue)' || \
-  fail "NETDEV_DOWN must purge w2p_queue"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_queue_purge(&br->p2w_queue)' || \
-  fail "NETDEV_DOWN must purge p2w_queue"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->w2p_qlen, 0)' || \
-  fail "NETDEV_DOWN must reset w2p_qlen"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->p2w_qlen, 0)' || \
-  fail "NETDEV_DOWN must reset p2w_qlen"
+# --- v2 B4: NETDEV_DOWN drains with per-SKB qlen accounting ---
+DOWN_BLOCK="$(grep -n -A24 -m1 'case NETDEV_DOWN:' "$BRIDGE_C")"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_dequeue(&br->w2p_queue)' || \
+  fail "NETDEV_DOWN must drain w2p_queue"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_dequeue(&br->p2w_queue)' || \
+  fail "NETDEV_DOWN must drain p2w_queue"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_dec(&br->w2p_qlen)' || \
+  fail "NETDEV_DOWN must account w2p drain"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_dec(&br->p2w_qlen)' || \
+  fail "NETDEV_DOWN must account p2w drain"
+printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->.*_qlen, 0)' && \
+  fail "NETDEV_DOWN must not race queue accounting with blind reset"
 
 # --- v2 B3: pskb_may_pull guards in rx_fast ---
 printf '%s\n' "$W2P_FAST_BLOCK" | \
@@ -1310,8 +1128,12 @@ P2W_PT_INJECT="$(printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | grep -c 'netif_rx(skb)
 [ "${P2W_PT_INJECT:-0}" -ge 1 ] || fail "hairpin: pt_func REPLY inject 분기 누락"
 
 TARGET_BLOCK="$(grep -n -A100 -m1 '^static int moal_bridge_find_target' "$BRIDGE_C")"
+# The target checker deliberately checks admin/running before association and
+# carrier after association so its errno precedence is ENETDOWN (device down)
+# before ENOLINK (admin-UP but unassociated). Assert the concrete source
+# predicates, not an obsolete broad-helper token.
 for token in 'm_handle\[' MLAN_BSS_TYPE_STA NETREG_REGISTERED \
-             netif_device_present netif_running media_connected \
+             netif_device_present netif_running media_connected netif_carrier_ok \
              HardwareStatusReady fw_reseting surprise_removed; do
   printf '%s\n' "$TARGET_BLOCK" | grep -q "$token" || \
     fail "runtime-switch: target validator missing $token"

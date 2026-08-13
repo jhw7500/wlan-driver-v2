@@ -197,7 +197,6 @@ Change log:
 mlan_status woal_sdiommc_bus_register(void);
 /** Unregister from bus driver function */
 void woal_sdiommc_bus_unregister(void);
-
 int woal_sdio_set_bus_clock(moal_handle *handle, t_u8 option);
 int woal_sdio_set_buswidth(moal_handle *handle, t_u8 bus_width);
 
@@ -223,6 +222,12 @@ typedef struct _sdio_mmc_card {
 	struct work_struct reset_work;
 	/** work flag */
 	t_u8 work_flags;
+	/** reset producer gate; protected by reset_lock */
+	bool reset_stopping;
+	/** driver-mode IRQ/OOB producer gate; protected by reset_lock */
+	bool drv_mode_quiesced;
+	/** serializes reset and driver-mode producer gates */
+	spinlock_t reset_lock;
 	/** saved host clock value */
 	unsigned int host_clock;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
@@ -240,6 +245,9 @@ typedef struct _sdio_mmc_card {
 	struct work_struct sdio_oob_irq_work;
 #endif
 } sdio_mmc_card;
+/** Stop/resume SDIO IRQ/OOB production across an in-place mode rebuild. */
+mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle);
+mlan_status woal_sdio_drv_mode_resume(moal_handle *handle);
 void woal_sdio_reset_hw(moal_handle *handle);
 #endif /* SDIO_MMC */
 

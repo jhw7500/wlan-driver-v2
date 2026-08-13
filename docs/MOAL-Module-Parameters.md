@@ -274,8 +274,12 @@ conf per-adapter 키 `mlanN.mgmt_hex_dump_enable`. 동작하려면 `net_rx>=2`(R
 `bridge_runtime_switch`는 전역 int, 기본값 0, perm `0444`인 **모듈 로드 시 opt-in**이다.
 로드 후 sysfs로 값을 바꿀 수 없으며 값이 정확히 1일 때만 전환 write를 허용한다.
 `bridge_iface`는 perm `0644`인 custom string 파라미터다. read는 설정 문자열이 아니라 현재
-활성 브릿지의 유효 WLAN 인터페이스(`none`이면 비활성)를 반환하고, write는 이미 존재하며
+effective owner가 binding한 현재 WLAN 이름(`none`이면 owner 없음)을 반환하고, write는 이미 존재하며
 연결된 MOAL STA 인터페이스를 새 타겟으로 지정한다.
+peer가 일시 DOWN이라 forwarding의 `active=0`이어도 **effective owner가 남아 있으면** 이름을
+반환한다. 즉 `active`는 forwarding 상태이고 `bridge_iface`의 `none`은 owner가 없는 inactive
+terminal state만 뜻한다. WLAN/peer rename은 notifier와 name lock으로 getter/stats에 반영되며,
+전환 identity는 이름이 아닌 transaction 동안 참조된 exact netdev다.
 
 ```bash
 insmod moal.ko mod_para=cts/wifi_mod_para.conf bridge_runtime_switch=1
@@ -283,22 +287,28 @@ cat /sys/module/moal/parameters/bridge_iface
 echo mlan1 > /sys/module/moal/parameters/bridge_iface
 ```
 
-write는 비동기 요청을 예약하는 동작이 아니다. 전체 deinit → target init과, 실패 시 rollback이
-끝난 뒤 반환하므로 `echo`/`write(2)`가 받은 errno가 최종 결과다.
+write는 비동기 요청을 예약하는 동작이 아니다. 전체 deinit → target init → target/peer 최종
+readiness 검증과, 실패 시 rollback 검증이 끝난 뒤 반환하므로 `echo`/`write(2)`가 받은 errno가
+최종 결과다. module argument parsing 시점의 `bridge_iface=...`는 runtime lock 준비 전이므로
+의도적으로 `EAGAIN`으로 module load를 거절한다.
 활성 stats 끝에는 `iface=<wlan> peer=<peer>`와
 `switch_ok=<n> switch_fail=<n> rollback_ok=<n> rollback_fail=<n>`이 추가된다. 네 outcome
 counter는 모듈 전역 누계라 rebind 중 재생성되는 bridge instance와 함께 reset되지 않으며,
-모듈을 unload/reload할 때만 초기화된다.
+모듈을 unload/reload할 때만 초기화된다. stats node는 module-lifetime이므로 owner가 없을 때도
+`bridge: inactive`, `iface=none peer=none` 및 네 counter를 읽을 수 있다.
 
 | errno | 의미 |
 |---|---|
 | `EOPNOTSUPP` | opt-in gate가 꺼져 있거나 정확히 1이 아님 |
 | `ENODEV` | 활성 브릿지가 없거나 지정 인터페이스가 존재하지 않음 |
 | `EINVAL` | 빈 값, 과도한 길이, 잘못된 이름/개행 형식 또는 non-STA 타겟 |
-| `ENETDOWN` | 타겟 netdev가 등록/존재/running 상태가 아님 |
-| `ENOLINK` | 타겟 STA가 연결되어 있지 않음 |
+| `ENETDOWN` | 타겟 netdev가 admin-DOWN/등록 해제/존재하지 않음/운영 불가이거나, 현재 binding의 peer가 DOWN/사용 불가임 |
+| `ENOLINK` | **admin-UP인** 타겟 STA가 unassociated임. QA는 admin-UP를 별도로 확인한 뒤 이 errno만 기대한다. |
 | `EBUSY` | 타겟 어댑터가 reset/removal 중이거나 hardware ready가 아님 |
-| `EIO` | target init과 기존 브릿지 rollback이 모두 실패함 |
+| `EAGAIN` | module-argument parsing 등 runtime control 초기화 전 |
+| `ESHUTDOWN` | writer가 기다리는 동안 module shutdown이 시작됨 |
+| `EINTR` | semaphore wait가 signal로 중단됨(kernel 내부 결과는 `-ERESTARTSYS`) |
+| `EIO` | target init 또는 최종 readiness 검증 실패 뒤, 기존 브릿지 rollback init 또는 rollback 최종 검증도 실패함 |
 
 이 선택은 설정 파일에 저장되지 않으며 모듈 reload 뒤 지속되지 않는다. 또한 이미 활성인
 브릿지에만 적용되므로 `bridge_mode=0`인 브릿지를 켜는 수단이 아니다. 전환은 기존 datapath를
@@ -306,9 +316,22 @@ counter는 모듈 전역 누계라 rebind 중 재생성되는 bridge instance와
 보장하지 않는다. 실장비 검증 절차는 `docs/driver-bridge.qa-runbook.md`의 런타임 전환 절을 따른다.
 
 PCIe/SDIO FLR, driver-mode switch, 또는 netdev를 직접 재생성하는 post-reset은 인터페이스 제거
-전에 활성 브릿지를 동기 해제한다. reset이 성공해 인터페이스가 다시 생성되면 기존
-`bridge_mode`/현재 handle 파라미터로 브릿지를 한 번 재초기화하고, 초기화 실패 시 비활성 상태로
-남는다. 이 과정도 패킷 중단/손실이 가능하며 outcome counter는 모듈 unload 전까지 누적된다.
+전에 활성 브릿지를 동기 해제한다. primary/companion rebuild 전체가 성공한 뒤에만 reset 전의
+exact effective owner/BSS/peer/keepalive snapshot을 한 번 복구한다. runtime switch는
+`handle->params.bridge_*` configured policy를 변경하지 않으므로 이후 same-card fallback이나
+module reload에 누출되지 않는다. destructive firmware 단계 이후 실패는 firmware rollback을
+주장하지 않으며 configured policy는 유지하되 effective owner는 `none`, recovery status는 failure로
+끝난다. gate가 0이어도 netdev/firmware/handle free 전에 bridge를 drain하는 순서는 UAF 방지
+수명주기 invariant라 항상 적용된다. 정상 forwarding과 runtime write gate 의미는 변하지 않는다.
+
+격리된 target QA용 빌드에서만 `CONFIG_BRIDGE_SWITCH_FAULT_INJECT=y`를 명시하면 root-only perm
+`0600`의 one-shot `bridge_switch_fault_mask`가 생긴다(bit0 target init, bit1 rollback init).
+기본/production Makefile 값은 `n`이다. production source/artifact acceptance에는 parameter 선언,
+mask 변수, `xchg()` 및 target/rollback injected branch가 모두
+`#ifdef BRIDGE_SWITCH_FAULT_INJECT` 안에 있어야 한다; static gate가 이를 fail-closed로 검사한다.
+host에 있는 standard `.ko`는 symbol 부재를 별도 검사하지만, fresh build provenance 없이는 그
+artifact를 final-source build 증거로 승격하지 않는다. 자세한 matrix는
+`docs/driver-bridge.qa-runbook.md` T-15a/T-15b를 따른다.
 
 ---
 
