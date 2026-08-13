@@ -84,6 +84,10 @@ struct moal_bridge {
 	 */
 	int use_packet_type;
 	struct packet_type peer_pt;  /**< packet_type for fallback mode */
+	/** Stable names captured while both netdev references are valid. These
+	 * remain safe after NETDEV_UNREGISTER releases peer_dev. */
+	char wlan_name[IFNAMSIZ];
+	char peer_name[IFNAMSIZ];
 
 	/** 1 when peer handler/ref already released via NETDEV_UNREGISTER.
 	 *  atomic_t — writer is the netdev notifier chain (RTNL/softirq),

@@ -1345,8 +1345,6 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 
 static struct kobject *moal_bridge_kobj;
 static struct moal_bridge __rcu *moal_bridge_for_sysfs;
-static char moal_bridge_iface_for_sysfs[IFNAMSIZ];
-static char moal_bridge_peer_for_sysfs[IFNAMSIZ];
 
 static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
@@ -1445,8 +1443,8 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->hairpin_tx_fwd),
 			 atomic_long_read(&br->hairpin_arp_tee),
 			 atomic_long_read(&br->hairpin_arp_inject),
-			 moal_bridge_iface_for_sysfs,
-			 moal_bridge_peer_for_sysfs,
+			 br->wlan_name,
+			 br->peer_name,
 			 atomic_long_read(&bridge_switch_ok),
 			 atomic_long_read(&bridge_switch_fail),
 			 atomic_long_read(&bridge_rollback_ok),
@@ -1469,15 +1467,6 @@ static int moal_bridge_sysfs_init(struct moal_bridge *br)
 	 * so a future 32-bit port fails loud instead of silently truncating
 	 * s64 ktime_to_us / overflowing the accumulators. */
 	BUILD_BUG_ON(sizeof(long) < 8);
-	strncpy(moal_bridge_iface_for_sysfs, br->wlan_dev->name,
-		sizeof(moal_bridge_iface_for_sysfs) - 1);
-	moal_bridge_iface_for_sysfs[
-		sizeof(moal_bridge_iface_for_sysfs) - 1] = '\0';
-	strncpy(moal_bridge_peer_for_sysfs, br->peer_dev->name,
-		sizeof(moal_bridge_peer_for_sysfs) - 1);
-	moal_bridge_peer_for_sysfs[
-		sizeof(moal_bridge_peer_for_sysfs) - 1] = '\0';
-
 	moal_bridge_kobj = kobject_create_and_add("moal_bridge", kernel_kobj);
 	if (!moal_bridge_kobj)
 		return -ENOMEM;
@@ -1602,6 +1591,12 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 	br->wlan_dev = handle->priv[wlan_bss_idx]->netdev;
 	br->wlan_priv = handle->priv[wlan_bss_idx];
 	br->handle = handle;
+	strncpy(br->wlan_name, br->wlan_dev->name,
+		sizeof(br->wlan_name) - 1);
+	br->wlan_name[sizeof(br->wlan_name) - 1] = '\0';
+	strncpy(br->peer_name, br->peer_dev->name,
+		sizeof(br->peer_name) - 1);
+	br->peer_name[sizeof(br->peer_name) - 1] = '\0';
 	atomic_set(&br->active, 0);
 
 	skb_queue_head_init(&br->w2p_queue);
@@ -1718,8 +1713,8 @@ static int __moal_bridge_init_locked(moal_handle *handle,
 	PRINTM(MMSG, "bridge: === Configuration ===\n");
 	PRINTM(MMSG, "bridge:   mode        = %d\n", 1);
 	PRINTM(MMSG, "bridge:   wlan_bss    = %d (%s)\n",
-	       wlan_bss_idx, br->wlan_dev->name);
-	PRINTM(MMSG, "bridge:   peer        = %s\n", br->peer_dev->name);
+	       wlan_bss_idx, br->wlan_name);
+	PRINTM(MMSG, "bridge:   peer        = %s\n", br->peer_name);
 	PRINTM(MMSG, "bridge:   wlan_mac    = " MACSTR "\n",
 	       MAC2STR(br->wlan_mac));
 	PRINTM(MMSG, "bridge:   peer_mac    = " MACSTR "\n",
@@ -1819,7 +1814,7 @@ static void __moal_bridge_deinit_locked(moal_handle *handle)
 
 	/* 7. 통계 출력 */
 	PRINTM(MMSG, "bridge: %s <-> %s deactivated\n",
-	       br->wlan_dev->name, br->peer_dev->name);
+	       br->wlan_name, br->peer_name);
 	PRINTM(MMSG, "bridge: w2p fwd=%ld drop=%ld err=%ld oom=%ld\n",
 	       atomic_long_read(&br->wlan_to_peer.fwd_packets),
 	       atomic_long_read(&br->wlan_to_peer.dropped),
@@ -1883,7 +1878,7 @@ int moal_bridge_get_iface(char *buf, size_t len)
 	mutex_lock(&bridge_lifecycle_lock);
 	br = bridge_owner ? bridge_owner->bridge : NULL;
 	ret = scnprintf(buf, len, "%s\n",
-			br && atomic_read(&br->active) ? br->wlan_dev->name : "none");
+			br && atomic_read(&br->active) ? br->wlan_name : "none");
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
 }
@@ -1924,9 +1919,9 @@ int moal_bridge_switch_iface(const char *ifname)
 
 	old.old_owner = bridge_owner;
 	old.old_bss_index = old.old_owner->params.bridge_wlan_idx;
-	strncpy(old.old_iface, br->wlan_dev->name, sizeof(old.old_iface) - 1);
+	strncpy(old.old_iface, br->wlan_name, sizeof(old.old_iface) - 1);
 	old.old_iface[sizeof(old.old_iface) - 1] = '\0';
-	strncpy(old.peer, br->peer_dev->name, sizeof(old.peer) - 1);
+	strncpy(old.peer, br->peer_name, sizeof(old.peer) - 1);
 	old.peer[sizeof(old.peer) - 1] = '\0';
 	old.old_mode = old.old_owner->params.bridge_mode;
 	old.keepalive_ms = old.old_owner->params.bridge_keepalive_ms;

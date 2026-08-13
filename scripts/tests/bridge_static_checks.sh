@@ -6,6 +6,7 @@ ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 BRIDGE_C="$ROOT/mlinux/moal_bridge.c"
 INIT_C="$ROOT/mlinux/moal_init.c"
 MAIN_H="$ROOT/mlinux/moal_main.h"
+MAIN_C="$ROOT/mlinux/moal_main.c"
 SHIM_C="$ROOT/mlinux/moal_shim.c"
 QA_SCRIPT="$ROOT/scripts/tests/bridge_runtime_switch_qa.sh"
 PARAM_DOC="$ROOT/docs/MOAL-Module-Parameters.md"
@@ -164,7 +165,7 @@ check_bridge_iface_set_contract() {
 }
 
 check_stats_rcu_lifetime_contract() {
-  local stats="$1" sysfs_deinit="$2" lifecycle_deinit="$3"
+  local stats="$1" sysfs_deinit="$2" lifecycle_deinit="$3" remove_card="$4"
 
   printf '%s\n' "$stats" | awk '
     /rcu_read_lock\(\)/ { lock=NR }
@@ -177,6 +178,16 @@ check_stats_rcu_lifetime_contract() {
                  format < unlock) }
   ' || return 1
   printf '%s\n' "$stats" | grep -Fq 'return scnprintf' && return 1
+  [ "$(printf '%s\n' "$stats" | grep -c 'rcu_read_unlock()' || true)" -eq 1 ] || \
+    return 1
+  printf '%s\n' "$stats" | awk '
+    /rcu_read_lock\(\)/ { acquired=1; next }
+    /rcu_read_unlock\(\)/ { acquired=0 }
+    acquired && /^[[:space:]]*return[[:space:]]/ { bad=1 }
+    /goto out_rcu/ { shared_exit=1 }
+    /^out_rcu:/ { label=1 }
+    END { exit (bad || !shared_exit || !label || acquired) }
+  ' || return 1
   printf '%s\n' "$sysfs_deinit" | awk '
     /rcu_assign_pointer\(moal_bridge_for_sysfs, NULL\)/ { clear=NR }
     /synchronize_rcu\(\)/ { drain=NR }
@@ -187,23 +198,36 @@ check_stats_rcu_lifetime_contract() {
     /moal_bridge_sysfs_deinit\(\)/ { drain=NR }
     /kfree\(br\)/ { free=NR }
     END { exit !(drain && free && drain < free) }
+  ' || return 1
+  printf '%s\n' "$remove_card" | awk '
+    /moal_bridge_deinit\(handle\)/ { bridge_deinit=NR }
+    /woal_free_moal_handle\(handle\)/ { handle_free=NR }
+    END { exit !(bridge_deinit && handle_free && bridge_deinit < handle_free) }
   '
 }
 
-check_stats_name_snapshot_contract() {
+check_bridge_name_snapshot_contract() {
   printf '%s\n' "$1" | awk '
-    /strncpy\(moal_bridge_iface_for_sysfs, br->wlan_dev->name/ { iface_copy=NR }
-    /moal_bridge_iface_for_sysfs\[/ { iface_nul=NR }
-    /strncpy\(moal_bridge_peer_for_sysfs, br->peer_dev->name/ { peer_copy=NR }
-    /moal_bridge_peer_for_sysfs\[/ { peer_nul=NR }
-    /kobject_create_and_add/ { create=NR }
-    /sysfs_create_file/ { file=NR }
-    /rcu_assign_pointer\(moal_bridge_for_sysfs, br\)/ { publish=NR }
-    END { exit !(iface_copy && iface_nul && peer_copy && peer_nul && create &&
-                 file && publish && iface_copy < iface_nul &&
-                 iface_nul < peer_copy && peer_copy < peer_nul &&
-                 peer_nul < create && create < file && file < publish) }
+    /strncpy\(br->wlan_name, br->wlan_dev->name/ { iface_copy=NR }
+    /br->wlan_name\[sizeof\(br->wlan_name\) - 1\] = '\''\\0'\'';/ { iface_nul=NR }
+    /strncpy\(br->peer_name, br->peer_dev->name/ { peer_copy=NR }
+    /br->peer_name\[sizeof\(br->peer_name\) - 1\] = '\''\\0'\'';/ { peer_nul=NR }
+    /register_netdevice_notifier/ { notifier=NR }
+    END { exit !(iface_copy && iface_nul && peer_copy && peer_nul && notifier &&
+                 iface_copy < iface_nul && iface_nul < peer_copy &&
+                 peer_copy < peer_nul && peer_nul < notifier) }
   '
+}
+
+check_no_post_release_peer_name_deref() {
+  local notifier="$1" lifecycle_deinit="$2"
+
+  printf '%s\n' "$notifier" | awk '
+    /atomic_set\(&br->peer_released, 1\)/ { released=1; next }
+    released && /br->peer_dev->name/ { bad=1 }
+    END { exit bad }
+  ' || return 1
+  ! grep -Fq 'br->peer_dev->name' <<< "$lifecycle_deinit"
 }
 
 grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
@@ -474,7 +498,7 @@ printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_rollbac
 printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'ret = -EIO' || fail "runtime-switch: rollback failure must return EIO"
 
 GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_iface' "$BRIDGE_C")"
-printf '%s\n' "$GETTER_BLOCK" | grep -Pzq 'ret = scnprintf\(buf, len, "%s\\n",\s*br && atomic_read\(&br->active\) \? br->wlan_dev->name : "none"\);' || fail "runtime-switch: getter must report effective active state"
+printf '%s\n' "$GETTER_BLOCK" | grep -Pzq 'ret = scnprintf\(buf, len, "%s\\n",\s*br && atomic_read\(&br->active\) \? br->wlan_name : "none"\);' || fail "runtime-switch: getter must report effective active state from stable name"
 
 # --- runtime-switch Task 4: opt-in synchronous sysfs contract ---
 grep -q 'int bridge_runtime_switch;' "$INIT_C" || fail "runtime-switch: gate missing"
@@ -523,43 +547,82 @@ printf 'PASS: runtime-switch asynchronous-setter negative fixture rejected\n'
 STATS_SHOW_BLOCK="$(extract_c_function '^static ssize_t stats_show' "$BRIDGE_C")"
 SYSFS_DEINIT_BLOCK="$(extract_c_function '^static void moal_bridge_sysfs_deinit' "$BRIDGE_C")"
 LIFECYCLE_DEINIT_BLOCK="$(extract_c_function '^static void __moal_bridge_deinit_locked' "$BRIDGE_C")"
+REMOVE_CARD_BLOCK="$(extract_c_function '^mlan_status woal_remove_card' "$MAIN_C")"
 grep -Fq 'static struct moal_bridge __rcu *moal_bridge_for_sysfs' "$BRIDGE_C" || \
   fail "runtime-switch: stats bridge pointer is not RCU annotated"
 check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$SYSFS_DEINIT_BLOCK" \
-  "$LIFECYCLE_DEINIT_BLOCK" || \
+  "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_BLOCK" || \
   fail "runtime-switch: stats RCU lifetime/drain-before-free contract missing"
 RCU_DEINIT_NO_DRAIN="$(printf '%s\n' "$SYSFS_DEINIT_BLOCK" |
   sed 's/synchronize_rcu();/\/\* removed drain \*\//')"
 if check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$RCU_DEINIT_NO_DRAIN" \
-    "$LIFECYCLE_DEINIT_BLOCK"; then
+    "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_BLOCK"; then
   fail "runtime-switch: undrained stats lifetime negative fixture was accepted"
 fi
 printf 'PASS: runtime-switch undrained stats lifetime negative fixture rejected\n'
+STATS_EARLY_RETURN="$(printf '%s\n' "$STATS_SHOW_BLOCK" |
+  sed '0,/goto out_rcu;/s//return ret;/')"
+if check_stats_rcu_lifetime_contract "$STATS_EARLY_RETURN" "$SYSFS_DEINIT_BLOCK" \
+    "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_BLOCK"; then
+  fail "runtime-switch: stats early-return negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch stats early-return negative fixture rejected\n'
+REMOVE_CARD_FREE_FIRST="$(printf '%s\n' "$REMOVE_CARD_BLOCK" | awk '
+  /moal_bridge_deinit\(handle\)/ { saved=$0; next }
+  /woal_free_moal_handle\(handle\)/ { print; print saved; moved=1; next }
+  { print }
+  END { exit !moved }
+')"
+if check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$SYSFS_DEINIT_BLOCK" \
+    "$LIFECYCLE_DEINIT_BLOCK" "$REMOVE_CARD_FREE_FIRST"; then
+  fail "runtime-switch: handle-free-before-bridge-deinit negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch handle-free ordering negative fixture rejected\n'
 printf '%s\n' "$STATS_SHOW_BLOCK" | \
   grep -q 'switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld' || \
   fail "runtime-switch: outcome stats missing"
 printf '%s\n' "$STATS_SHOW_BLOCK" | grep -q 'iface=%s peer=%s' || \
   fail "runtime-switch: iface stats missing"
 printf '%s\n' "$STATS_SHOW_BLOCK" | \
-  grep -Eq 'br->(wlan|peer)_dev->name' && \
-  fail "runtime-switch: stats dereferences a netdev name after unregister"
-printf '%s\n' "$STATS_SHOW_BLOCK" | \
-  grep -Fq 'moal_bridge_iface_for_sysfs' || \
+  grep -Fq 'br->wlan_name' || \
   fail "runtime-switch: stats cached iface name missing"
 printf '%s\n' "$STATS_SHOW_BLOCK" | \
-  grep -Fq 'moal_bridge_peer_for_sysfs' || \
+  grep -Fq 'br->peer_name' || \
   fail "runtime-switch: stats cached peer name missing"
-SYSFS_INIT_BLOCK="$(extract_c_function '^static int moal_bridge_sysfs_init' "$BRIDGE_C")"
-check_stats_name_snapshot_contract "$SYSFS_INIT_BLOCK" || \
-  fail "runtime-switch: sysfs name mapping/termination/publication order invalid"
-SYSFS_INIT_SWAPPED_NAMES="$(printf '%s\n' "$SYSFS_INIT_BLOCK" |
+BRIDGE_INIT_BLOCK="$(extract_c_function '^static int __moal_bridge_init_locked' "$BRIDGE_C")"
+check_bridge_name_snapshot_contract "$BRIDGE_INIT_BLOCK" || \
+  fail "runtime-switch: per-bridge name mapping/termination/publication order invalid"
+BRIDGE_INIT_SWAPPED_NAMES="$(printf '%s\n' "$BRIDGE_INIT_BLOCK" |
   sed -e 's/br->wlan_dev->name/br->swap_dev->name/' \
       -e 's/br->peer_dev->name/br->wlan_dev->name/' \
       -e 's/br->swap_dev->name/br->peer_dev->name/')"
-if check_stats_name_snapshot_contract "$SYSFS_INIT_SWAPPED_NAMES"; then
-  fail "runtime-switch: swapped sysfs-name negative fixture was accepted"
+if check_bridge_name_snapshot_contract "$BRIDGE_INIT_SWAPPED_NAMES"; then
+  fail "runtime-switch: swapped per-bridge-name negative fixture was accepted"
 fi
-printf 'PASS: runtime-switch swapped sysfs-name negative fixture rejected\n'
+printf 'PASS: runtime-switch swapped per-bridge-name negative fixture rejected\n'
+BRIDGE_INIT_NO_PEER_NUL="$(printf '%s\n' "$BRIDGE_INIT_BLOCK" |
+  sed "s/br->peer_name\[sizeof(br->peer_name) - 1\] = '\\\\0';/\/\* missing peer terminator \*\//")"
+if check_bridge_name_snapshot_contract "$BRIDGE_INIT_NO_PEER_NUL"; then
+  fail "runtime-switch: unterminated peer-name negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch unterminated peer-name negative fixture rejected\n'
+NETDEV_EVENT_BLOCK="$(extract_c_function '^static int moal_bridge_netdev_event' "$BRIDGE_C")"
+check_no_post_release_peer_name_deref "$NETDEV_EVENT_BLOCK" \
+  "$LIFECYCLE_DEINIT_BLOCK" || \
+  fail "runtime-switch: peer_dev name dereferenced after peer reference release"
+POST_RELEASE_NAME_DEREF="$(printf '%s\n' "$LIFECYCLE_DEINIT_BLOCK" | awk '
+  { print }
+  /\/\* 7\. 통계 출력 \*\// && !injected {
+    print "\tPRINTM(MMSG, \"%s\\n\", br->peer_dev->name);"
+    injected=1
+  }
+  END { exit !injected }
+ ')"
+if check_no_post_release_peer_name_deref "$NETDEV_EVENT_BLOCK" \
+    "$POST_RELEASE_NAME_DEREF"; then
+  fail "runtime-switch: post-release peer-name negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-release peer-name negative fixture rejected\n'
 for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok \
                bridge_rollback_fail; do
   printf '%s\n' "$STATS_SHOW_BLOCK" | \
