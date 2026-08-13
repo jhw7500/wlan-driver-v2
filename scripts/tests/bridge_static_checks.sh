@@ -7,6 +7,9 @@ BRIDGE_C="$ROOT/mlinux/moal_bridge.c"
 INIT_C="$ROOT/mlinux/moal_init.c"
 MAIN_H="$ROOT/mlinux/moal_main.h"
 SHIM_C="$ROOT/mlinux/moal_shim.c"
+QA_SCRIPT="$ROOT/scripts/tests/bridge_runtime_switch_qa.sh"
+PARAM_DOC="$ROOT/docs/MOAL-Module-Parameters.md"
+QA_RUNBOOK="$ROOT/docs/driver-bridge.qa-runbook.md"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -25,7 +28,7 @@ extract_switch_block() {
 # order so a line such as "} else {" closes the first branch before opening
 # the next; unlike a sed range, nested blocks do not truncate the result.
 extract_c_block() {
-  printf '%s\n' "$1" | START_PATTERN="$2" awk '
+  START_PATTERN="$2" awk '
     BEGIN { start=ENVIRON["START_PATTERN"] }
     !in_block && $0 ~ start { in_block=1 }
     in_block {
@@ -50,7 +53,7 @@ extract_c_block() {
       }
     }
     END { exit !(in_block && saw_open && depth == 0) }
-  '
+  ' <<< "$1"
 }
 
 # Return exactly the statement controlled by a guard, accepting both the
@@ -58,13 +61,13 @@ extract_c_block() {
 extract_guarded_control() {
   local guard_line
 
-  guard_line="$(printf '%s\n' "$1" | grep -Em1 "$2")" || return 1
+  guard_line="$(grep -Em1 "$2" <<< "$1")" || return 1
   if [[ "$guard_line" == *"{"* ]]; then
     extract_c_block "$1" "$2"
     return
   fi
 
-  printf '%s\n' "$1" | START_PATTERN="$2" awk '
+  START_PATTERN="$2" awk '
     BEGIN { start=ENVIRON["START_PATTERN"] }
     !found && $0 ~ start {
       found=1
@@ -79,7 +82,7 @@ extract_guarded_control() {
       }
     }
     END { exit !(found && saw_statement) }
-  '
+  ' <<< "$1"
 }
 
 check_no_direct_return_while_locked() {
@@ -113,6 +116,51 @@ check_switch_success_contract() {
     grep -Fq 'bridge_owner = target.handle' || return 1
   printf '%s\n' "$success_block" | \
     grep -Fq 'atomic_long_inc(&bridge_switch_ok)' || return 1
+}
+
+check_bridge_iface_set_contract() {
+  local setter="$1" gate_control null_control bound_control edge_control
+  local name_control
+
+  gate_control="$(extract_guarded_control "$setter" \
+    '^[[:space:]]*if \(!READ_ONCE\(bridge_runtime_switch\)\)')" || return 1
+  printf '%s\n' "$gate_control" | grep -Fq 'return -EOPNOTSUPP' || return 1
+  null_control="$(extract_guarded_control "$setter" \
+    '^[[:space:]]*if \(!val\)')" || return 1
+  printf '%s\n' "$null_control" | grep -Fq 'return -EINVAL' || return 1
+  printf '%s\n' "$setter" | \
+    grep -Fq "val[len] != '\\r' && val[len] != '\\n'" || return 1
+  bound_control="$(extract_guarded_control "$setter" \
+    '^[[:space:]]*if \(len >= sizeof\(ifname\) - 1\)')" || return 1
+  printf '%s\n' "$bound_control" | grep -Fq 'return -EINVAL' || return 1
+  printf '%s\n' "$setter" | \
+    grep -Fq "while (val[end] == '\\r' || val[end] == '\\n')" || return 1
+  edge_control="$(extract_guarded_control "$setter" \
+    '^[[:space:]]*if \(!len \|\| val\[end\]\)')" || return 1
+  printf '%s\n' "$edge_control" | grep -Fq 'return -EINVAL' || return 1
+  name_control="$(extract_guarded_control "$setter" \
+    '^[[:space:]]*if \(!dev_valid_name\(ifname\)\)')" || return 1
+  printf '%s\n' "$name_control" | grep -Fq 'return -EINVAL' || return 1
+  printf '%s\n' "$setter" | \
+    grep -Fq 'return moal_bridge_switch_iface(ifname);' || return 1
+  printf '%s\n' "$setter" | awk '
+    /if \(!READ_ONCE\(bridge_runtime_switch\)\)/ { gate=NR }
+    /if \(!val\)/ { null_check=NR }
+    /while \(val\[len\]/ { scan=NR }
+    /if \(len >= sizeof\(ifname\) - 1\)/ { bound=NR }
+    /end = len/ { end_snapshot=NR }
+    /while \(val\[end\]/ { newline_trim=NR }
+    /if \(!len \|\| val\[end\]\)/ { edge_reject=NR }
+    /memcpy\(ifname, val, len\)/ { copy=NR }
+    /if \(!dev_valid_name\(ifname\)\)/ { name_check=NR }
+    /return moal_bridge_switch_iface\(ifname\)/ { switch_call=NR }
+    END { exit !(gate && null_check && scan && bound && end_snapshot &&
+                 newline_trim && edge_reject && copy && name_check && switch_call &&
+                 gate < null_check && null_check < scan && scan <= bound &&
+                 bound < end_snapshot && end_snapshot < newline_trim &&
+                 newline_trim < edge_reject && edge_reject < copy &&
+                 copy < name_check && name_check < switch_call) }
+  '
 }
 
 grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
@@ -389,9 +437,111 @@ printf '%s\n' "$GETTER_BLOCK" | grep -Pzq 'ret = scnprintf\(buf, len, "%s\\n",\s
 grep -q 'int bridge_runtime_switch;' "$INIT_C" || fail "runtime-switch: gate missing"
 grep -q 'module_param(bridge_runtime_switch, int, 0444)' "$INIT_C" || fail "runtime-switch: gate permissions wrong"
 grep -q 'module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644)' "$INIT_C" || fail "runtime-switch: callback parameter missing"
-grep -q 'moal_bridge_switch_iface(ifname)' "$INIT_C" || fail "runtime-switch: setter is not synchronous"
-grep -q 'moal_bridge_get_iface(buf, PAGE_SIZE)' "$INIT_C" || fail "runtime-switch: getter is not effective-state based"
 grep -q 'module_param(bridge_iface, charp' "$INIT_C" && fail "runtime-switch: charp forbidden"
+
+SETTER_BLOCK="$(extract_c_function '^static int bridge_iface_set' "$INIT_C")"
+GETTER_PARAM_BLOCK="$(extract_c_function '^static int bridge_iface_get' "$INIT_C")"
+PARAM_OPS_BLOCK="$(extract_c_block "$(cat "$INIT_C")" \
+  '^static const struct kernel_param_ops bridge_iface_ops')"
+check_bridge_iface_set_contract "$SETTER_BLOCK" || \
+  fail "runtime-switch: setter-local strict parse/synchronous contract missing"
+printf '%s\n' "$GETTER_PARAM_BLOCK" | \
+  grep -Fq 'return moal_bridge_get_iface(buf, PAGE_SIZE);' || \
+  fail "runtime-switch: getter callback is not effective-state based"
+printf '%s\n' "$PARAM_OPS_BLOCK" | grep -Fq '.set = bridge_iface_set' || \
+  fail "runtime-switch: callback ops setter binding missing"
+printf '%s\n' "$PARAM_OPS_BLOCK" | grep -Fq '.get = bridge_iface_get' || \
+  fail "runtime-switch: callback ops getter binding missing"
+
+# Focused mutation fixtures prove the callback-local checks reject the edge
+# cases that unscoped greps used to miss, without attempting to emulate C.
+SETTER_NO_TRAILING_REJECT="$(printf '%s\n' "$SETTER_BLOCK" |
+  sed 's/if (!len || val\[end\])/if (!len)/')"
+if check_bridge_iface_set_contract "$SETTER_NO_TRAILING_REJECT"; then
+  fail "runtime-switch: trailing-data rejection negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch trailing-data rejection negative fixture rejected\n'
+
+SETTER_NO_BOUND="$(printf '%s\n' "$SETTER_BLOCK" |
+  sed 's/len >= sizeof(ifname) - 1/len > sizeof(ifname) - 1/')"
+if check_bridge_iface_set_contract "$SETTER_NO_BOUND"; then
+  fail "runtime-switch: overlong-name negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch overlong-name negative fixture rejected\n'
+
+SETTER_ASYNC="$(printf '%s\n' "$SETTER_BLOCK" |
+  sed 's/return moal_bridge_switch_iface(ifname);/moal_bridge_switch_iface(ifname); return 0;/')"
+if check_bridge_iface_set_contract "$SETTER_ASYNC"; then
+  fail "runtime-switch: asynchronous-setter negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch asynchronous-setter negative fixture rejected\n'
+
+# --- runtime-switch Task 5: observability and target QA ---
+STATS_SHOW_BLOCK="$(extract_c_function '^static ssize_t stats_show' "$BRIDGE_C")"
+printf '%s\n' "$STATS_SHOW_BLOCK" | \
+  grep -q 'switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld' || \
+  fail "runtime-switch: outcome stats missing"
+printf '%s\n' "$STATS_SHOW_BLOCK" | grep -q 'iface=%s peer=%s' || \
+  fail "runtime-switch: iface stats missing"
+printf '%s\n' "$STATS_SHOW_BLOCK" | \
+  grep -Eq 'br->(wlan|peer)_dev->name' && \
+  fail "runtime-switch: stats dereferences a netdev name after unregister"
+printf '%s\n' "$STATS_SHOW_BLOCK" | \
+  grep -Fq 'moal_bridge_iface_for_sysfs' || \
+  fail "runtime-switch: stats cached iface name missing"
+printf '%s\n' "$STATS_SHOW_BLOCK" | \
+  grep -Fq 'moal_bridge_peer_for_sysfs' || \
+  fail "runtime-switch: stats cached peer name missing"
+SYSFS_INIT_BLOCK="$(extract_c_function '^static int moal_bridge_sysfs_init' "$BRIDGE_C")"
+printf '%s\n' "$SYSFS_INIT_BLOCK" | grep -Fq 'br->wlan_dev->name' || \
+  fail "runtime-switch: sysfs init does not snapshot iface name"
+printf '%s\n' "$SYSFS_INIT_BLOCK" | grep -Fq 'br->peer_dev->name' || \
+  fail "runtime-switch: sysfs init does not snapshot peer name"
+for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok \
+               bridge_rollback_fail; do
+  printf '%s\n' "$STATS_SHOW_BLOCK" | \
+    grep -Fq "atomic_long_read(&$counter)" || \
+    fail "runtime-switch: stats does not atomically read $counter"
+  grep -Fq "atomic_long_set(&$counter" "$BRIDGE_C" && \
+    fail "runtime-switch: persistent counter $counter is reset"
+done
+test -x "$QA_SCRIPT" || \
+  fail "runtime-switch: executable QA script missing"
+grep -Fq '[ "$(id -u)" -eq 0 ]' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA root preflight missing"
+grep -Fq '[ -e "$IFACE_PARAM" ]' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA interface parameter preflight missing"
+grep -Fq '[ -e "$GATE_PARAM" ]' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA gate preflight missing"
+grep -Fq 'ip link show "$FROM_IF"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA FROM_IF preflight missing"
+grep -Fq 'ip link show "$TO_IF"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA TO_IF preflight missing"
+grep -Fq 'require_associated "$FROM_IF"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA FROM_IF association preflight missing"
+grep -Fq 'require_associated "$TO_IF"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA TO_IF association preflight missing"
+grep -Eq 'ip[[:space:]]+link[[:space:]]+set|iw[[:space:]].*[[:space:]]connect|wpa_cli|nmcli' "$QA_SCRIPT" && \
+  fail "runtime-switch: QA script must not configure or associate links"
+grep -Fq 'cat "$STATS"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA stats capture missing"
+grep -Fq "grep -E 'BUG:|WARNING:|use-after-free|lockdep'" "$QA_SCRIPT" || \
+  fail "runtime-switch: QA kernel-warning check missing"
+
+grep -Fq '`bridge_runtime_switch` | int | 0444' "$PARAM_DOC" || \
+  fail "runtime-switch: parameter docs missing 0444 gate semantics"
+grep -Fq '`bridge_iface` | custom string | 0644' "$PARAM_DOC" || \
+  fail "runtime-switch: parameter docs missing 0644 callback semantics"
+for errno in EOPNOTSUPP ENODEV EINVAL ENETDOWN ENOLINK EBUSY EIO; do
+  grep -Fq "\`$errno\`" "$PARAM_DOC" || \
+    fail "runtime-switch: parameter docs missing $errno"
+done
+grep -Fq 'FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000' "$QA_RUNBOOK" || \
+  fail "runtime-switch: runbook stress command missing"
+grep -Fq 'iw dev mlan0 link' "$QA_RUNBOOK" || \
+  fail "runtime-switch: runbook mlan0 association check missing"
+grep -Fq 'iw dev mlan1 link' "$QA_RUNBOOK" || \
+  fail "runtime-switch: runbook mlan1 association check missing"
 
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \

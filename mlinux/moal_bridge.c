@@ -1345,6 +1345,8 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 
 static struct kobject *moal_bridge_kobj;
 static struct moal_bridge *moal_bridge_for_sysfs;
+static char moal_bridge_iface_for_sysfs[IFNAMSIZ];
+static char moal_bridge_peer_for_sysfs[IFNAMSIZ];
 
 static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
@@ -1398,7 +1400,9 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 "rx_deliver gap_avg=%ldus gap_max=%ldus n=%ld dur_max=%ldus\n"
 			 "rx_pull avg=%ldus max=%ldus n=%ld\n"
 			 "tx_write avg=%ldus max=%ldus n=%ld\n"
-			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n",
+			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n"
+			 "iface=%s peer=%s\n"
+			 "switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
 			 atomic_long_read(&br->wlan_to_peer.fwd_bytes),
 			 atomic_long_read(&br->wlan_to_peer.dropped),
@@ -1432,7 +1436,13 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 READ_ONCE(bridge_local_hairpin),
 			 atomic_long_read(&br->hairpin_tx_fwd),
 			 atomic_long_read(&br->hairpin_arp_tee),
-			 atomic_long_read(&br->hairpin_arp_inject));
+			 atomic_long_read(&br->hairpin_arp_inject),
+			 moal_bridge_iface_for_sysfs,
+			 moal_bridge_peer_for_sysfs,
+			 atomic_long_read(&bridge_switch_ok),
+			 atomic_long_read(&bridge_switch_fail),
+			 atomic_long_read(&bridge_rollback_ok),
+			 atomic_long_read(&bridge_rollback_fail));
 }
 
 static struct kobj_attribute stats_attr = __ATTR_RO(stats);
@@ -1447,6 +1457,14 @@ static int moal_bridge_sysfs_init(struct moal_bridge *br)
 	 * so a future 32-bit port fails loud instead of silently truncating
 	 * s64 ktime_to_us / overflowing the accumulators. */
 	BUILD_BUG_ON(sizeof(long) < 8);
+	strncpy(moal_bridge_iface_for_sysfs, br->wlan_dev->name,
+		sizeof(moal_bridge_iface_for_sysfs) - 1);
+	moal_bridge_iface_for_sysfs[
+		sizeof(moal_bridge_iface_for_sysfs) - 1] = '\0';
+	strncpy(moal_bridge_peer_for_sysfs, br->peer_dev->name,
+		sizeof(moal_bridge_peer_for_sysfs) - 1);
+	moal_bridge_peer_for_sysfs[
+		sizeof(moal_bridge_peer_for_sysfs) - 1] = '\0';
 
 	moal_bridge_kobj = kobject_create_and_add("moal_bridge", kernel_kobj);
 	if (!moal_bridge_kobj)

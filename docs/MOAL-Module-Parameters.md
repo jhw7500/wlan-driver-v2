@@ -212,11 +212,14 @@
 
 ## 11. L2 브릿지 / 관리 로깅 (v2 추가)
 
-`feature/driver-bridge` 브랜치에서 hwjo가 추가/재정의한 파라미터. perm `0644`만 sysfs 런타임 변경 가능.
+`feature/driver-bridge` 브랜치에서 hwjo가 추가/재정의한 파라미터. 일반 `module_param`은
+perm `0644`일 때만 sysfs 런타임 변경 가능하며, `bridge_iface`는 전용 callback으로 동작한다.
 
 | 파라미터 | 타입 | perm | 기본값 | 런타임변경 | conf 파싱 | 도입 커밋 |
 |---|---|---|---|---|---|---|
 | ✅ `bridge_mode` | int | 0 | 0(off) | ✗ | ✓ | 35ec541 |
+| ✅ `bridge_runtime_switch` | int | 0444 | 0(off) | ✗(로드 시에만) | ✗ | runtime-switch |
+| ✅ `bridge_iface` | custom string | 0644 | `none`(비활성) | ✓(활성 브릿지만) | ✗ | runtime-switch |
 | ✅ `bridge_peer` | charp | 0 | eth0 | ✗ | ✓ | 35ec541 |
 | ✅ `bridge_wlan_idx` | int | 0 | 0 | ✗ | ✓ | 35ec541 |
 | ✅ `bridge_debug` | int | 0644 | 0 | ✓(sysfs) | ✗ | 35ec541 |
@@ -265,6 +268,42 @@ net_rx=0 경로 + `rx_pending>50` backpressure 동작 복원(파라미터 정의
 ### 11.8 `mgmt_hex_dump` — int, 기본 0(off), perm 0
 관리 프레임 IE byte-level hex 캡처(tag 255 ext_id 분리). `/proc/mwlan/adapter*/mgmt_dump` 256KB ring.
 conf per-adapter 키 `mlanN.mgmt_hex_dump_enable`. 동작하려면 `net_rx>=2`(RX)·`net_rx&0x4`(TX) 필요.
+
+### 11.9 런타임 브릿지 인터페이스 전환
+
+`bridge_runtime_switch`는 전역 int, 기본값 0, perm `0444`인 **모듈 로드 시 opt-in**이다.
+로드 후 sysfs로 값을 바꿀 수 없으며 값이 정확히 1일 때만 전환 write를 허용한다.
+`bridge_iface`는 perm `0644`인 custom string 파라미터다. read는 설정 문자열이 아니라 현재
+활성 브릿지의 유효 WLAN 인터페이스(`none`이면 비활성)를 반환하고, write는 이미 존재하며
+연결된 MOAL STA 인터페이스를 새 타겟으로 지정한다.
+
+```bash
+insmod moal.ko mod_para=cts/wifi_mod_para.conf bridge_runtime_switch=1
+cat /sys/module/moal/parameters/bridge_iface
+echo mlan1 > /sys/module/moal/parameters/bridge_iface
+```
+
+write는 비동기 요청을 예약하는 동작이 아니다. 전체 deinit → target init과, 실패 시 rollback이
+끝난 뒤 반환하므로 `echo`/`write(2)`가 받은 errno가 최종 결과다.
+활성 stats 끝에는 `iface=<wlan> peer=<peer>`와
+`switch_ok=<n> switch_fail=<n> rollback_ok=<n> rollback_fail=<n>`이 추가된다. 네 outcome
+counter는 모듈 전역 누계라 rebind 중 재생성되는 bridge instance와 함께 reset되지 않으며,
+모듈을 unload/reload할 때만 초기화된다.
+
+| errno | 의미 |
+|---|---|
+| `EOPNOTSUPP` | opt-in gate가 꺼져 있거나 정확히 1이 아님 |
+| `ENODEV` | 활성 브릿지가 없거나 지정 인터페이스가 존재하지 않음 |
+| `EINVAL` | 빈 값, 과도한 길이, 잘못된 이름/개행 형식 또는 non-STA 타겟 |
+| `ENETDOWN` | 타겟 netdev가 등록/존재/running 상태가 아님 |
+| `ENOLINK` | 타겟 STA가 연결되어 있지 않음 |
+| `EBUSY` | 타겟 어댑터가 reset/removal 중이거나 hardware ready가 아님 |
+| `EIO` | target init과 기존 브릿지 rollback이 모두 실패함 |
+
+이 선택은 설정 파일에 저장되지 않으며 모듈 reload 뒤 지속되지 않는다. 또한 이미 활성인
+브릿지에만 적용되므로 `bridge_mode=0`인 브릿지를 켜는 수단이 아니다. 전환은 기존 datapath를
+해제한 후 새 datapath를 만들기 때문에 짧은 패킷 중단 또는 손실이 가능하며 lossless 전환을
+보장하지 않는다. 실장비 검증 절차는 `docs/driver-bridge.qa-runbook.md`의 런타임 전환 절을 따른다.
 
 ---
 

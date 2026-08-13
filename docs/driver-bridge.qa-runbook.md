@@ -226,6 +226,89 @@ unload
 
 ---
 
+## T-15 — DBDC 런타임 브릿지 인터페이스 전환
+
+이 절은 **실장비 전용**이다. `bridge_runtime_switch=1`로 로드된 활성 브릿지와, 서로 다른
+두 MOAL STA가 모두 operator에 의해 미리 association되어 있어야 한다. QA 스크립트는 링크를
+생성·UP·association하지 않으며 트래픽도 시작하지 않는다. 아래 절차와 양방향 트래픽을 실제로
+수행하기 전에는 target-board validation 또는 lossless switching을 통과했다고 기록하지 않는다.
+
+```bash
+unload
+load mod_para=cts/wifi_mod_para.conf bridge_mode=1 bridge_runtime_switch=1
+
+# 기존 보드 절차(wpa_supplicant/제품 network manager)로 두 STA를 먼저 association한다.
+# 다음 두 출력 모두 "Connected to ..."여야 한다.
+iw dev mlan0 link
+iw dev mlan1 link
+cat /sys/module/moal/parameters/bridge_iface
+```
+
+전환 중에는 wired-side와 WLAN-side 시험 호스트에서 반대편을 향한 iperf3/ping을 동시에 실행해
+**양방향 트래픽이 stress loop 전체 시간 동안 계속 흐르게 한다**. 각 트래픽 로그와 프로세스
+PID를 보존한다. 인터페이스를 구성하는 명령은 보드별 운영 절차에서 수행하고 QA 스크립트에는
+추가하지 않는다.
+
+전후 상태, bridge thread, 모듈 reference count를 별도 파일로 캡처한다.
+
+```bash
+SNAP=/tmp/bridge-switch
+capture_switch_state() {
+  label="$1"
+  {
+    date
+    iw dev mlan0 link
+    iw dev mlan1 link
+    ip -details -s link show mlan0
+    ip -details -s link show mlan1
+    cat /sys/module/moal/parameters/bridge_iface
+    cat /sys/kernel/moal_bridge/stats
+    grep '^moal ' /proc/modules || true
+    ps -eLo pid,tid,comm,cls,rtprio,stat | grep -E 'moal_br_(w2p|p2w)' || true
+  } | tee "$SNAP.$label.log"
+}
+
+capture_kmemleak() {
+  label="$1"
+  if [ -r /sys/kernel/debug/kmemleak ] && [ -w /sys/kernel/debug/kmemleak ]; then
+    echo scan > /sys/kernel/debug/kmemleak
+    sleep 5
+    cat /sys/kernel/debug/kmemleak > "$SNAP.kmemleak.$label"
+  else
+    echo "UNAVAILABLE: /sys/kernel/debug/kmemleak" |
+      tee "$SNAP.kmemleak.$label.unavailable"
+  fi
+}
+
+capture_switch_state before
+capture_kmemleak before
+
+# 양방향 traffic가 실행 중인 별도 terminal/host를 확인한 다음 수행한다.
+FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000 \
+  ./scripts/tests/bridge_runtime_switch_qa.sh | tee /tmp/bridge-switch-qa.log
+
+capture_switch_state after
+capture_kmemleak after
+dmesg > /tmp/bridge-switch-dmesg.log
+diff -u "$SNAP.before.log" "$SNAP.after.log" > "$SNAP.state.diff" || true
+if [ -f "$SNAP.kmemleak.before" ] && [ -f "$SNAP.kmemleak.after" ]; then
+  diff -u "$SNAP.kmemleak.before" "$SNAP.kmemleak.after" \
+    > "$SNAP.kmemleak.diff" || true
+fi
+```
+
+reference/leak 증거는 최소한 `/proc/modules`의 moal reference count, 두 netdev의 전후 존재/통계,
+`moal_br_w2p`/`moal_br_p2w` thread가 각 snapshot에 정확히 한 쌍인지 포함한다. target kernel이
+`CONFIG_DEBUG_KMEMLEAK`를 제공하면 위 `capture_kmemleak` 결과도 전후로 보존한다. 제공하지 않으면 그 정확한 경로
+부재를 보고하고 leak 검증을 통과했다고 표시하지 않는다.
+
+성공 판정에는 스크립트 PASS, 최종 `bridge_iface=mlan0`, 예상 `switch_ok` 증가,
+`switch_fail`/rollback counter 불변, 양방향 트래픽 결과, kernel warning 없음, thread/reference/leak
+전후 검토가 모두 필요하다. 전환은 synchronous이지만 teardown/init 사이에 짧은 패킷 중단 또는
+손실이 가능하므로 무손실을 성공 기준으로 가정하지 않는다.
+
+---
+
 ## 종합 결과 기록
 
 ```bash
