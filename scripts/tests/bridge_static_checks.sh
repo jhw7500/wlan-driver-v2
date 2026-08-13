@@ -107,6 +107,67 @@ DEINIT_WRAP="$(grep -n -A20 -m1 '^void moal_bridge_deinit' "$BRIDGE_C")"
 printf '%s\n' "$INIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: init unlocked"
 printf '%s\n' "$DEINIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: deinit unlocked"
 
+# --- runtime-switch Task 3: synchronous rebind transaction ---
+grep -q 'moal_bridge_switch_iface' "$ROOT/mlinux/moal_bridge.h" || fail "runtime-switch: switch declaration missing"
+grep -q 'moal_bridge_get_iface' "$ROOT/mlinux/moal_bridge.h" || fail "runtime-switch: getter declaration missing"
+SWITCH_BLOCK="$(grep -n -A240 -m1 '^int moal_bridge_switch_iface' "$BRIDGE_C")"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || fail "runtime-switch: card semaphore missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: lifecycle lock missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q '__moal_bridge_deinit_locked' || fail "runtime-switch: full deinit missing"
+[ "$(printf '%s\n' "$SWITCH_BLOCK" | grep -c '__moal_bridge_init_locked' || true)" -ge 2 ] || fail "runtime-switch: target init and rollback required"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q -- '-EIO' || fail "runtime-switch: rollback failure EIO missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q '^.*out_unlock:' || fail "runtime-switch: shared unlock path missing"
+[ "$(printf '%s\n' "$SWITCH_BLOCK" | grep -c 'mutex_unlock(&bridge_lifecycle_lock)' || true)" -eq 1 ] || fail "runtime-switch: lifecycle mutex must have one shared release"
+[ "$(printf '%s\n' "$SWITCH_BLOCK" | grep -c 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' || true)" -eq 1 ] || fail "runtime-switch: card semaphore must have one shared release"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /MOAL_ACQ_SEMAPHORE_BLOCK/ { card_lock=NR }
+  /mutex_lock\(&bridge_lifecycle_lock\)/ { lifecycle_lock=NR }
+  /mutex_unlock\(&bridge_lifecycle_lock\)/ { lifecycle_unlock=NR }
+  /MOAL_REL_SEMAPHORE/ { card_unlock=NR }
+  END { exit !(card_lock && lifecycle_lock && lifecycle_unlock && card_unlock &&
+               card_lock < lifecycle_lock && lifecycle_lock < lifecycle_unlock &&
+               lifecycle_unlock < card_unlock) }
+' || fail "runtime-switch: lock acquire/release order is not card -> lifecycle -> lifecycle -> card"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /mutex_lock\(&bridge_lifecycle_lock\)/ { acquired=1; next }
+  /mutex_unlock\(&bridge_lifecycle_lock\)/ { acquired=0 }
+  acquired && /^[[:space:]]*return[[:space:]]/ { bad=1 }
+  END { exit bad }
+' || fail "runtime-switch: direct return bypasses shared releases"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /moal_bridge_find_target/ { find=NR }
+  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
+  END { exit !(find && deinit && find < deinit) }
+' || fail "runtime-switch: target validation must precede teardown"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /target\.dev == bridge_owner->bridge->wlan_dev/ { same=NR }
+  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
+  END { exit !(same && deinit && same < deinit) }
+' || fail "runtime-switch: same-target no-op must precede teardown"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /target_keepalive_idle_ms =/ { target_snapshot=NR }
+  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
+  END { exit !(target_snapshot && deinit && target_snapshot < deinit) }
+' || fail "runtime-switch: old/target snapshots must complete before teardown"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_bridge_peer' || fail "runtime-switch: target peer snapshot missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_keepalive_ms' || fail "runtime-switch: target keepalive snapshot missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_keepalive_idle_ms' || fail "runtime-switch: target idle keepalive snapshot missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_mode = target_mode' || fail "runtime-switch: target mode restoration missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_wlan_idx = target_wlan_idx' || fail "runtime-switch: target index restoration missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'strncpy(target.handle->params.bridge_peer, target_bridge_peer' || fail "runtime-switch: target peer restoration missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_keepalive_ms = target_keepalive_ms' || fail "runtime-switch: target keepalive restoration missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_keepalive_idle_ms = target_keepalive_idle_ms' || fail "runtime-switch: target idle keepalive restoration missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = NULL' || fail "runtime-switch: owner clear missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = target.handle' || fail "runtime-switch: target owner publish missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = old.old_owner' || fail "runtime-switch: rollback owner restore missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'if (old.old_owner != target.handle)' || fail "runtime-switch: same-handle mode preservation missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: rollback-failure target disable missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'READ_ONCE(bridge_runtime_switch)' || fail "runtime-switch: opt-in gate missing"
+printf '%s\n' "$SWITCH_BLOCK" | grep -q 'br->wlan_dev = target' && fail "runtime-switch: direct wlan pointer hot-swap forbidden"
+GETTER_BLOCK="$(grep -n -A20 -m1 '^int moal_bridge_get_iface' "$BRIDGE_C")"
+printf '%s\n' "$GETTER_BLOCK" | grep -q 'atomic_read(&br->active)' || fail "runtime-switch: getter must report effective active state"
+
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \
   fail "oom_drops field missing from struct moal_bridge_stats"

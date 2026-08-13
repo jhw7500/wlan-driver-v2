@@ -113,6 +113,8 @@ struct moal_bridge {
 /* API — implemented in moal_bridge.c */
 int moal_bridge_init(void *handle, const char *peer_name, int wlan_bss_idx);
 void moal_bridge_deinit(void *handle);
+int moal_bridge_switch_iface(const char *ifname);
+int moal_bridge_get_iface(char *buf, size_t len);
 int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv);
 int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb);
 

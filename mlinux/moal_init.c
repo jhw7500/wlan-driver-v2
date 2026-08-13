@@ -93,6 +93,7 @@ static int mgmt_hex_dump = 0;
 int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
+int bridge_runtime_switch;
 int bridge_debug;
 /** Local hairpin: 로컬발 TX(dst==클론 MAC)를 공중 대신 유선 peer 로 divert
  *  + ARP tee/inject. 유선 peer IP 인지(peer_route/ip_discovery) 불요.

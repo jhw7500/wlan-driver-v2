@@ -19,12 +19,17 @@
 static atomic_t bridge_instance_active = ATOMIC_INIT(0);
 static DEFINE_MUTEX(bridge_lifecycle_lock);
 static moal_handle *bridge_owner;
+static atomic_long_t bridge_switch_ok = ATOMIC_LONG_INIT(0);
+static atomic_long_t bridge_switch_fail = ATOMIC_LONG_INIT(0);
+static atomic_long_t bridge_rollback_ok = ATOMIC_LONG_INIT(0);
+static atomic_long_t bridge_rollback_fail = ATOMIC_LONG_INIT(0);
 
 /** bridge_debug: runtime-changeable via /sys/module/moal/parameters/bridge_debug */
 extern int bridge_debug;
 extern int bridge_consume_link_local;
 /** bridge_keepalive_ms: module param default copied into handle->params at init */
 extern int bridge_keepalive_ms;
+extern int bridge_runtime_switch;
 #define BR_DBG(fmt, ...) do { \
 	if (bridge_debug) \
 		printk(KERN_INFO "bridge: " fmt, ##__VA_ARGS__); \
@@ -39,6 +44,16 @@ struct moal_bridge_target {
 	moal_private *priv;
 	struct net_device *dev;
 	int bss_index;
+};
+
+struct moal_bridge_switch_snapshot {
+	moal_handle *old_owner;
+	int old_bss_index;
+	char old_iface[IFNAMSIZ];
+	char peer[IFNAMSIZ];
+	int old_mode;
+	int keepalive_ms;
+	int keepalive_idle_ms;
 };
 
 /*
@@ -1822,4 +1837,138 @@ void moal_bridge_deinit(void *phandle)
 		bridge_owner = NULL;
 	}
 	mutex_unlock(&bridge_lifecycle_lock);
+}
+
+int moal_bridge_get_iface(char *buf, size_t len)
+{
+	struct moal_bridge *br;
+	int ret;
+
+	if (!buf || !len)
+		return -EINVAL;
+	mutex_lock(&bridge_lifecycle_lock);
+	br = bridge_owner ? bridge_owner->bridge : NULL;
+	ret = scnprintf(buf, len, "%s\n",
+			br && atomic_read(&br->active) ? br->wlan_dev->name : "none");
+	mutex_unlock(&bridge_lifecycle_lock);
+	return ret;
+}
+
+int moal_bridge_switch_iface(const char *ifname)
+{
+	struct moal_bridge_switch_snapshot old;
+	struct moal_bridge_target target;
+	struct moal_bridge *br;
+	char target_bridge_peer[IFNAMSIZ];
+	int target_mode;
+	int target_wlan_idx;
+	int target_keepalive_ms;
+	int target_keepalive_idle_ms;
+	int target_ret;
+	int rollback_ret;
+	int ret;
+
+	if (READ_ONCE(bridge_runtime_switch) != 1)
+		return -EOPNOTSUPP;
+	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
+		return -ERESTARTSYS;
+
+	mutex_lock(&bridge_lifecycle_lock);
+	br = bridge_owner ? bridge_owner->bridge : NULL;
+	if (!br || !atomic_read(&br->active)) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
+
+	ret = moal_bridge_find_target(ifname, &target);
+	if (ret)
+		goto out_unlock;
+	if (target.dev == bridge_owner->bridge->wlan_dev) {
+		ret = 0;
+		goto out_unlock;
+	}
+
+	old.old_owner = bridge_owner;
+	old.old_bss_index = old.old_owner->params.bridge_wlan_idx;
+	strncpy(old.old_iface, br->wlan_dev->name, sizeof(old.old_iface) - 1);
+	old.old_iface[sizeof(old.old_iface) - 1] = '\0';
+	strncpy(old.peer, br->peer_dev->name, sizeof(old.peer) - 1);
+	old.peer[sizeof(old.peer) - 1] = '\0';
+	old.old_mode = old.old_owner->params.bridge_mode;
+	old.keepalive_ms = old.old_owner->params.bridge_keepalive_ms;
+	old.keepalive_idle_ms =
+		old.old_owner->params.bridge_keepalive_idle_ms;
+
+	target_mode = target.handle->params.bridge_mode;
+	target_wlan_idx = target.handle->params.bridge_wlan_idx;
+	strncpy(target_bridge_peer, target.handle->params.bridge_peer,
+		sizeof(target_bridge_peer) - 1);
+	target_bridge_peer[sizeof(target_bridge_peer) - 1] = '\0';
+	target_keepalive_ms = target.handle->params.bridge_keepalive_ms;
+	target_keepalive_idle_ms =
+		target.handle->params.bridge_keepalive_idle_ms;
+
+	PRINTM(MMSG, "bridge: runtime switch requested %s -> %s\n",
+	       old.old_iface, target.dev->name);
+
+	__moal_bridge_deinit_locked(old.old_owner);
+	bridge_owner = NULL;
+
+	target.handle->params.bridge_mode = 1;
+	target.handle->params.bridge_wlan_idx = target.bss_index;
+	strncpy(target.handle->params.bridge_peer, old.peer,
+		sizeof(target.handle->params.bridge_peer) - 1);
+	target.handle->params.bridge_peer[
+		sizeof(target.handle->params.bridge_peer) - 1] = '\0';
+	target.handle->params.bridge_keepalive_ms = old.keepalive_ms;
+	target.handle->params.bridge_keepalive_idle_ms = old.keepalive_idle_ms;
+
+	ret = __moal_bridge_init_locked(target.handle, old.peer,
+					 target.bss_index);
+	if (!ret) {
+		if (old.old_owner != target.handle)
+			old.old_owner->params.bridge_mode = 0;
+		target.handle->params.bridge_mode = 1;
+		bridge_owner = target.handle;
+		atomic_long_inc(&bridge_switch_ok);
+		PRINTM(MMSG, "bridge: runtime switch complete %s -> %s\n",
+		       old.old_iface, target.dev->name);
+		goto out_unlock;
+	}
+
+	target_ret = ret;
+	target.handle->params.bridge_mode = target_mode;
+	target.handle->params.bridge_wlan_idx = target_wlan_idx;
+	strncpy(target.handle->params.bridge_peer, target_bridge_peer,
+		sizeof(target.handle->params.bridge_peer) - 1);
+	target.handle->params.bridge_peer[
+		sizeof(target.handle->params.bridge_peer) - 1] = '\0';
+	target.handle->params.bridge_keepalive_ms = target_keepalive_ms;
+	target.handle->params.bridge_keepalive_idle_ms = target_keepalive_idle_ms;
+
+	rollback_ret = __moal_bridge_init_locked(old.old_owner, old.peer,
+					   old.old_bss_index);
+	if (!rollback_ret) {
+		old.old_owner->params.bridge_mode = old.old_mode;
+		bridge_owner = old.old_owner;
+		atomic_long_inc(&bridge_switch_fail);
+		atomic_long_inc(&bridge_rollback_ok);
+		ret = target_ret;
+	} else {
+		old.old_owner->params.bridge_mode = 0;
+		target.handle->params.bridge_mode = 0;
+		bridge_owner = NULL;
+		atomic_long_inc(&bridge_switch_fail);
+		atomic_long_inc(&bridge_rollback_fail);
+		ret = -EIO;
+	}
+	PRINTM(MERROR,
+	       "bridge: runtime switch failed %s -> %s "
+	       "target_err=%d rollback_err=%d\n",
+	       old.old_iface, target.dev->name, target_ret, rollback_ret);
+
+out_unlock:
+	mutex_unlock(&bridge_lifecycle_lock);
+	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	return ret;
 }
