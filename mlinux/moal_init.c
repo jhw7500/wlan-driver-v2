@@ -21,6 +21,7 @@
  *
  */
 #include "moal_main.h"
+#include "moal_bridge.h"
 
 /** Global moal_handle array */
 extern pmoal_handle m_handle[];
@@ -2962,6 +2963,44 @@ out:
 	return ret;
 }
 
+static int bridge_iface_set(const char *val, const struct kernel_param *kp)
+{
+	char ifname[IFNAMSIZ];
+	size_t len = 0, end;
+
+	(void)kp;
+	if (!READ_ONCE(bridge_runtime_switch))
+		return -EOPNOTSUPP;
+	if (!val)
+		return -EINVAL;
+	while (val[len] && val[len] != '\r' && val[len] != '\n') {
+		if (len >= sizeof(ifname) - 1)
+			return -EINVAL;
+		len++;
+	}
+	end = len;
+	while (val[end] == '\r' || val[end] == '\n')
+		end++;
+	if (!len || val[end])
+		return -EINVAL;
+	memcpy(ifname, val, len);
+	ifname[len] = '\0';
+	if (!dev_valid_name(ifname))
+		return -EINVAL;
+	return moal_bridge_switch_iface(ifname);
+}
+
+static int bridge_iface_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return moal_bridge_get_iface(buf, PAGE_SIZE);
+}
+
+static const struct kernel_param_ops bridge_iface_ops = {
+	.set = bridge_iface_set,
+	.get = bridge_iface_get,
+};
+
 module_param(mod_para, charp, 0);
 MODULE_PARM_DESC(mod_para, "Module parameters configuration file");
 module_param(hw_test, int, 0660);
@@ -3197,6 +3236,14 @@ MODULE_PARM_DESC(
 	"Mgmt frame full IE hex dump in /proc/mwlan/adapter*/mgmt_dump: 0=off (default), 1=on. Per-adapter via wifi_init_conf.json (mlanN.mgmt_hex_dump_enable). Requires net_rx>=2 (RX) and/or net_rx&0x4 (TX). Module reload required to change.");
 module_param(bridge_mode, int, 0);
 MODULE_PARM_DESC(bridge_mode, "L2 bridge: 0=off(default), 1=on");
+module_param(bridge_runtime_switch, int, 0444);
+MODULE_PARM_DESC(
+	bridge_runtime_switch,
+	"Allow synchronous runtime switching of an active L2 bridge: 0=off(default), 1=on");
+module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644);
+MODULE_PARM_DESC(
+	bridge_iface,
+	"Active bridge STA interface; write a connected MOAL STA name to switch synchronously");
 module_param(bridge_peer, charp, 0);
 MODULE_PARM_DESC(bridge_peer, "Bridge peer interface (default: eth0)");
 module_param(bridge_wlan_idx, int, 0);

@@ -385,6 +385,14 @@ printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'ret = -EIO' || fail "runtime-sw
 GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_iface' "$BRIDGE_C")"
 printf '%s\n' "$GETTER_BLOCK" | grep -Pzq 'ret = scnprintf\(buf, len, "%s\\n",\s*br && atomic_read\(&br->active\) \? br->wlan_dev->name : "none"\);' || fail "runtime-switch: getter must report effective active state"
 
+# --- runtime-switch Task 4: opt-in synchronous sysfs contract ---
+grep -q 'int bridge_runtime_switch;' "$INIT_C" || fail "runtime-switch: gate missing"
+grep -q 'module_param(bridge_runtime_switch, int, 0444)' "$INIT_C" || fail "runtime-switch: gate permissions wrong"
+grep -q 'module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644)' "$INIT_C" || fail "runtime-switch: callback parameter missing"
+grep -q 'moal_bridge_switch_iface(ifname)' "$INIT_C" || fail "runtime-switch: setter is not synchronous"
+grep -q 'moal_bridge_get_iface(buf, PAGE_SIZE)' "$INIT_C" || fail "runtime-switch: getter is not effective-state based"
+grep -q 'module_param(bridge_iface, charp' "$INIT_C" && fail "runtime-switch: charp forbidden"
+
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \
   fail "oom_drops field missing from struct moal_bridge_stats"
