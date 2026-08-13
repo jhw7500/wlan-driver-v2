@@ -13,6 +13,36 @@ fail() {
   exit 1
 }
 
+extract_c_function() {
+  awk '
+    $0 ~ start { in_function=1 }
+    in_function {
+      print
+      line=$0
+      opens=gsub(/\{/, "{", line)
+      closes=gsub(/\}/, "}", line)
+      if (opens)
+        saw_open=1
+      depth += opens - closes
+      if (saw_open && depth == 0)
+        exit
+    }
+  ' start="$1" "$2"
+}
+
+extract_switch_block() {
+  extract_c_function '^int moal_bridge_switch_iface' "$1"
+}
+
+check_no_direct_return_while_locked() {
+  printf '%s\n' "$1" | awk '
+    /mutex_lock\(&bridge_lifecycle_lock\)/ { acquired=1; next }
+    /mutex_unlock\(&bridge_lifecycle_lock\)/ { acquired=0 }
+    acquired && /^[[:space:]]*return[[:space:]]/ { bad=1 }
+    END { exit bad }
+  '
+}
+
 grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
 grep -q 'if (params->bridge_keepalive_ms_present)' "$INIT_C" || fail "explicit keepalive override guard missing"
 KEEPALIVE_BLOCK="$(grep -n -A80 -m1 'static enum hrtimer_restart moal_bridge_keepalive' "$BRIDGE_C")"
@@ -110,7 +140,7 @@ printf '%s\n' "$DEINIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || f
 # --- runtime-switch Task 3: synchronous rebind transaction ---
 grep -q 'moal_bridge_switch_iface' "$ROOT/mlinux/moal_bridge.h" || fail "runtime-switch: switch declaration missing"
 grep -q 'moal_bridge_get_iface' "$ROOT/mlinux/moal_bridge.h" || fail "runtime-switch: getter declaration missing"
-SWITCH_BLOCK="$(grep -n -A240 -m1 '^int moal_bridge_switch_iface' "$BRIDGE_C")"
+SWITCH_BLOCK="$(extract_switch_block "$BRIDGE_C")"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || fail "runtime-switch: card semaphore missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: lifecycle lock missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q '__moal_bridge_deinit_locked' || fail "runtime-switch: full deinit missing"
@@ -129,11 +159,33 @@ printf '%s\n' "$SWITCH_BLOCK" | awk '
                lifecycle_unlock < card_unlock) }
 ' || fail "runtime-switch: lock acquire/release order is not card -> lifecycle -> lifecycle -> card"
 printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /mutex_lock\(&bridge_lifecycle_lock\)/ { acquired=1; next }
-  /mutex_unlock\(&bridge_lifecycle_lock\)/ { acquired=0 }
-  acquired && /^[[:space:]]*return[[:space:]]/ { bad=1 }
-  END { exit bad }
-' || fail "runtime-switch: direct return bypasses shared releases"
+  /if \(READ_ONCE\(bridge_runtime_switch\) != 1\)/ { gate=NR }
+  /return -EOPNOTSUPP;/ { gate_return=NR }
+  /MOAL_ACQ_SEMAPHORE_BLOCK/ { card_lock=NR }
+  END { exit !(gate && gate_return && card_lock &&
+               gate < gate_return && gate_return < card_lock) }
+' || fail "runtime-switch: exact opt-in rejection must precede lock acquisition"
+check_no_direct_return_while_locked "$SWITCH_BLOCK" || \
+  fail "runtime-switch: direct return bypasses shared releases"
+
+NEGATIVE_SOURCE="$(mktemp)"
+trap 'rm -f "$NEGATIVE_SOURCE"' EXIT
+awk '
+  /^int moal_bridge_switch_iface/ { in_switch=1 }
+  { print }
+  in_switch && /mutex_lock\(&bridge_lifecycle_lock\)/ && !injected {
+    print "\treturn -EINVAL;"
+    injected=1
+  }
+  END { exit !injected }
+' "$BRIDGE_C" > "$NEGATIVE_SOURCE"
+NEGATIVE_SWITCH_BLOCK="$(extract_switch_block "$NEGATIVE_SOURCE")"
+if check_no_direct_return_while_locked "$NEGATIVE_SWITCH_BLOCK"; then
+  fail "runtime-switch: direct-return negative fixture was accepted"
+fi
+rm -f "$NEGATIVE_SOURCE"
+trap - EXIT
+printf 'PASS: runtime-switch direct-return negative fixture rejected\n'
 printf '%s\n' "$SWITCH_BLOCK" | awk '
   /moal_bridge_find_target/ { find=NR }
   /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
@@ -144,11 +196,24 @@ printf '%s\n' "$SWITCH_BLOCK" | awk '
   /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
   END { exit !(same && deinit && same < deinit) }
 ' || fail "runtime-switch: same-target no-op must precede teardown"
+SAME_TARGET_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/if (target.dev == bridge_owner->bridge->wlan_dev) {/,/^[[:space:]]*}/p')"
+printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq 'ret = 0' || fail "runtime-switch: same-target branch must succeed"
+printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq 'goto out_unlock' || fail "runtime-switch: same-target branch must use shared releases"
+printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq '__moal_bridge_deinit_locked' && fail "runtime-switch: same-target branch must not tear down"
 printf '%s\n' "$SWITCH_BLOCK" | awk '
   /target_keepalive_idle_ms =/ { target_snapshot=NR }
   /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
   END { exit !(target_snapshot && deinit && target_snapshot < deinit) }
 ' || fail "runtime-switch: old/target snapshots must complete before teardown"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
+  /bridge_owner = NULL/ && !owner_clear { owner_clear=NR }
+  /target\.handle->params\.bridge_mode = 1/ && !target_policy { target_policy=NR }
+  /ret = __moal_bridge_init_locked/ && !target_init { target_init=NR }
+  END { exit !(deinit && owner_clear && target_policy && target_init &&
+               deinit < owner_clear && owner_clear < target_policy &&
+               target_policy < target_init) }
+' || fail "runtime-switch: teardown/owner-clear/target-bind order is invalid"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_bridge_peer' || fail "runtime-switch: target peer snapshot missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_keepalive_ms' || fail "runtime-switch: target keepalive snapshot missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target_keepalive_idle_ms' || fail "runtime-switch: target idle keepalive snapshot missing"
@@ -157,16 +222,54 @@ printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_wlan_idx =
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'strncpy(target.handle->params.bridge_peer, target_bridge_peer' || fail "runtime-switch: target peer restoration missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_keepalive_ms = target_keepalive_ms' || fail "runtime-switch: target keepalive restoration missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_keepalive_idle_ms = target_keepalive_idle_ms' || fail "runtime-switch: target idle keepalive restoration missing"
+printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /ret = __moal_bridge_init_locked/ && !target_init { target_init=NR }
+  /target_ret = ret/ { target_error=NR }
+  /target\.handle->params\.bridge_mode = target_mode/ { mode=NR }
+  /target\.handle->params\.bridge_wlan_idx = target_wlan_idx/ { bss_idx=NR }
+  /strncpy\(target\.handle->params\.bridge_peer, target_bridge_peer/ { peer=NR }
+  /target\.handle->params\.bridge_keepalive_ms = target_keepalive_ms/ { keepalive=NR }
+  /target\.handle->params\.bridge_keepalive_idle_ms = target_keepalive_idle_ms/ { idle=NR }
+  /rollback_ret = __moal_bridge_init_locked/ { rollback_init=NR }
+  END { exit !(target_init && target_error && mode && bss_idx && peer &&
+               keepalive && idle && rollback_init && target_init < target_error &&
+               target_error < mode && target_error < bss_idx && target_error < peer &&
+               target_error < keepalive && target_error < idle &&
+               mode < rollback_init && bss_idx < rollback_init &&
+               peer < rollback_init && keepalive < rollback_init && idle < rollback_init) }
+' || fail "runtime-switch: target parameters must be restored before rollback init"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = NULL' || fail "runtime-switch: owner clear missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = target.handle' || fail "runtime-switch: target owner publish missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'bridge_owner = old.old_owner' || fail "runtime-switch: rollback owner restore missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'if (old.old_owner != target.handle)' || fail "runtime-switch: same-handle mode preservation missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: rollback-failure target disable missing"
-printf '%s\n' "$SWITCH_BLOCK" | grep -q 'READ_ONCE(bridge_runtime_switch)' || fail "runtime-switch: opt-in gate missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'br->wlan_dev = target' && fail "runtime-switch: direct wlan pointer hot-swap forbidden"
-GETTER_BLOCK="$(grep -n -A20 -m1 '^int moal_bridge_get_iface' "$BRIDGE_C")"
-printf '%s\n' "$GETTER_BLOCK" | grep -q 'atomic_read(&br->active)' || fail "runtime-switch: getter must report effective active state"
+
+SWITCH_SUCCESS_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/^[[:space:]]*if (!ret) {/,/^[[:space:]]*}/p')"
+printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'if (old.old_owner != target.handle)' || fail "runtime-switch: cross-handle guard must be in success branch"
+printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable must be in success branch"
+printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'target.handle->params.bridge_mode = 1' || fail "runtime-switch: target mode publish must be in success branch"
+printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'bridge_owner = target.handle' || fail "runtime-switch: target owner publish must be in success branch"
+printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_ok)' || fail "runtime-switch: switch_ok must be in success branch"
+
+ROLLBACK_OK_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/^[[:space:]]*if (!rollback_ret) {/,/^[[:space:]]*} else {/p')"
+printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = old.old_mode' || fail "runtime-switch: old mode restore must be in rollback-success branch"
+printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'bridge_owner = old.old_owner' || fail "runtime-switch: old owner restore must be in rollback-success branch"
+printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_fail)' || fail "runtime-switch: switch_fail must count rollback success"
+printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_rollback_ok)' || fail "runtime-switch: rollback_ok must be in rollback-success branch"
+printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'ret = target_ret' || fail "runtime-switch: rollback success must preserve target errno"
+
+ROLLBACK_FAIL_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/^[[:space:]]*} else {/,/^[[:space:]]*}/p')"
+printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable must be in rollback-failure branch"
+printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: target mode disable must be in rollback-failure branch"
+printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'bridge_owner = NULL' || fail "runtime-switch: owner clear must be in rollback-failure branch"
+printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_fail)' || fail "runtime-switch: switch_fail must count rollback failure"
+printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_rollback_fail)' || fail "runtime-switch: rollback_fail must be in rollback-failure branch"
+printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'ret = -EIO' || fail "runtime-switch: rollback failure must return EIO"
+
+GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_iface' "$BRIDGE_C")"
+printf '%s\n' "$GETTER_BLOCK" | grep -Pzq 'ret = scnprintf\(buf, len, "%s\\n",\s*br && atomic_read\(&br->active\) \? br->wlan_dev->name : "none"\);' || fail "runtime-switch: getter must report effective active state"
 
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \
