@@ -17,6 +17,8 @@
 
 /** DBDC guard: only one bridge instance allowed globally */
 static atomic_t bridge_instance_active = ATOMIC_INIT(0);
+static DEFINE_MUTEX(bridge_lifecycle_lock);
+static moal_handle *bridge_owner;
 
 /** bridge_debug: runtime-changeable via /sys/module/moal/parameters/bridge_debug */
 extern int bridge_debug;
@@ -1504,9 +1506,9 @@ static int moal_bridge_find_target(const char *ifname,
  *
  * Plan SC: SC-04 (bridge_mode=0 시 미호출), SC-06 (자원 관리)
  */
-int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
+static int __moal_bridge_init_locked(moal_handle *handle,
+				     const char *peer_name, int wlan_bss_idx)
 {
-	moal_handle *handle = (moal_handle *)phandle;
 	struct moal_bridge *br;
 	struct net_device *peer;
 	int ret;
@@ -1690,12 +1692,14 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
  *
  * Plan SC: SC-06 (rmmod 정상 언로드)
  */
-void moal_bridge_deinit(void *phandle)
+static void __moal_bridge_deinit_locked(moal_handle *handle)
 {
-	moal_handle *handle = (moal_handle *)phandle;
-	struct moal_bridge *br = handle->bridge;
+	struct moal_bridge *br;
 
-	if (!handle || !br)
+	if (!handle)
+		return;
+	br = handle->bridge;
+	if (!br)
 		return;
 
 	/* 1. 포워딩 비활성화 + keepalive timer 중지 + sysfs 노드 제거 */
@@ -1789,4 +1793,33 @@ void moal_bridge_deinit(void *phandle)
 
 	/* 9. DBDC guard 해제 */
 	atomic_set(&bridge_instance_active, 0);
+}
+
+int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
+{
+	moal_handle *handle = phandle;
+	int ret;
+
+	if (!handle)
+		return -EINVAL;
+	mutex_lock(&bridge_lifecycle_lock);
+	ret = __moal_bridge_init_locked(handle, peer_name, wlan_bss_idx);
+	if (!ret)
+		bridge_owner = handle;
+	mutex_unlock(&bridge_lifecycle_lock);
+	return ret;
+}
+
+void moal_bridge_deinit(void *phandle)
+{
+	moal_handle *handle = phandle;
+
+	if (!handle)
+		return;
+	mutex_lock(&bridge_lifecycle_lock);
+	if (bridge_owner == handle) {
+		__moal_bridge_deinit_locked(handle);
+		bridge_owner = NULL;
+	}
+	mutex_unlock(&bridge_lifecycle_lock);
 }

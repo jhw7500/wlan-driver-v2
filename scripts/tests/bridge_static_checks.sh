@@ -97,6 +97,16 @@ grep -q 'int moal_bridge_rx(' "$ROOT/mlinux/moal_bridge.h" && \
 grep -q 'bridge: wlan BSS\[%d\] not ready' "$BRIDGE_C" || fail "wlan BSS guard site missing"
 grep -q 'atomic_set(&bridge_instance_active, 0);' "$BRIDGE_C" || fail "bridge instance guard reset missing"
 
+# --- runtime-switch Task 2: serialized bridge lifecycle ownership ---
+grep -q 'DEFINE_MUTEX(bridge_lifecycle_lock)' "$BRIDGE_C" || fail "runtime-switch: lifecycle mutex missing"
+grep -q 'static moal_handle \*bridge_owner' "$BRIDGE_C" || fail "runtime-switch: owner missing"
+grep -q '^static int __moal_bridge_init_locked' "$BRIDGE_C" || fail "runtime-switch: locked init missing"
+grep -q '^static void __moal_bridge_deinit_locked' "$BRIDGE_C" || fail "runtime-switch: locked deinit missing"
+INIT_WRAP="$(grep -n -A20 -m1 '^int moal_bridge_init' "$BRIDGE_C")"
+DEINIT_WRAP="$(grep -n -A20 -m1 '^void moal_bridge_deinit' "$BRIDGE_C")"
+printf '%s\n' "$INIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: init unlocked"
+printf '%s\n' "$DEINIT_WRAP" | grep -q 'mutex_lock(&bridge_lifecycle_lock)' || fail "runtime-switch: deinit unlocked"
+
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \
   fail "oom_drops field missing from struct moal_bridge_stats"
@@ -130,7 +140,7 @@ printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_put(br->peer_dev)' || \
 printf '%s\n' "$UNREG_BLOCK" | grep -q 'atomic_set(&br->peer_released, 1)' || \
   fail "NETDEV_UNREGISTER branch must atomic_set peer_released = 1 (F1)"
 
-DEINIT_BLOCK="$(grep -n -A90 -m1 'void moal_bridge_deinit' "$BRIDGE_C")"
+DEINIT_BLOCK="$(grep -n -A90 -m1 'void __moal_bridge_deinit_locked' "$BRIDGE_C")"
 printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!atomic_read(&br->peer_released))' || \
   fail "deinit must use atomic_read(&peer_released) for gate check (F1)"
 
@@ -315,11 +325,11 @@ grep -q 'moal_bridge_sysfs_deinit()' "$BRIDGE_C" || \
 # must appear BEFORE kthread_stop(br->w2p/p2w_thread). This closes the race
 # where a RCU reader still holding the old br pointer could skb_queue_tail
 # into a queue whose kthread has already been stopped.
-# Scope every lookup to lines AFTER moal_bridge_deinit() starts — otherwise
+# Scope every lookup to lines AFTER __moal_bridge_deinit_locked() starts — otherwise
 # init()'s rollback cleanup (stops a partially-created kthread on error) would
 # shadow the deinit occurrence and the ordering check would be nonsensical.
-DEINIT_START=$(grep -n '^void moal_bridge_deinit' "$BRIDGE_C" | head -1 | cut -d: -f1)
-[ -n "$DEINIT_START" ] || fail "F1: moal_bridge_deinit() not found"
+DEINIT_START=$(grep -n '^static void __moal_bridge_deinit_locked' "$BRIDGE_C" | head -1 | cut -d: -f1)
+[ -n "$DEINIT_START" ] || fail "F1: __moal_bridge_deinit_locked() not found"
 RCU_NULL_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /rcu_assign_pointer\(handle->bridge, NULL\)/ { print NR; exit }' "$BRIDGE_C")
 SYNC_RCU_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /^[[:space:]]*synchronize_rcu\(\);/ { print NR; exit }' "$BRIDGE_C")
 KTHREAD_W2P_LINE=$(awk -v s="$DEINIT_START" 'NR > s && /kthread_stop\(br->w2p_thread\)/ { print NR; exit }' "$BRIDGE_C")
