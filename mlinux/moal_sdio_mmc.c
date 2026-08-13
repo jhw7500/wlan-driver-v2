@@ -31,6 +31,7 @@ Change log:
 #include "moal_cfg80211.h"
 #endif
 #include "moal_sdio.h"
+#include "moal_bridge.h"
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/addrconf.h>
@@ -3486,6 +3487,10 @@ static mlan_status woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
 		return status;
 	}
 
+	/* AddRemoveCardSem is held. Drain the owner bridge before any WLAN
+	 * netdev is removed; companion/non-owner handles are a safe no-op. */
+	moal_bridge_deinit(handle);
+
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
 	mlan_disable_host_int(handle->pmlan_adapter);
@@ -3590,6 +3595,9 @@ exit_sem_err:
 	return status;
 
 err_init_fw:
+	/* prepare normally cleared the owner already; keep the failure/free
+	 * boundary explicit for any standalone or partial reset invocation. */
+	moal_bridge_deinit(handle);
 	if (handle->is_fw_dump_timer_set) {
 		woal_cancel_timer(&handle->fw_dump_timer);
 		handle->is_fw_dump_timer_set = MFALSE;

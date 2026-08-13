@@ -7,6 +7,8 @@ BRIDGE_C="$ROOT/mlinux/moal_bridge.c"
 INIT_C="$ROOT/mlinux/moal_init.c"
 MAIN_H="$ROOT/mlinux/moal_main.h"
 MAIN_C="$ROOT/mlinux/moal_main.c"
+PCIE_C="$ROOT/mlinux/moal_pcie.c"
+SDIO_C="$ROOT/mlinux/moal_sdio_mmc.c"
 SHIM_C="$ROOT/mlinux/moal_shim.c"
 QA_SCRIPT="$ROOT/scripts/tests/bridge_runtime_switch_qa.sh"
 PARAM_DOC="$ROOT/docs/MOAL-Module-Parameters.md"
@@ -208,12 +210,18 @@ check_stats_rcu_lifetime_contract() {
 
 check_bridge_name_snapshot_contract() {
   printf '%s\n' "$1" | awk '
+    /peer = dev_get_by_name/ { peer_ref=NR }
+    /br->peer_dev = peer/ { peer_assign=NR }
+    /br->wlan_dev = / { wlan_assign=NR }
     /strncpy\(br->wlan_name, br->wlan_dev->name/ { iface_copy=NR }
     /br->wlan_name\[sizeof\(br->wlan_name\) - 1\] = '\''\\0'\'';/ { iface_nul=NR }
     /strncpy\(br->peer_name, br->peer_dev->name/ { peer_copy=NR }
     /br->peer_name\[sizeof\(br->peer_name\) - 1\] = '\''\\0'\'';/ { peer_nul=NR }
     /register_netdevice_notifier/ { notifier=NR }
-    END { exit !(iface_copy && iface_nul && peer_copy && peer_nul && notifier &&
+    END { exit !(peer_ref && peer_assign && wlan_assign && iface_copy &&
+                 iface_nul && peer_copy && peer_nul && notifier &&
+                 peer_ref < peer_assign && peer_ref < wlan_assign &&
+                 peer_assign < iface_copy && wlan_assign < iface_copy &&
                  iface_copy < iface_nul && iface_nul < peer_copy &&
                  peer_copy < peer_nul && peer_nul < notifier) }
   '
@@ -223,11 +231,40 @@ check_no_post_release_peer_name_deref() {
   local notifier="$1" lifecycle_deinit="$2"
 
   printf '%s\n' "$notifier" | awk '
-    /atomic_set\(&br->peer_released, 1\)/ { released=1; next }
+    /dev_put\(br->peer_dev\)/ { released=1; next }
     released && /br->peer_dev->name/ { bad=1 }
     END { exit bad }
   ' || return 1
   ! grep -Fq 'br->peer_dev->name' <<< "$lifecycle_deinit"
+}
+
+check_reset_teardown_order() {
+  printf '%s\n' "$1" | awk '
+    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { card_lock=NR }
+    /moal_bridge_deinit\(handle\)/ {
+      deinit_count++
+      if (!first_deinit) first_deinit=NR
+      last_deinit=NR
+    }
+    /woal_remove_interface\(handle,/ && !remove { remove=NR }
+    /woal_free_moal_handle\(handle\)/ && !free_handle { free_handle=NR }
+    END { exit !(card_lock && first_deinit && remove &&
+                 card_lock < first_deinit && first_deinit < remove &&
+                 (!free_handle || (deinit_count >= 2 &&
+                  remove < last_deinit && last_deinit < free_handle))) }
+  '
+}
+
+check_post_reset_bridge_contract() {
+  printf '%s\n' "$1" | awk '
+    /moal_bridge_deinit\(handle\)/ { deinit=NR }
+    /woal_remove_interface\(handle,/ && !remove { remove=NR }
+    /woal_add_interface\(handle,/ { add=NR }
+    /if \(handle->params.bridge_mode\)/ { mode=NR }
+    /moal_bridge_init\(handle,/ { init=NR }
+    END { exit !(deinit && remove && add && mode && init &&
+                 deinit < remove && remove < add && add < mode && mode < init) }
+  '
 }
 
 grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
@@ -623,6 +660,45 @@ if check_no_post_release_peer_name_deref "$NETDEV_EVENT_BLOCK" \
   fail "runtime-switch: post-release peer-name negative fixture was accepted"
 fi
 printf 'PASS: runtime-switch post-release peer-name negative fixture rejected\n'
+
+# FLR/driver-mode reset paths already own AddRemoveCardSem. The general
+# post-reset helper does not, so its bridge lifecycle is serialized by the
+# owner-aware public wrapper; companion/non-owner handles are safe no-ops.
+PCIE_FLR_BLOCK="$(extract_c_function '^static mlan_status woal_do_flr' "$PCIE_C")"
+SDIO_FLR_BLOCK="$(extract_c_function '^static mlan_status woal_do_sdiommc_flr' "$SDIO_C")"
+DRV_MODE_BLOCK="$(extract_c_function '^mlan_status woal_switch_drv_mode' "$MAIN_C")"
+POST_RESET_BLOCK="$(extract_c_function '^static void woal_post_reset' "$MAIN_C")"
+for reset_contract in "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK" "$DRV_MODE_BLOCK"; do
+  check_reset_teardown_order "$reset_contract" || \
+    fail "runtime-switch: reset path removes interfaces before bridge teardown"
+done
+check_post_reset_bridge_contract "$POST_RESET_BLOCK" || \
+  fail "runtime-switch: post-reset bridge teardown/recreate ordering invalid"
+
+PCIE_FLR_NO_DEINIT="$(printf '%s\n' "$PCIE_FLR_BLOCK" |
+  sed 's/moal_bridge_deinit(handle);/\/\* missing bridge teardown \*\//')"
+if check_reset_teardown_order "$PCIE_FLR_NO_DEINIT"; then
+  fail "runtime-switch: PCIe FLR missing-deinit negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch PCIe FLR missing-deinit negative fixture rejected\n'
+
+SDIO_FLR_LATE_DEINIT="$(printf '%s\n' "$SDIO_FLR_BLOCK" | awk '
+  /moal_bridge_deinit\(handle\)/ { saved=$0; next }
+  /woal_remove_interface\(handle,/ { print; print saved; moved=1; next }
+  { print }
+  END { exit !moved }
+')"
+if check_reset_teardown_order "$SDIO_FLR_LATE_DEINIT"; then
+  fail "runtime-switch: SDIO FLR late-deinit negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch SDIO FLR late-deinit negative fixture rejected\n'
+
+POST_RESET_NO_REINIT="$(printf '%s\n' "$POST_RESET_BLOCK" |
+  sed 's/moal_bridge_init(handle,/missing_bridge_init(handle,/')"
+if check_post_reset_bridge_contract "$POST_RESET_NO_REINIT"; then
+  fail "runtime-switch: post-reset missing-reinit negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-reset missing-reinit negative fixture rejected\n'
 for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok \
                bridge_rollback_fail; do
   printf '%s\n' "$STATS_SHOW_BLOCK" | \

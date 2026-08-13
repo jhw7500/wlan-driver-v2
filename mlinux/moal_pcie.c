@@ -33,6 +33,7 @@ Change log:
 #endif
 
 #include "moal_pcie.h"
+#include "moal_bridge.h"
 #ifdef UAP_SUPPORT
 #include "moal_uap.h"
 #endif
@@ -369,6 +370,10 @@ static mlan_status woal_do_flr(moal_handle *handle, bool prepare, bool flr_flag)
 	if (!handle->pmlan_adapter)
 		goto exit;
 
+	/* AddRemoveCardSem is held. Drain the owner bridge before any WLAN
+	 * netdev is removed; companion/non-owner handles are a safe no-op. */
+	moal_bridge_deinit(handle);
+
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
 	woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE);
@@ -493,6 +498,9 @@ exit_sem_err:
 	return status;
 
 err_init_fw:
+	/* prepare normally cleared the owner already; keep the failure/free
+	 * boundary explicit for any standalone or partial reset invocation. */
+	moal_bridge_deinit(handle);
 	if (handle->is_fw_dump_timer_set) {
 		woal_cancel_timer(&handle->fw_dump_timer);
 		handle->is_fw_dump_timer_set = MFALSE;

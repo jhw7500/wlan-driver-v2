@@ -14050,6 +14050,10 @@ mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode)
 		goto exit;
 	}
 
+	/* AddRemoveCardSem is held. The firmware/interface rebuild below will
+	 * recreate a load-time-enabled bridge through woal_add_card_dpc(). */
+	moal_bridge_deinit(handle);
+
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
 	if (MLAN_STATUS_SUCCESS !=
@@ -14331,6 +14335,9 @@ static void woal_post_reset(moal_handle *handle)
 	if (!handle->wifi_hal_flag) {
 		PRINTM(MMSG, "wlan: post_reset remove/add interface\n");
 		handle->surprise_removed = MTRUE;
+		/* This path rebuilds netdevs directly rather than through
+		 * woal_add_card_dpc(), so tear down now and re-init once below. */
+		moal_bridge_deinit(handle);
 		for (intf_num = 0;
 		     intf_num < MIN(MLAN_MAX_BSS_NUM, handle->priv_num);
 		     intf_num++)
@@ -14359,6 +14366,11 @@ static void woal_post_reset(moal_handle *handle)
 				       __func__, handle->priv_num);
 				goto done;
 			}
+		}
+		if (handle->params.bridge_mode) {
+			if (moal_bridge_init(handle, handle->params.bridge_peer,
+					     handle->params.bridge_wlan_idx))
+				PRINTM(MERROR, "bridge: post-reset init failed\n");
 		}
 		PRINTM(MMSG, "wlan: post_reset remove/add interface done\n");
 		goto done;

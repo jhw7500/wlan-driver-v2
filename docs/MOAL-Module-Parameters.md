@@ -305,6 +305,11 @@ counter는 모듈 전역 누계라 rebind 중 재생성되는 bridge instance와
 해제한 후 새 datapath를 만들기 때문에 짧은 패킷 중단 또는 손실이 가능하며 lossless 전환을
 보장하지 않는다. 실장비 검증 절차는 `docs/driver-bridge.qa-runbook.md`의 런타임 전환 절을 따른다.
 
+PCIe/SDIO FLR, driver-mode switch, 또는 netdev를 직접 재생성하는 post-reset은 인터페이스 제거
+전에 활성 브릿지를 동기 해제한다. reset이 성공해 인터페이스가 다시 생성되면 기존
+`bridge_mode`/현재 handle 파라미터로 브릿지를 한 번 재초기화하고, 초기화 실패 시 비활성 상태로
+남는다. 이 과정도 패킷 중단/손실이 가능하며 outcome counter는 모듈 unload 전까지 누적된다.
+
 ---
 
 ## 12. 설정 우선순위 & 수명주기
