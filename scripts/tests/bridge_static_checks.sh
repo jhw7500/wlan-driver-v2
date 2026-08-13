@@ -256,14 +256,89 @@ check_reset_teardown_order() {
 }
 
 check_post_reset_bridge_contract() {
-  printf '%s\n' "$1" | awk '
+  local post_reset="$1" rebuild add_loop add_failure mode_block
+
+  rebuild="$(extract_c_block "$post_reset" \
+    '^[[:space:]]*if \(!handle->wifi_hal_flag\) \{')" || return 1
+  add_loop="$(extract_c_block "$rebuild" \
+    '^[[:space:]]*for \(intf_num = 0; intf_num < handle->drv_mode.intf_num;')" || \
+    return 1
+  add_failure="$(extract_c_block "$add_loop" \
+    '^[[:space:]]*if \(!woal_add_interface\(handle, handle->priv_num,')" || \
+    return 1
+  mode_block="$(extract_c_block "$rebuild" \
+    '^[[:space:]]*if \(handle->params.bridge_mode\) \{')" || return 1
+
+  [ "$(printf '%s\n' "$post_reset" | \
+    grep -Fc 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || true)" -eq 1 ] || \
+    return 1
+  [ "$(printf '%s\n' "$rebuild" | \
+    grep -Fc 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || true)" -eq 1 ] || \
+    return 1
+  [ "$(printf '%s\n' "$post_reset" | \
+    grep -Fc 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' || true)" -eq 1 ] || \
+    return 1
+  [ "$(printf '%s\n' "$post_reset" | \
+    grep -Fc 'moal_bridge_init(handle,' || true)" -eq 1 ] || return 1
+  printf '%s\n' "$post_reset" | \
+    grep -Eq '^[[:space:]]*bool card_sem_held = false;' || return 1
+  printf '%s\n' "$post_reset" | awk '
+    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { acquire=NR }
+    /card_sem_held = true/ { held=NR }
     /moal_bridge_deinit\(handle\)/ { deinit=NR }
     /woal_remove_interface\(handle,/ && !remove { remove=NR }
     /woal_add_interface\(handle,/ { add=NR }
     /if \(handle->params.bridge_mode\)/ { mode=NR }
     /moal_bridge_init\(handle,/ { init=NR }
-    END { exit !(deinit && remove && add && mode && init &&
-                 deinit < remove && remove < add && add < mode && mode < init) }
+    /^done:/ { done=NR }
+    /if \(card_sem_held\)/ { release_guard=NR }
+    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { release=NR }
+    /^[[:space:]]*return;/ { final_return=NR }
+    END { exit !(acquire && held && deinit && remove && add && mode && init &&
+                 done && release_guard && release && final_return &&
+                 acquire < held && held < deinit && deinit < remove &&
+                 remove < add && add < mode && mode < init && init < done &&
+                 done < release_guard && release_guard < release &&
+                 release < final_return) }
+  ' || return 1
+  printf '%s\n' "$post_reset" | awk '
+    /card_sem_held = true/ { held=1; next }
+    /^done:/ { done=1 }
+    held && !done && /^[[:space:]]*goto[[:space:]]/ &&
+      !/^[[:space:]]*goto done;/ { bad=1 }
+    held && !done && /^[[:space:]]*return/ { bad=1 }
+    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { released=1; next }
+    released && /handle->/ { bad=1 }
+    END { exit bad }
+  ' || return 1
+  printf '%s\n' "$add_loop" | grep -Fq 'moal_bridge_init(handle,' && return 1
+  printf '%s\n' "$add_failure" | grep -Eq '^[[:space:]]*goto done;' || \
+    return 1
+  printf '%s\n' "$add_failure" | grep -Fq 'moal_bridge_init(handle,' && return 1
+  [ "$(printf '%s\n' "$mode_block" | \
+    grep -Fc 'moal_bridge_init(handle,' || true)" -eq 1 ] || return 1
+  extract_guarded_control "$post_reset" \
+    '^[[:space:]]*if \(card_sem_held\)' | \
+    grep -Fq 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' || return 1
+}
+
+check_sdio_flr_sem_exit_contract() {
+  local sdio_flr="$1" null_adapter
+
+  null_adapter="$(extract_c_block "$sdio_flr" \
+    '^[[:space:]]*if \(!\(handle->pmlan_adapter\)\) \{')" || return 1
+  printf '%s\n' "$null_adapter" | grep -Eq '^[[:space:]]*goto exit;' || \
+    return 1
+  printf '%s\n' "$null_adapter" | \
+    grep -Eq '^[[:space:]]*return[[:space:]]' && return 1
+  printf '%s\n' "$sdio_flr" | awk '
+    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { acquire=NR }
+    /if \(!\(handle->pmlan_adapter\)\)/ { null_adapter=NR }
+    /^exit:/ { common_exit=NR }
+    /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ && !release { release=NR }
+    END { exit !(acquire && null_adapter && common_exit && release &&
+                 acquire < null_adapter && null_adapter < common_exit &&
+                 common_exit < release) }
   '
 }
 
@@ -661,9 +736,9 @@ if check_no_post_release_peer_name_deref "$NETDEV_EVENT_BLOCK" \
 fi
 printf 'PASS: runtime-switch post-release peer-name negative fixture rejected\n'
 
-# FLR/driver-mode reset paths already own AddRemoveCardSem. The general
-# post-reset helper does not, so its bridge lifecycle is serialized by the
-# owner-aware public wrapper; companion/non-owner handles are safe no-ops.
+# Every reset path that destroys WLAN interfaces owns AddRemoveCardSem before
+# entering the bridge lifecycle lock. The direct post-reset rebuild acquires it
+# itself and keeps it through teardown, every add, and the optional re-init.
 PCIE_FLR_BLOCK="$(extract_c_function '^static mlan_status woal_do_flr' "$PCIE_C")"
 SDIO_FLR_BLOCK="$(extract_c_function '^static mlan_status woal_do_sdiommc_flr' "$SDIO_C")"
 DRV_MODE_BLOCK="$(extract_c_function '^mlan_status woal_switch_drv_mode' "$MAIN_C")"
@@ -674,6 +749,8 @@ for reset_contract in "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK" "$DRV_MODE_BLOCK"; do
 done
 check_post_reset_bridge_contract "$POST_RESET_BLOCK" || \
   fail "runtime-switch: post-reset bridge teardown/recreate ordering invalid"
+check_sdio_flr_sem_exit_contract "$SDIO_FLR_BLOCK" || \
+  fail "runtime-switch: SDIO FLR null-adapter path leaks card semaphore"
 
 PCIE_FLR_NO_DEINIT="$(printf '%s\n' "$PCIE_FLR_BLOCK" |
   sed 's/moal_bridge_deinit(handle);/\/\* missing bridge teardown \*\//')"
@@ -699,6 +776,77 @@ if check_post_reset_bridge_contract "$POST_RESET_NO_REINIT"; then
   fail "runtime-switch: post-reset missing-reinit negative fixture was accepted"
 fi
 printf 'PASS: runtime-switch post-reset missing-reinit negative fixture rejected\n'
+
+POST_RESET_NO_ACQUIRE="$(printf '%s\n' "$POST_RESET_BLOCK" |
+  sed 's/MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)/missing_card_sem_acquire()/')"
+if check_post_reset_bridge_contract "$POST_RESET_NO_ACQUIRE"; then
+  fail "runtime-switch: post-reset missing-acquire negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-reset missing-acquire negative fixture rejected\n'
+
+POST_RESET_NO_RELEASE="$(printf '%s\n' "$POST_RESET_BLOCK" |
+  sed 's/MOAL_REL_SEMAPHORE(&AddRemoveCardSem)/missing_card_sem_release()/')"
+if check_post_reset_bridge_contract "$POST_RESET_NO_RELEASE"; then
+  fail "runtime-switch: post-reset missing-release negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-reset missing-release negative fixture rejected\n'
+
+POST_RESET_DUPLICATE_INIT="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
+  /if \(moal_bridge_init\(handle,/ && !injected {
+    print "\t\t\tmoal_bridge_init(handle, handle->params.bridge_peer,"
+    print "\t\t\t\t\t handle->params.bridge_wlan_idx);"
+    injected=1
+  }
+  { print }
+  END { exit !injected }
+')"
+if check_post_reset_bridge_contract "$POST_RESET_DUPLICATE_INIT"; then
+  fail "runtime-switch: post-reset duplicate-init negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-reset duplicate-init negative fixture rejected\n'
+
+POST_RESET_PREMATURE_INIT="$(printf '%s\n' "$POST_RESET_BLOCK" |
+  sed 's/moal_bridge_init(handle,/deferred_bridge_init(handle,/' | awk '
+    /if \(!woal_add_interface\(handle, handle->priv_num,/ && !injected {
+      print "\t\t\tmoal_bridge_init(handle, handle->params.bridge_peer,"
+      print "\t\t\t\t\t handle->params.bridge_wlan_idx);"
+      injected=1
+    }
+    { print }
+    END { exit !injected }
+  ')"
+if check_post_reset_bridge_contract "$POST_RESET_PREMATURE_INIT"; then
+  fail "runtime-switch: post-reset premature-init negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-reset premature-init negative fixture rejected\n'
+
+POST_RESET_ADD_FAILURE_FALLTHROUGH="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
+  /if \(!woal_add_interface\(handle, handle->priv_num,/ { in_failure=1 }
+  in_failure && /goto done;/ && !mutated {
+    sub(/goto done;/, "continue;")
+    mutated=1
+  }
+  { print }
+  END { exit !mutated }
+')"
+if check_post_reset_bridge_contract "$POST_RESET_ADD_FAILURE_FALLTHROUGH"; then
+  fail "runtime-switch: post-reset add-failure fallthrough fixture was accepted"
+fi
+printf 'PASS: runtime-switch post-reset add-failure fallthrough fixture rejected\n'
+
+SDIO_FLR_NULL_ADAPTER_RETURN="$(printf '%s\n' "$SDIO_FLR_BLOCK" | awk '
+  /if \(!\(handle->pmlan_adapter\)\)/ { in_null_adapter=1 }
+  in_null_adapter && /goto exit;/ && !mutated {
+    sub(/goto exit;/, "return status;")
+    mutated=1
+  }
+  { print }
+  END { exit !mutated }
+')"
+if check_sdio_flr_sem_exit_contract "$SDIO_FLR_NULL_ADAPTER_RETURN"; then
+  fail "runtime-switch: SDIO FLR null-adapter return leak fixture was accepted"
+fi
+printf 'PASS: runtime-switch SDIO FLR null-adapter return leak fixture rejected\n'
 for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok \
                bridge_rollback_fail; do
   printf '%s\n' "$STATS_SHOW_BLOCK" | \

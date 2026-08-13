@@ -14274,6 +14274,7 @@ static void woal_post_reset(moal_handle *handle)
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_misc_cfg *misc = NULL;
 	int intf_num;
+	bool card_sem_held = false;
 	char str_buf[MLAN_MAX_VER_STR_LEN];
 	mlan_fw_info fw_info;
 	moal_private *priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
@@ -14333,6 +14334,12 @@ static void woal_post_reset(moal_handle *handle)
 	woal_get_version(handle, str_buf, sizeof(str_buf) - 1);
 	PRINTM(MMSG, "wlan: version = %s\n", str_buf);
 	if (!handle->wifi_hal_flag) {
+		/* woal_request_fw_reload() is the sole caller and does not hold
+		 * AddRemoveCardSem. Take it before the bridge wrappers (which nest
+		 * bridge_lifecycle_lock) and keep it across the direct netdev rebuild. */
+		if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
+			goto done;
+		card_sem_held = true;
 		PRINTM(MMSG, "wlan: post_reset remove/add interface\n");
 		handle->surprise_removed = MTRUE;
 		/* This path rebuilds netdevs directly rather than through
@@ -14453,6 +14460,8 @@ done:
 		release_firmware(handle->user_data);
 		handle->user_data = NULL;
 	}
+	if (card_sem_held)
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 	return;
 }

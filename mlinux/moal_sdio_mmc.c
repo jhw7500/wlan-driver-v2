@@ -3483,8 +3483,7 @@ static mlan_status woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
 
 	if (!(handle->pmlan_adapter)) {
 		PRINTM(MINFO, "\n Handle null 2 during prepare=%d\n", prepare);
-		LEAVE();
-		return status;
+		goto exit;
 	}
 
 	/* AddRemoveCardSem is held. Drain the owner bridge before any WLAN
