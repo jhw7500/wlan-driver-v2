@@ -284,8 +284,12 @@ capture_switch_state before
 capture_kmemleak before
 
 # 양방향 traffic가 실행 중인 별도 terminal/host를 확인한 다음 수행한다.
-FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000 \
-  ./scripts/tests/bridge_runtime_switch_qa.sh | tee /tmp/bridge-switch-qa.log
+set -o pipefail
+if ! FROM_IF=mlan0 TO_IF=mlan1 SWITCH_LOOPS=1000 \
+    ./scripts/tests/bridge_runtime_switch_qa.sh 2>&1 | tee /tmp/bridge-switch-qa.log; then
+  echo "FAIL: runtime bridge QA failed; after snapshots are not success evidence" >&2
+  exit 1
+fi
 
 capture_switch_state after
 capture_kmemleak after
@@ -306,6 +310,13 @@ reference/leak 증거는 최소한 `/proc/modules`의 moal reference count, 두 
 `switch_fail`/rollback counter 불변, 양방향 트래픽 결과, kernel warning 없음, thread/reference/leak
 전후 검토가 모두 필요하다. 전환은 synchronous이지만 teardown/init 사이에 짧은 패킷 중단 또는
 손실이 가능하므로 무손실을 성공 기준으로 가정하지 않는다.
+
+스크립트는 시작 직전 전체 dmesg를 baseline으로 저장하고 종료 뒤 baseline과 정확히 같은 prefix
+다음의 모든 신규 메시지를 `/tmp/bridge-runtime-switch-dmesg-delta.log`에 보존·검사한다. 따라서
+마지막 200줄 방식처럼 긴 loop 초반 warning을 놓치지 않는다. 단, 실행 중 ring buffer가
+회전되거나 누군가 dmesg를 clear하여 prefix가 달라지면 안전하게 FAIL하며, 신규 메시지에 섞인
+동시 실행 타 subsystems의 warning은 자동으로 원인을 구분하지 못하므로 전체 delta를 수동 검토한다.
+`SWITCH_LOOPS`는 leading zero 없는 canonical decimal `1..100000`만 허용한다.
 
 ---
 

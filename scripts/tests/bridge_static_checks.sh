@@ -163,6 +163,49 @@ check_bridge_iface_set_contract() {
   '
 }
 
+check_stats_rcu_lifetime_contract() {
+  local stats="$1" sysfs_deinit="$2" lifecycle_deinit="$3"
+
+  printf '%s\n' "$stats" | awk '
+    /rcu_read_lock\(\)/ { lock=NR }
+    /rcu_dereference\(moal_bridge_for_sysfs\)/ { deref=NR }
+    /handle = .*br->handle/ { handle=NR }
+    /ret = scnprintf/ { format=NR }
+    /rcu_read_unlock\(\)/ { unlock=NR }
+    END { exit !(lock && deref && handle && format && unlock &&
+                 lock < deref && deref < handle && handle < format &&
+                 format < unlock) }
+  ' || return 1
+  printf '%s\n' "$stats" | grep -Fq 'return scnprintf' && return 1
+  printf '%s\n' "$sysfs_deinit" | awk '
+    /rcu_assign_pointer\(moal_bridge_for_sysfs, NULL\)/ { clear=NR }
+    /synchronize_rcu\(\)/ { drain=NR }
+    /sysfs_remove_file/ { remove=NR }
+    END { exit !(clear && drain && remove && clear < drain && drain < remove) }
+  ' || return 1
+  printf '%s\n' "$lifecycle_deinit" | awk '
+    /moal_bridge_sysfs_deinit\(\)/ { drain=NR }
+    /kfree\(br\)/ { free=NR }
+    END { exit !(drain && free && drain < free) }
+  '
+}
+
+check_stats_name_snapshot_contract() {
+  printf '%s\n' "$1" | awk '
+    /strncpy\(moal_bridge_iface_for_sysfs, br->wlan_dev->name/ { iface_copy=NR }
+    /moal_bridge_iface_for_sysfs\[/ { iface_nul=NR }
+    /strncpy\(moal_bridge_peer_for_sysfs, br->peer_dev->name/ { peer_copy=NR }
+    /moal_bridge_peer_for_sysfs\[/ { peer_nul=NR }
+    /kobject_create_and_add/ { create=NR }
+    /sysfs_create_file/ { file=NR }
+    /rcu_assign_pointer\(moal_bridge_for_sysfs, br\)/ { publish=NR }
+    END { exit !(iface_copy && iface_nul && peer_copy && peer_nul && create &&
+                 file && publish && iface_copy < iface_nul &&
+                 iface_nul < peer_copy && peer_copy < peer_nul &&
+                 peer_nul < create && create < file && file < publish) }
+  '
+}
+
 grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
 grep -q 'if (params->bridge_keepalive_ms_present)' "$INIT_C" || fail "explicit keepalive override guard missing"
 KEEPALIVE_BLOCK="$(grep -n -A80 -m1 'static enum hrtimer_restart moal_bridge_keepalive' "$BRIDGE_C")"
@@ -478,6 +521,20 @@ printf 'PASS: runtime-switch asynchronous-setter negative fixture rejected\n'
 
 # --- runtime-switch Task 5: observability and target QA ---
 STATS_SHOW_BLOCK="$(extract_c_function '^static ssize_t stats_show' "$BRIDGE_C")"
+SYSFS_DEINIT_BLOCK="$(extract_c_function '^static void moal_bridge_sysfs_deinit' "$BRIDGE_C")"
+LIFECYCLE_DEINIT_BLOCK="$(extract_c_function '^static void __moal_bridge_deinit_locked' "$BRIDGE_C")"
+grep -Fq 'static struct moal_bridge __rcu *moal_bridge_for_sysfs' "$BRIDGE_C" || \
+  fail "runtime-switch: stats bridge pointer is not RCU annotated"
+check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$SYSFS_DEINIT_BLOCK" \
+  "$LIFECYCLE_DEINIT_BLOCK" || \
+  fail "runtime-switch: stats RCU lifetime/drain-before-free contract missing"
+RCU_DEINIT_NO_DRAIN="$(printf '%s\n' "$SYSFS_DEINIT_BLOCK" |
+  sed 's/synchronize_rcu();/\/\* removed drain \*\//')"
+if check_stats_rcu_lifetime_contract "$STATS_SHOW_BLOCK" "$RCU_DEINIT_NO_DRAIN" \
+    "$LIFECYCLE_DEINIT_BLOCK"; then
+  fail "runtime-switch: undrained stats lifetime negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch undrained stats lifetime negative fixture rejected\n'
 printf '%s\n' "$STATS_SHOW_BLOCK" | \
   grep -q 'switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld' || \
   fail "runtime-switch: outcome stats missing"
@@ -493,10 +550,16 @@ printf '%s\n' "$STATS_SHOW_BLOCK" | \
   grep -Fq 'moal_bridge_peer_for_sysfs' || \
   fail "runtime-switch: stats cached peer name missing"
 SYSFS_INIT_BLOCK="$(extract_c_function '^static int moal_bridge_sysfs_init' "$BRIDGE_C")"
-printf '%s\n' "$SYSFS_INIT_BLOCK" | grep -Fq 'br->wlan_dev->name' || \
-  fail "runtime-switch: sysfs init does not snapshot iface name"
-printf '%s\n' "$SYSFS_INIT_BLOCK" | grep -Fq 'br->peer_dev->name' || \
-  fail "runtime-switch: sysfs init does not snapshot peer name"
+check_stats_name_snapshot_contract "$SYSFS_INIT_BLOCK" || \
+  fail "runtime-switch: sysfs name mapping/termination/publication order invalid"
+SYSFS_INIT_SWAPPED_NAMES="$(printf '%s\n' "$SYSFS_INIT_BLOCK" |
+  sed -e 's/br->wlan_dev->name/br->swap_dev->name/' \
+      -e 's/br->peer_dev->name/br->wlan_dev->name/' \
+      -e 's/br->swap_dev->name/br->peer_dev->name/')"
+if check_stats_name_snapshot_contract "$SYSFS_INIT_SWAPPED_NAMES"; then
+  fail "runtime-switch: swapped sysfs-name negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch swapped sysfs-name negative fixture rejected\n'
 for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok \
                bridge_rollback_fail; do
   printf '%s\n' "$STATS_SHOW_BLOCK" | \
@@ -525,8 +588,31 @@ grep -Eq 'ip[[:space:]]+link[[:space:]]+set|iw[[:space:]].*[[:space:]]connect|wp
   fail "runtime-switch: QA script must not configure or associate links"
 grep -Fq 'cat "$STATS"' "$QA_SCRIPT" || \
   fail "runtime-switch: QA stats capture missing"
+QA_SWITCH_HELPER="$(extract_c_function '^switch_iface\(\)' "$QA_SCRIPT")" || \
+  fail "runtime-switch: QA contextual switch helper missing"
+printf '%s\n' "$QA_SWITCH_HELPER" | \
+  grep -Fq 'if ! printf' || \
+  fail "runtime-switch: QA writes are not contextually guarded"
+[ "$(grep -Fc '> "$IFACE_PARAM"' "$QA_SCRIPT" || true)" -eq 1 ] || \
+  fail "runtime-switch: every QA sysfs write must use switch_iface"
+printf '%s\n' "$QA_SWITCH_HELPER" | grep -Fq 'iteration=$iteration' || \
+  fail "runtime-switch: QA write failure omits iteration context"
+grep -Fq 'MAX_SWITCH_LOOPS=' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA loop upper bound missing"
+grep -Fq '10#$SWITCH_LOOPS' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA loop count is not canonicalized as decimal"
+grep -Fq 'SWITCH_LOOPS must use canonical decimal' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA canonical decimal rejection missing"
+grep -Fq 'dmesg > "$DMESG_BASELINE"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA dmesg baseline missing"
+grep -Fq 'head -n "$dmesg_baseline_lines" "$DMESG_AFTER"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA dmesg prefix/rotation validation missing"
+grep -Fq 'tail -n "+$((dmesg_baseline_lines + 1))"' "$QA_SCRIPT" || \
+  fail "runtime-switch: QA full dmesg delta extraction missing"
 grep -Fq "grep -E 'BUG:|WARNING:|use-after-free|lockdep'" "$QA_SCRIPT" || \
   fail "runtime-switch: QA kernel-warning check missing"
+grep -Fq 'tail -200' "$QA_SCRIPT" && \
+  fail "runtime-switch: QA warning scan is still tail-limited"
 
 grep -Fq '`bridge_runtime_switch` | int | 0444' "$PARAM_DOC" || \
   fail "runtime-switch: parameter docs missing 0444 gate semantics"
@@ -542,6 +628,28 @@ grep -Fq 'iw dev mlan0 link' "$QA_RUNBOOK" || \
   fail "runtime-switch: runbook mlan0 association check missing"
 grep -Fq 'iw dev mlan1 link' "$QA_RUNBOOK" || \
   fail "runtime-switch: runbook mlan1 association check missing"
+T15_RUNBOOK_BLOCK="$(awk '
+  /^## T-15 / { in_section=1 }
+  in_section && /^---$/ { exit }
+  in_section { print }
+' "$QA_RUNBOOK")"
+grep -Fq 'set -o pipefail' <<< "$T15_RUNBOOK_BLOCK" || \
+  fail "runtime-switch: runbook QA pipeline does not preserve failure"
+grep -Fq '2>&1 | tee /tmp/bridge-switch-qa.log' <<< "$T15_RUNBOOK_BLOCK" || \
+  fail "runtime-switch: runbook QA pipeline does not capture stderr"
+grep -Fq 'exit 1' <<< "$T15_RUNBOOK_BLOCK" || \
+  fail "runtime-switch: runbook does not stop after QA failure"
+printf '%s\n' "$T15_RUNBOOK_BLOCK" | awk '
+  /set -o pipefail/ { pipefail=NR }
+  /if ! FROM_IF=/ { guarded=NR }
+  /bridge_runtime_switch_qa\.sh 2>&1 \| tee/ { pipeline=NR }
+  /exit 1/ { stop=NR }
+  /^fi$/ && stop && !closed { closed=NR }
+  /capture_switch_state after/ { after=NR }
+  END { exit !(pipefail && guarded && pipeline && stop && closed && after &&
+               pipefail < guarded && guarded < pipeline && pipeline < stop &&
+               stop < closed && closed < after) }
+' || fail "runtime-switch: runbook failure guard must precede after-snapshots"
 
 # --- v2 B5: oom_drops counter ---
 grep -Eq 'atomic_long_t\s+oom_drops' "$ROOT/mlinux/moal_bridge.h" || \

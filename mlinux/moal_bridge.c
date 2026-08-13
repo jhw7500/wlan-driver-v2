@@ -1344,21 +1344,29 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
  */
 
 static struct kobject *moal_bridge_kobj;
-static struct moal_bridge *moal_bridge_for_sysfs;
+static struct moal_bridge __rcu *moal_bridge_for_sysfs;
 static char moal_bridge_iface_for_sysfs[IFNAMSIZ];
 static char moal_bridge_peer_for_sysfs[IFNAMSIZ];
 
 static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			  char *buf)
 {
-	struct moal_bridge *br = READ_ONCE(moal_bridge_for_sysfs);
+	struct moal_bridge *br;
 	moal_handle *handle;
+	ssize_t ret;
 	long w2p_n, p2w_n, w2p_avg, p2w_avg;
 	long rx_gap_n, rx_gap_avg;
 	long rx_pull_n, rx_pull_avg, tx_write_n, tx_write_avg;
 
-	if (!br)
-		return scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
+	/* The whole snapshot stays in one RCU read-side critical section.
+	 * Teardown clears this publication and waits for every in-flight show
+	 * callback before the bridge (or its owning handle) can be freed. */
+	rcu_read_lock();
+	br = rcu_dereference(moal_bridge_for_sysfs);
+	if (!br) {
+		ret = scnprintf(buf, PAGE_SIZE, "bridge: inactive\n");
+		goto out_rcu;
+	}
 	handle = (moal_handle *)br->handle;
 
 	/* In-driver one-way dwell (producer entry -> dev_queue_xmit submit),
@@ -1393,7 +1401,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 	tx_write_avg = tx_write_n > 0 ?
 		atomic_long_read(&handle->tx_write_sum_us) / tx_write_n : 0;
 
-	return scnprintf(buf, PAGE_SIZE,
+	ret = scnprintf(buf, PAGE_SIZE,
 			 "w2p fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d dwell_avg=%ldus dwell_max=%ldus n=%ld\n"
 			 "p2w fwd=%ld bytes=%ld drop=%ld err=%ld oom=%ld qlen=%d dwell_avg=%ldus dwell_max=%ldus n=%ld\n"
 			 "active=%d peer_released=%d\n"
@@ -1443,6 +1451,10 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&bridge_switch_fail),
 			 atomic_long_read(&bridge_rollback_ok),
 			 atomic_long_read(&bridge_rollback_fail));
+
+out_rcu:
+	rcu_read_unlock();
+	return ret;
 }
 
 static struct kobj_attribute stats_attr = __ATTR_RO(stats);
@@ -1475,13 +1487,17 @@ static int moal_bridge_sysfs_init(struct moal_bridge *br)
 		moal_bridge_kobj = NULL;
 		return ret;
 	}
-	WRITE_ONCE(moal_bridge_for_sysfs, br);
+	rcu_assign_pointer(moal_bridge_for_sysfs, br);
 	return 0;
 }
 
 static void moal_bridge_sysfs_deinit(void)
 {
-	WRITE_ONCE(moal_bridge_for_sysfs, NULL);
+	/* stats_show takes no lifecycle/sysfs locks, so waiting here cannot form
+	 * a lock cycle. The grace period drains every callback that obtained br
+	 * (and br->handle) before bridge teardown proceeds toward kfree(br). */
+	rcu_assign_pointer(moal_bridge_for_sysfs, NULL);
+	synchronize_rcu();
 	if (moal_bridge_kobj) {
 		sysfs_remove_file(moal_bridge_kobj, &stats_attr.attr);
 		kobject_put(moal_bridge_kobj);
