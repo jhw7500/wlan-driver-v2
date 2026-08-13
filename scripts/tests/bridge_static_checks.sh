@@ -14,24 +14,72 @@ fail() {
 }
 
 extract_c_function() {
-  awk '
-    $0 ~ start { in_function=1 }
-    in_function {
-      print
-      line=$0
-      opens=gsub(/\{/, "{", line)
-      closes=gsub(/\}/, "}", line)
-      if (opens)
-        saw_open=1
-      depth += opens - closes
-      if (saw_open && depth == 0)
-        exit
-    }
-  ' start="$1" "$2"
+  extract_c_block "$(cat "$2")" "$1"
 }
 
 extract_switch_block() {
   extract_c_function '^int moal_bridge_switch_iface' "$1"
+}
+
+# Extract the matching braced region for a start regex. Scan braces in source
+# order so a line such as "} else {" closes the first branch before opening
+# the next; unlike a sed range, nested blocks do not truncate the result.
+extract_c_block() {
+  printf '%s\n' "$1" | START_PATTERN="$2" awk '
+    BEGIN { start=ENVIRON["START_PATTERN"] }
+    !in_block && $0 ~ start { in_block=1 }
+    in_block {
+      print
+      scan=$0
+      if (!saw_open) {
+        open_at=index(scan, "{")
+        if (!open_at)
+          next
+        scan=substr(scan, open_at)
+      }
+      for (i=1; i <= length(scan); i++) {
+        token=substr(scan, i, 1)
+        if (token == "{") {
+          depth++
+          saw_open=1
+        } else if (token == "}" && saw_open) {
+          depth--
+          if (depth == 0)
+            exit
+        }
+      }
+    }
+    END { exit !(in_block && saw_open && depth == 0) }
+  '
+}
+
+# Return exactly the statement controlled by a guard, accepting both the
+# repository's current unbraced style and a semantics-equivalent braced form.
+extract_guarded_control() {
+  local guard_line
+
+  guard_line="$(printf '%s\n' "$1" | grep -Em1 "$2")" || return 1
+  if [[ "$guard_line" == *"{"* ]]; then
+    extract_c_block "$1" "$2"
+    return
+  fi
+
+  printf '%s\n' "$1" | START_PATTERN="$2" awk '
+    BEGIN { start=ENVIRON["START_PATTERN"] }
+    !found && $0 ~ start {
+      found=1
+      print
+      next
+    }
+    found {
+      print
+      if (/;/) {
+        saw_statement=1
+        exit
+      }
+    }
+    END { exit !(found && saw_statement) }
+  '
 }
 
 check_no_direct_return_while_locked() {
@@ -41,6 +89,30 @@ check_no_direct_return_while_locked() {
     acquired && /^[[:space:]]*return[[:space:]]/ { bad=1 }
     END { exit bad }
   '
+}
+
+check_switch_success_contract() {
+  local success_block guarded_control old_mode_clear_count
+
+  success_block="$(extract_c_block "$1" \
+    '^[[:space:]]*if \(!ret\) \{')" || return 1
+  guarded_control="$(extract_guarded_control "$success_block" \
+    '^[[:space:]]*if \(old\.old_owner != target\.handle\)')" || return 1
+  printf '%s\n' "$guarded_control" | \
+    grep -Fq 'old.old_owner->params.bridge_mode = 0' || return 1
+  if printf '%s\n' "$guarded_control" | \
+      grep -Fq 'target.handle->params.bridge_mode = 1'; then
+    return 1
+  fi
+  old_mode_clear_count="$(printf '%s\n' "$success_block" | \
+    grep -Fc 'old.old_owner->params.bridge_mode = 0' || true)"
+  [ "$old_mode_clear_count" -eq 1 ] || return 1
+  printf '%s\n' "$success_block" | \
+    grep -Fq 'target.handle->params.bridge_mode = 1' || return 1
+  printf '%s\n' "$success_block" | \
+    grep -Fq 'bridge_owner = target.handle' || return 1
+  printf '%s\n' "$success_block" | \
+    grep -Fq 'atomic_long_inc(&bridge_switch_ok)' || return 1
 }
 
 grep -q 'bridge_keepalive_ms_present' "$MAIN_H" || fail "keepalive presence flag missing from moal_mod_para"
@@ -196,7 +268,7 @@ printf '%s\n' "$SWITCH_BLOCK" | awk '
   /__moal_bridge_deinit_locked/ && !deinit { deinit=NR }
   END { exit !(same && deinit && same < deinit) }
 ' || fail "runtime-switch: same-target no-op must precede teardown"
-SAME_TARGET_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/if (target.dev == bridge_owner->bridge->wlan_dev) {/,/^[[:space:]]*}/p')"
+SAME_TARGET_BLOCK="$(extract_c_block "$SWITCH_BLOCK" '^[[:space:]]*if \(target\.dev == bridge_owner->bridge->wlan_dev\) \{')"
 printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq 'ret = 0' || fail "runtime-switch: same-target branch must succeed"
 printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq 'goto out_unlock' || fail "runtime-switch: same-target branch must use shared releases"
 printf '%s\n' "$SAME_TARGET_BLOCK" | grep -Fq '__moal_bridge_deinit_locked' && fail "runtime-switch: same-target branch must not tear down"
@@ -246,21 +318,63 @@ printf '%s\n' "$SWITCH_BLOCK" | grep -q 'old.old_owner->params.bridge_mode = 0' 
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: rollback-failure target disable missing"
 printf '%s\n' "$SWITCH_BLOCK" | grep -q 'br->wlan_dev = target' && fail "runtime-switch: direct wlan pointer hot-swap forbidden"
 
-SWITCH_SUCCESS_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/^[[:space:]]*if (!ret) {/,/^[[:space:]]*}/p')"
-printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'if (old.old_owner != target.handle)' || fail "runtime-switch: cross-handle guard must be in success branch"
-printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable must be in success branch"
-printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'target.handle->params.bridge_mode = 1' || fail "runtime-switch: target mode publish must be in success branch"
-printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'bridge_owner = target.handle' || fail "runtime-switch: target owner publish must be in success branch"
-printf '%s\n' "$SWITCH_SUCCESS_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_ok)' || fail "runtime-switch: switch_ok must be in success branch"
+check_switch_success_contract "$SWITCH_BLOCK" || \
+  fail "runtime-switch: target success branch contract missing"
 
-ROLLBACK_OK_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/^[[:space:]]*if (!rollback_ret) {/,/^[[:space:]]*} else {/p')"
+# Mutation pair: ordinary braces around the alias guard must remain valid,
+# while moving old-mode clear outside that guard must be rejected.
+POSITIVE_BRACED_SWITCH="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /if \(old\.old_owner != target\.handle\)/ {
+    print $0 " {"
+    bracing=1
+    next
+  }
+  bracing && /old\.old_owner->params\.bridge_mode = 0/ {
+    print
+    print "\t\t}"
+    bracing=0
+    braced=1
+    next
+  }
+  { print }
+  END { exit !braced }
+')"
+check_switch_success_contract "$POSITIVE_BRACED_SWITCH" || \
+  fail "runtime-switch: equivalent braced-guard positive fixture was rejected"
+printf 'PASS: runtime-switch equivalent braced-guard positive fixture accepted\n'
+
+NEGATIVE_ALIAS_SWITCH="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /if \(old\.old_owner != target\.handle\)/ {
+    print
+    swapping=1
+    next
+  }
+  swapping && /old\.old_owner->params\.bridge_mode = 0/ {
+    print "\t\ttarget.handle->params.bridge_mode = 1;"
+    next
+  }
+  swapping && /target\.handle->params\.bridge_mode = 1/ {
+    print "\t\told.old_owner->params.bridge_mode = 0;"
+    swapping=0
+    swapped=1
+    next
+  }
+  { print }
+  END { exit !swapped }
+')"
+if check_switch_success_contract "$NEGATIVE_ALIAS_SWITCH"; then
+  fail "runtime-switch: unconditional old-mode-clear negative fixture was accepted"
+fi
+printf 'PASS: runtime-switch unconditional old-mode-clear negative fixture rejected\n'
+
+ROLLBACK_OK_BLOCK="$(extract_c_block "$SWITCH_BLOCK" '^[[:space:]]*if \(!rollback_ret\) \{')"
 printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = old.old_mode' || fail "runtime-switch: old mode restore must be in rollback-success branch"
 printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'bridge_owner = old.old_owner' || fail "runtime-switch: old owner restore must be in rollback-success branch"
 printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_switch_fail)' || fail "runtime-switch: switch_fail must count rollback success"
 printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'atomic_long_inc(&bridge_rollback_ok)' || fail "runtime-switch: rollback_ok must be in rollback-success branch"
 printf '%s\n' "$ROLLBACK_OK_BLOCK" | grep -Fq 'ret = target_ret' || fail "runtime-switch: rollback success must preserve target errno"
 
-ROLLBACK_FAIL_BLOCK="$(printf '%s\n' "$SWITCH_BLOCK" | sed -n '/^[[:space:]]*} else {/,/^[[:space:]]*}/p')"
+ROLLBACK_FAIL_BLOCK="$(extract_c_block "$SWITCH_BLOCK" '^[[:space:]]*} else \{')"
 printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'old.old_owner->params.bridge_mode = 0' || fail "runtime-switch: old mode disable must be in rollback-failure branch"
 printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'target.handle->params.bridge_mode = 0' || fail "runtime-switch: target mode disable must be in rollback-failure branch"
 printf '%s\n' "$ROLLBACK_FAIL_BLOCK" | grep -Fq 'bridge_owner = NULL' || fail "runtime-switch: owner clear must be in rollback-failure branch"
