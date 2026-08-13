@@ -418,4 +418,12 @@ grep -q 'ether_addr_copy(((struct ethhdr \*)skb2->data)->h_source' "$BRIDGE_C" |
 P2W_PT_INJECT="$(printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | grep -c 'netif_rx(skb)')"
 [ "${P2W_PT_INJECT:-0}" -ge 1 ] || fail "hairpin: pt_func REPLY inject 분기 누락"
 
+TARGET_BLOCK="$(grep -n -A100 -m1 '^static int moal_bridge_find_target' "$BRIDGE_C")"
+for token in 'm_handle\[' MLAN_BSS_TYPE_STA NETREG_REGISTERED \
+             netif_device_present netif_running media_connected \
+             HardwareStatusReady fw_reseting surprise_removed; do
+  printf '%s\n' "$TARGET_BLOCK" | grep -q "$token" || \
+    fail "runtime-switch: target validator missing $token"
+done
+
 printf 'PASS: keepalive, bounded queues, worker accounting, F1 RCU drain ordering + atomic peer_released + hairpin smoke enforced\n'

@@ -32,6 +32,13 @@ extern int bridge_keepalive_ms;
  * their definitions appear later in the file. */
 static inline bool moal_bridge_dev_ready(const struct net_device *dev);
 
+struct moal_bridge_target {
+	moal_handle *handle;
+	moal_private *priv;
+	struct net_device *dev;
+	int bss_index;
+};
+
 /*
  * ---------- Keepalive Timer ----------
  *
@@ -1445,6 +1452,46 @@ static void moal_bridge_sysfs_deinit(void)
 		kobject_put(moal_bridge_kobj);
 		moal_bridge_kobj = NULL;
 	}
+}
+
+/* Caller holds AddRemoveCardSem. */
+static int moal_bridge_find_target(const char *ifname,
+				   struct moal_bridge_target *target)
+{
+	moal_handle *handle;
+	moal_private *priv;
+	int i, j;
+
+	if (!ifname || !ifname[0] || !target)
+		return -EINVAL;
+	for (i = 0; i < MAX_MLAN_ADAPTER; i++) {
+		handle = m_handle[i];
+		if (!handle)
+			continue;
+		for (j = 0; j < MIN(handle->priv_num, MLAN_MAX_BSS_NUM); j++) {
+			priv = handle->priv[j];
+			if (!priv || !priv->netdev ||
+			    strcmp(priv->netdev->name, ifname))
+				continue;
+			if (priv->bss_type != MLAN_BSS_TYPE_STA)
+				return -EINVAL;
+			if (handle->surprise_removed || handle->fw_reseting ||
+			    handle->hardware_status != HardwareStatusReady)
+				return -EBUSY;
+			if (priv->netdev->reg_state != NETREG_REGISTERED ||
+			    !netif_device_present(priv->netdev) ||
+			    !netif_running(priv->netdev))
+				return -ENETDOWN;
+			if (READ_ONCE(priv->media_connected) != MTRUE)
+				return -ENOLINK;
+			target->handle = handle;
+			target->priv = priv;
+			target->dev = priv->netdev;
+			target->bss_index = j;
+			return 0;
+		}
+	}
+	return -ENODEV;
 }
 
 /*
