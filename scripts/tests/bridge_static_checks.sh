@@ -257,6 +257,7 @@ check_reset_teardown_order() {
 
 check_post_reset_bridge_contract() {
   local post_reset="$1" rebuild add_loop add_failure mode_block
+  local acquire_failure_control acquire_failure_tail
 
   rebuild="$(extract_c_block "$post_reset" \
     '^[[:space:]]*if \(!handle->wifi_hal_flag\) \{')" || return 1
@@ -268,6 +269,22 @@ check_post_reset_bridge_contract() {
     return 1
   mode_block="$(extract_c_block "$rebuild" \
     '^[[:space:]]*if \(handle->params.bridge_mode\) \{')" || return 1
+  acquire_failure_control="$(extract_guarded_control "$rebuild" \
+    '^[[:space:]]*if \(MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)\)')" || \
+    return 1
+  printf '%s\n' "$acquire_failure_control" | \
+    grep -Eq '^[[:space:]]*goto card_sem_acquire_failed;' || return 1
+  acquire_failure_tail="$(printf '%s\n' "$post_reset" | awk '
+    /^card_sem_acquire_failed:/ { in_tail=1 }
+    in_tail { print }
+    END { exit !in_tail }
+  ')" || return 1
+  printf '%s\n' "$acquire_failure_tail" | \
+    grep -Eq '^out:$' || return 1
+  printf '%s\n' "$acquire_failure_tail" | \
+    grep -Eq '(^|[^[:alnum:]_])(handle|priv)([^[:alnum:]_]|$)' && return 1
+  printf '%s\n' "$acquire_failure_tail" | \
+    grep -Fq 'MOAL_REL_SEMAPHORE(&AddRemoveCardSem)' && return 1
 
   [ "$(printf '%s\n' "$post_reset" | \
     grep -Fc 'MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)' || true)" -eq 1 ] || \
@@ -293,13 +310,17 @@ check_post_reset_bridge_contract() {
     /^done:/ { done=NR }
     /if \(card_sem_held\)/ { release_guard=NR }
     /MOAL_REL_SEMAPHORE\(&AddRemoveCardSem\)/ { release=NR }
+    /^card_sem_acquire_failed:/ { acquire_failed=NR }
+    /^out:/ { out=NR }
     /^[[:space:]]*return;/ { final_return=NR }
     END { exit !(acquire && held && deinit && remove && add && mode && init &&
-                 done && release_guard && release && final_return &&
+                 done && release_guard && release && acquire_failed && out &&
+                 final_return &&
                  acquire < held && held < deinit && deinit < remove &&
                  remove < add && add < mode && mode < init && init < done &&
                  done < release_guard && release_guard < release &&
-                 release < final_return) }
+                 release < acquire_failed && acquire_failed < out &&
+                 out < final_return) }
   ' || return 1
   printf '%s\n' "$post_reset" | awk '
     /card_sem_held = true/ { held=1; next }
@@ -790,6 +811,35 @@ if check_post_reset_bridge_contract "$POST_RESET_NO_RELEASE"; then
   fail "runtime-switch: post-reset missing-release negative fixture was accepted"
 fi
 printf 'PASS: runtime-switch post-reset missing-release negative fixture rejected\n'
+
+POST_RESET_FAILED_ACQUIRE_TO_CLEANUP="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
+  /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { in_acquire=1 }
+  in_acquire && /goto card_sem_acquire_failed;/ && !mutated {
+    sub(/goto card_sem_acquire_failed;/, "goto done;")
+    mutated=1
+  }
+  { print }
+  END { exit !mutated }
+')"
+if check_post_reset_bridge_contract "$POST_RESET_FAILED_ACQUIRE_TO_CLEANUP"; then
+  fail "runtime-switch: post-reset failed-acquire cleanup mutation was accepted"
+fi
+printf 'PASS: runtime-switch post-reset failed-acquire cleanup mutation rejected\n'
+
+POST_RESET_ACQUIRE_FAILURE_HANDLE_TOUCH="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
+  /^card_sem_acquire_failed:/ && !injected {
+    print
+    print "\thandle->fw_reload = MFALSE;"
+    injected=1
+    next
+  }
+  { print }
+  END { exit !injected }
+')"
+if check_post_reset_bridge_contract "$POST_RESET_ACQUIRE_FAILURE_HANDLE_TOUCH"; then
+  fail "runtime-switch: post-reset acquire-failure handle touch was accepted"
+fi
+printf 'PASS: runtime-switch post-reset acquire-failure handle-touch mutation rejected\n'
 
 POST_RESET_DUPLICATE_INIT="$(printf '%s\n' "$POST_RESET_BLOCK" | awk '
   /if \(moal_bridge_init\(handle,/ && !injected {

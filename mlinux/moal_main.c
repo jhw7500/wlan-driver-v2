@@ -14338,7 +14338,7 @@ static void woal_post_reset(moal_handle *handle)
 		 * AddRemoveCardSem. Take it before the bridge wrappers (which nest
 		 * bridge_lifecycle_lock) and keep it across the direct netdev rebuild. */
 		if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
-			goto done;
+			goto card_sem_acquire_failed;
 		card_sem_held = true;
 		PRINTM(MMSG, "wlan: post_reset remove/add interface\n");
 		handle->surprise_removed = MTRUE;
@@ -14462,6 +14462,11 @@ done:
 	}
 	if (card_sem_held)
 		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	goto out;
+
+card_sem_acquire_failed:
+	PRINTM(MERROR, "wlan: post_reset card semaphore acquisition interrupted\n");
+out:
 	LEAVE();
 	return;
 }
