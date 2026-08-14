@@ -39,6 +39,7 @@ struct moal_bridge_pending_request {
 static DEFINE_SPINLOCK(bridge_pending_lock);
 static struct moal_bridge_pending_request bridge_pending;
 static bool bridge_pending_events_enabled;
+static bool bridge_pending_event_during_switch;
 static void moal_bridge_pending_work_fn(struct work_struct *work);
 static DECLARE_WORK(bridge_pending_work, moal_bridge_pending_work_fn);
 
@@ -85,7 +86,11 @@ static unsigned long moal_bridge_pending_set(const char *ifname)
 			sizeof(bridge_pending.ifname) - 1);
 		bridge_pending.ifname[sizeof(bridge_pending.ifname) - 1] = '\0';
 		bridge_pending.state = MOAL_BR_PENDING_WAITING;
+		bridge_pending_event_during_switch = false;
 		generation = bridge_pending.generation;
+		/* Always recheck once after admission.  This closes the edge window
+		 * between the caller's not-ready sample and WAITING publication. */
+		schedule_work(&bridge_pending_work);
 	}
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
 	return generation;
@@ -118,25 +123,47 @@ static bool moal_bridge_pending_clear_if(const char *ifname,
 		bridge_pending.state = MOAL_BR_PENDING_NONE;
 		bridge_pending.ifname[0] = '\0';
 		bridge_pending.generation++;
+		bridge_pending_event_during_switch = false;
 		cleared = true;
 	}
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
 	return cleared;
 }
 
-static bool moal_bridge_pending_state_if(
-	const char *ifname, unsigned long generation,
-	enum moal_bridge_pending_state from,
-	enum moal_bridge_pending_state to)
+static bool moal_bridge_pending_begin_attempt(const char *ifname,
+					       unsigned long generation)
 {
 	unsigned long flags;
 	bool changed = false;
 
 	spin_lock_irqsave(&bridge_pending_lock, flags);
-	if (bridge_pending.state == from &&
+	if (bridge_pending.state == MOAL_BR_PENDING_WAITING &&
 	    bridge_pending.generation == generation &&
 	    !strcmp(bridge_pending.ifname, ifname)) {
-		bridge_pending.state = to;
+		bridge_pending.state = MOAL_BR_PENDING_SWITCHING;
+		bridge_pending_event_during_switch = false;
+		changed = true;
+	}
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	return changed;
+}
+
+static bool moal_bridge_pending_restore_waiting(const char *ifname,
+						 unsigned long generation)
+{
+	unsigned long flags;
+	bool changed = false;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (bridge_pending.state == MOAL_BR_PENDING_SWITCHING &&
+	    bridge_pending.generation == generation &&
+	    !strcmp(bridge_pending.ifname, ifname)) {
+		bridge_pending.state = MOAL_BR_PENDING_WAITING;
+		if (bridge_pending_event_during_switch &&
+		    bridge_pending_events_enabled &&
+		    READ_ONCE(bridge_runtime_deferred) == 1)
+			schedule_work(&bridge_pending_work);
+		bridge_pending_event_during_switch = false;
 		changed = true;
 	}
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
@@ -171,20 +198,73 @@ static const char *moal_bridge_pending_state_name(
 	return "none";
 }
 
-static void moal_bridge_pending_schedule_event(unsigned long event)
+static void moal_bridge_pending_kick(void)
 {
 	unsigned long flags;
 
-	(void)event;
 	spin_lock_irqsave(&bridge_pending_lock, flags);
-	/* A rollback rebuild replays notifier events while the current attempt is
-	 * still SWITCHING.  Ignore those replays so a deterministic transaction
-	 * failure cannot self-requeue forever; a later link event retries WAITING. */
 	if (bridge_pending_events_enabled &&
 	    READ_ONCE(bridge_runtime_deferred) == 1 &&
 	    bridge_pending.state == MOAL_BR_PENDING_WAITING)
 		schedule_work(&bridge_pending_work);
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+}
+
+static void moal_bridge_pending_schedule_event(
+	unsigned long event, const struct net_device *dev,
+	bool notifier_published)
+{
+	char cancelled_ifname[IFNAMSIZ];
+	unsigned long cancelled_generation = 0;
+	unsigned long flags;
+	bool cancelled = false;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (!bridge_pending_events_enabled ||
+	    READ_ONCE(bridge_runtime_deferred) != 1)
+		goto out_unlock;
+
+	/* CHANGENAME exposes only the new name, so conservatively invalidate the
+	 * sole pending identity before RTNL permits old-name reuse.  UNREGISTER
+	 * still exposes the old name and can cancel only the matching request. */
+	if (event == NETDEV_CHANGENAME ||
+	    (event == NETDEV_UNREGISTER && dev &&
+	     bridge_pending.state != MOAL_BR_PENDING_NONE &&
+	     !strcmp(bridge_pending.ifname, dev->name))) {
+		if (bridge_pending.state != MOAL_BR_PENDING_NONE) {
+			strncpy(cancelled_ifname, bridge_pending.ifname,
+				sizeof(cancelled_ifname) - 1);
+			cancelled_ifname[sizeof(cancelled_ifname) - 1] = '\0';
+			cancelled_generation = bridge_pending.generation;
+			bridge_pending.state = MOAL_BR_PENDING_NONE;
+			bridge_pending.ifname[0] = '\0';
+			bridge_pending.generation++;
+			bridge_pending_event_during_switch = false;
+			cancelled = true;
+		}
+		goto out_unlock;
+	}
+
+	if ((event != NETDEV_UP && event != NETDEV_CHANGE) || !dev ||
+	    bridge_pending.state == MOAL_BR_PENDING_NONE ||
+	    strcmp(bridge_pending.ifname, dev->name))
+		goto out_unlock;
+	/* register_netdevice_notifier() replays device state before this bridge
+	 * instance reaches its published point.  Ignore that synthetic replay so
+	 * a rollback rebuild cannot create an unbounded retry loop. */
+	if (!notifier_published)
+		goto out_unlock;
+	if (bridge_pending.state == MOAL_BR_PENDING_WAITING)
+		schedule_work(&bridge_pending_work);
+	else if (bridge_pending.state == MOAL_BR_PENDING_SWITCHING)
+		bridge_pending_event_during_switch = true;
+
+out_unlock:
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	if (cancelled)
+		PRINTM(MMSG,
+		       "bridge: deferred switch cancelled target=%s generation=%lu event=%lu\n",
+		       cancelled_ifname, cancelled_generation, event);
 }
 
 struct moal_bridge_target {
@@ -1449,7 +1529,8 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 
 	if (event == NETDEV_UP || event == NETDEV_CHANGE ||
 	    event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER)
-		moal_bridge_pending_schedule_event(event);
+		moal_bridge_pending_schedule_event(event, dev,
+						   atomic_read(&br->published));
 
 	if (dev != br->peer_dev && dev != br->wlan_dev)
 		return NOTIFY_DONE;
@@ -2240,7 +2321,7 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 		handle->params.bridge_keepalive_idle_ms);
 	if (!ret) {
 		bridge_owner = handle;
-		moal_bridge_pending_schedule_event(NETDEV_CHANGE);
+		moal_bridge_pending_kick();
 	}
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
@@ -2377,7 +2458,7 @@ static int __moal_bridge_resume_owner(void *expected_handle,
 		saved.keepalive_idle_ms);
 	if (!ret) {
 		bridge_owner = saved.handle;
-		moal_bridge_pending_schedule_event(NETDEV_CHANGE);
+		moal_bridge_pending_kick();
 	}
 	dev_put(saved.peer_dev);
 	mutex_unlock(&bridge_lifecycle_lock);
@@ -2523,6 +2604,7 @@ void moal_bridge_pending_cleanup(void)
 	bridge_pending.state = MOAL_BR_PENDING_NONE;
 	bridge_pending.ifname[0] = '\0';
 	bridge_pending.generation++;
+	bridge_pending_event_during_switch = false;
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
 	cancel_work_sync(&bridge_pending_work);
 }
@@ -2621,18 +2703,20 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 				     &pending_generation, &pending_state);
 
 	rtnl_lock();
-	ret = moal_bridge_find_target(ifname, &target);
-	if (ret) {
+	/* Rename/unregister cancellation runs under RTNL and advances the pending
+	 * generation.  Recheck while holding RTNL before name resolution so the
+	 * old name cannot be reused to resolve an unrelated MOAL identity. */
+	if (expected_generation &&
+	    !moal_bridge_pending_matches(ifname, expected_generation)) {
 		rtnl_unlock();
-		if (expected_generation &&
-		    (ret == -ENODEV || ret == -EINVAL || ret == -ENETDOWN))
-			ret = -ESTALE;
+		ret = -ECANCELED;
 		goto out_unlock;
 	}
-	/* A write of the current active identity is a cancellation request, not
-	 * an operational readiness probe.  This remains a successful no-op even
-	 * when carrier or association state is changing. */
-	if (target.dev == bridge_owner->bridge->wlan_dev) {
+	/* The current owner's pointer identity is already pinned by the card and
+	 * lifecycle locks.  Compare its RTNL-stable live name before resolver
+	 * reset/presence predicates so cancellation remains available during a
+	 * temporary reset or unregister transition. */
+	if (!strcmp(br->wlan_dev->name, ifname)) {
 		rtnl_unlock();
 		if (!expected_generation &&
 		    pending_state != MOAL_BR_PENDING_NONE &&
@@ -2648,7 +2732,14 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 		       ifname);
 		goto out_unlock;
 	}
-
+	ret = moal_bridge_find_target(ifname, &target);
+	if (ret) {
+		rtnl_unlock();
+		if (expected_generation &&
+		    (ret == -ENODEV || ret == -EINVAL || ret == -ENETDOWN))
+			ret = -ESTALE;
+		goto out_unlock;
+	}
 	old.old_owner = bridge_owner;
 	old.old_bss_index = old.old_owner->bridge_effective_wlan_idx;
 	spin_lock_irqsave(&br->name_lock, flags);
@@ -2765,10 +2856,10 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 	if (!rollback_ret) {
 		bridge_owner = old.old_owner;
 		if (expected_generation)
-			moal_bridge_pending_state_if(
-				ifname, expected_generation,
-				MOAL_BR_PENDING_SWITCHING,
-				MOAL_BR_PENDING_WAITING);
+			moal_bridge_pending_restore_waiting(
+				ifname, expected_generation);
+		else
+			moal_bridge_pending_kick();
 		atomic_long_inc(&bridge_switch_fail);
 		atomic_long_inc(&bridge_rollback_ok);
 		ret = target_ret;
@@ -2822,9 +2913,7 @@ static void moal_bridge_pending_work_fn(struct work_struct *work)
 	(void)work;
 	moal_bridge_pending_snapshot(ifname, sizeof(ifname), &generation, &state);
 	if (state != MOAL_BR_PENDING_WAITING ||
-	    !moal_bridge_pending_state_if(ifname, generation,
-					  MOAL_BR_PENDING_WAITING,
-					  MOAL_BR_PENDING_SWITCHING))
+	    !moal_bridge_pending_begin_attempt(ifname, generation))
 		return;
 
 	PRINTM(MMSG,
@@ -2856,9 +2945,7 @@ static void moal_bridge_pending_work_fn(struct work_struct *work)
 
 	if (ret == -ENETDOWN || ret == -ENOLINK || ret == -EBUSY ||
 	    ret == -EAGAIN || ret == -ERESTARTSYS) {
-		if (moal_bridge_pending_state_if(ifname, generation,
-						 MOAL_BR_PENDING_SWITCHING,
-						 MOAL_BR_PENDING_WAITING))
+		if (moal_bridge_pending_restore_waiting(ifname, generation))
 			PRINTM(MMSG,
 			       "bridge: deferred switch waiting target=%s generation=%lu err=%d\n",
 			       ifname, generation, ret);
@@ -2874,9 +2961,7 @@ static void moal_bridge_pending_work_fn(struct work_struct *work)
 		return;
 	}
 
-	if (moal_bridge_pending_state_if(ifname, generation,
-					 MOAL_BR_PENDING_SWITCHING,
-					 MOAL_BR_PENDING_WAITING))
+	if (moal_bridge_pending_restore_waiting(ifname, generation))
 		PRINTM(MWARN,
 		       "bridge: deferred switch retained target=%s generation=%lu err=%d\n",
 		       ifname, generation, ret);

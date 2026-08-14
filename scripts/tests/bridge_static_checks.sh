@@ -193,7 +193,7 @@ check_pending_notifier_contract() {
     /event == NETDEV_CHANGE/ && !change { change=NR }
     /event == NETDEV_CHANGENAME/ && !rename { rename=NR }
     /event == NETDEV_UNREGISTER/ && !unregister { unregister=NR }
-    /moal_bridge_pending_schedule_event\(event\)/ { schedule=NR }
+    /moal_bridge_pending_schedule_event\(event, dev,/ { schedule=NR }
     /dev != br->peer_dev && dev != br->wlan_dev/ { filter=NR }
     /moal_bridge_switch_iface|__moal_bridge_init_locked|__moal_bridge_deinit_locked|mutex_lock|rtnl_lock|down\(&AddRemoveCardSem\)/ {
       direct=NR
@@ -304,6 +304,109 @@ check_bridge_getter_separation_contract() {
     return 1
   fi
   return 0
+}
+
+check_pending_admission_kick_contract() {
+  local setter="$1"
+
+  printf '%s\n' "$setter" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_WAITING/ { waiting=NR }
+    /bridge_pending_event_during_switch = false/ { reset=NR }
+    /schedule_work\(&bridge_pending_work\)/ { kick=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && waiting && reset && kick && unlock &&
+                 lock < waiting && waiting <= reset && reset < kick &&
+                 kick < unlock) }
+  '
+}
+
+check_pending_switch_event_contract() {
+  local begin="$1" scheduler="$2" restore="$3" init="$4" notifier="$5" flat
+
+  printf '%s\n' "$begin" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending.state == MOAL_BR_PENDING_WAITING/ { waiting=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_SWITCHING/ { switching=NR }
+    /bridge_pending_event_during_switch = false/ { reset=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && waiting && switching && reset && unlock &&
+                 lock < waiting && waiting < switching && switching <= reset &&
+                 reset < unlock) }
+  ' || return 1
+  printf '%s\n' "$scheduler" | awk '
+    /!notifier_published/ { replay=NR }
+    /bridge_pending.state == MOAL_BR_PENDING_SWITCHING/ { switching=NR }
+    /bridge_pending_event_during_switch = true/ { remember=NR }
+    END { exit !(replay && switching && remember && replay < switching &&
+                 switching < remember) }
+  ' || return 1
+  printf '%s\n' "$restore" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending.state == MOAL_BR_PENDING_SWITCHING/ { switching=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_WAITING/ { waiting=NR }
+    /bridge_pending_event_during_switch/ && !dirty { dirty=NR }
+    /schedule_work\(&bridge_pending_work\)/ { kick=NR }
+    /bridge_pending_event_during_switch = false/ { clear=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && switching && waiting && dirty && kick && clear && unlock &&
+                 lock < switching && switching < waiting && waiting <= dirty &&
+                 dirty < kick && kick <= clear && clear < unlock) }
+  ' || return 1
+  printf '%s\n' "$init" | awk '
+    /ret = register_netdevice_notifier/ { notifier=NR }
+    /atomic_set\(&br->published, 1\)/ { published=NR }
+    END { exit !(notifier && published && notifier < published) }
+  ' || return 1
+  flat="$(printf '%s\n' "$notifier" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq \
+    'moal_bridge_pending_schedule_event(event, dev, atomic_read(&br->published))' \
+    <<< "$flat"
+}
+
+check_active_cancel_before_resolve_contract() {
+  local request="$1"
+
+  printf '%s\n' "$request" | awk '
+    /!strcmp\(br->wlan_dev->name, ifname\)/ { active=NR }
+    /moal_bridge_pending_clear_if\(pending_ifname/ && active && !clear { clear=NR }
+    /ret = moal_bridge_find_target\(ifname, &target\)/ { resolve=NR }
+    /ret = moal_bridge_target_link_status\(&target\)/ { readiness=NR }
+    END { exit !(active && clear && resolve && readiness &&
+                 active < clear && clear < resolve && resolve < readiness) }
+  '
+}
+
+check_pending_identity_invalidation_contract() {
+  local notifier="$1" scheduler="$2" request="$3"
+
+  printf '%s\n' "$notifier" | awk '
+    /moal_bridge_pending_schedule_event\(event, dev,/ { schedule=NR }
+    /dev != br->peer_dev && dev != br->wlan_dev/ { filter=NR }
+    END { exit !(schedule && filter && schedule < filter) }
+  ' || return 1
+  printf '%s\n' "$scheduler" | awk '
+    /event == NETDEV_CHANGENAME/ { rename=NR }
+    /event == NETDEV_UNREGISTER/ { unregister=NR }
+    /strcmp\(bridge_pending.ifname, dev->name\)/ && !identity { identity=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_NONE/ { clear=NR }
+    /bridge_pending.generation\+\+/ { advance=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(rename && unregister && identity && clear && advance && unlock &&
+                 rename < clear && unregister < clear && identity < clear &&
+                 clear <= advance && advance < unlock) }
+  ' || return 1
+  printf '%s\n' "$request" | awk '
+    /rtnl_lock\(\)/ && !rtnl { rtnl=NR }
+    /moal_bridge_pending_matches\(ifname, expected_generation\)/ {
+      matches++
+      if (matches == 2) recheck=NR
+    }
+    /ret = moal_bridge_find_target\(ifname, &target\)/ { resolve=NR }
+    END { exit !(rtnl && recheck && resolve && rtnl < recheck &&
+                 recheck < resolve) }
+  '
 }
 
 check_runtime_switch_conf_contract() {
@@ -680,7 +783,10 @@ FIND_TARGET_BLOCK="$(extract_c_function '^static int moal_bridge_find_target' "$
 LINK_STATUS_BLOCK="$(extract_c_function '^static int moal_bridge_target_link_status' "$BRIDGE_C" || true)"
 SWITCH_BLOCK="$(extract_switch_block "$BRIDGE_C")"
 PENDING_REQUEST_BLOCK="$(extract_c_block "$(cat "$BRIDGE_C")" '^struct moal_bridge_pending_request' || true)"
+PENDING_SET_BLOCK="$(extract_c_function '^static unsigned long moal_bridge_pending_set' "$BRIDGE_C" || true)"
 PENDING_SCHEDULER_BLOCK="$(extract_c_function '^static void moal_bridge_pending_schedule_event' "$BRIDGE_C" || true)"
+PENDING_BEGIN_BLOCK="$(extract_c_function '^static bool moal_bridge_pending_begin_attempt' "$BRIDGE_C" || true)"
+PENDING_RESTORE_BLOCK="$(extract_c_function '^static bool moal_bridge_pending_restore_waiting' "$BRIDGE_C" || true)"
 PENDING_WORKER_BLOCK="$(extract_c_function '^static void moal_bridge_pending_work_fn\(struct work_struct \*work\)$' "$BRIDGE_C" || true)"
 PENDING_CLEAR_BLOCK="$(extract_c_function '^static bool moal_bridge_pending_clear_if' "$BRIDGE_C" || true)"
 PENDING_START_BLOCK="$(extract_c_function '^void moal_bridge_pending_start' "$BRIDGE_C" || true)"
@@ -718,8 +824,14 @@ printf 'PASS: runtime-switch pending pointer-lifetime mutation rejected\n'
 
 check_pending_notifier_contract "$NETDEV_EVENT_BLOCK" "$PENDING_SCHEDULER_BLOCK" ||
   fail "runtime-switch: notifier does not use the non-sleeping pending scheduler"
-NOTIFIER_DIRECT_SWITCH="$(printf '%s\n' "$NETDEV_EVENT_BLOCK" |
-  sed 's/moal_bridge_pending_schedule_event(event);/moal_bridge_switch_iface(dev->name);/')"
+NOTIFIER_DIRECT_SWITCH="$(printf '%s\n' "$NETDEV_EVENT_BLOCK" | awk '
+  /moal_bridge_pending_schedule_event\(event, dev,/ {
+    print "\t\tmoal_bridge_switch_iface(dev->name);"
+    getline
+    next
+  }
+  { print }
+')"
 if check_pending_notifier_contract "$NOTIFIER_DIRECT_SWITCH" "$PENDING_SCHEDULER_BLOCK"; then
   fail "runtime-switch: direct notifier switch mutation accepted"
 fi
@@ -767,6 +879,78 @@ if check_bridge_getter_separation_contract "$ACTIVE_PARAM_GETTER_BLOCK" \
   fail "runtime-switch: pending getter reporting active interface mutation accepted"
 fi
 printf 'PASS: runtime-switch active/pending getter mutation rejected\n'
+
+check_pending_admission_kick_contract "$PENDING_SET_BLOCK" ||
+  fail "runtime-switch: pending admission lacks a locked one-shot worker kick"
+PENDING_SET_NO_KICK="$(printf '%s\n' "$PENDING_SET_BLOCK" |
+  sed 's/schedule_work(&bridge_pending_work);/\/\* missing admission kick \*\//')"
+if check_pending_admission_kick_contract "$PENDING_SET_NO_KICK"; then
+  fail "runtime-switch: lost admission-edge mutation accepted"
+fi
+printf 'PASS: runtime-switch pending admission-edge mutation rejected\n'
+
+check_pending_switch_event_contract "$PENDING_BEGIN_BLOCK" \
+  "$PENDING_SCHEDULER_BLOCK" "$PENDING_RESTORE_BLOCK" "$BRIDGE_INIT_BLOCK" \
+  "$NETDEV_EVENT_BLOCK" ||
+  fail "runtime-switch: switching-event coalescing/replay suppression missing"
+PENDING_SCHEDULER_NO_REMEMBER="$(printf '%s\n' "$PENDING_SCHEDULER_BLOCK" |
+  sed 's/bridge_pending_event_during_switch = true;/\/\* lost switching edge \*\//')"
+if check_pending_switch_event_contract "$PENDING_BEGIN_BLOCK" \
+    "$PENDING_SCHEDULER_NO_REMEMBER" "$PENDING_RESTORE_BLOCK" \
+    "$BRIDGE_INIT_BLOCK" "$NETDEV_EVENT_BLOCK"; then
+  fail "runtime-switch: lost switching-edge mutation accepted"
+fi
+printf 'PASS: runtime-switch pending switching-edge mutation rejected\n'
+PENDING_RESTORE_NO_KICK="$(printf '%s\n' "$PENDING_RESTORE_BLOCK" |
+  sed 's/schedule_work(&bridge_pending_work);/\/\* missing coalesced retry \*\//')"
+if check_pending_switch_event_contract "$PENDING_BEGIN_BLOCK" \
+    "$PENDING_SCHEDULER_BLOCK" "$PENDING_RESTORE_NO_KICK" \
+    "$BRIDGE_INIT_BLOCK" "$NETDEV_EVENT_BLOCK"; then
+  fail "runtime-switch: switching-to-waiting lost-edge mutation accepted"
+fi
+printf 'PASS: runtime-switch pending restore-kick mutation rejected\n'
+NOTIFIER_REPLAY_ALWAYS_PUBLISHED="$(printf '%s\n' "$NETDEV_EVENT_BLOCK" |
+  sed 's/atomic_read(&br->published)/true/')"
+if check_pending_switch_event_contract "$PENDING_BEGIN_BLOCK" \
+    "$PENDING_SCHEDULER_BLOCK" "$PENDING_RESTORE_BLOCK" "$BRIDGE_INIT_BLOCK" \
+    "$NOTIFIER_REPLAY_ALWAYS_PUBLISHED"; then
+  fail "runtime-switch: rollback notifier replay mutation accepted"
+fi
+printf 'PASS: runtime-switch rollback notifier-replay mutation rejected\n'
+
+check_active_cancel_before_resolve_contract "$SWITCH_BLOCK" ||
+  fail "runtime-switch: current-owner cancellation occurs after structural checks"
+SWITCH_ACTIVE_CANCEL_LATE="$(printf '%s\n' "$SWITCH_BLOCK" |
+  sed '0,/br->wlan_dev->name/s//target.dev->name/')"
+if check_active_cancel_before_resolve_contract "$SWITCH_ACTIVE_CANCEL_LATE"; then
+  fail "runtime-switch: late active-name cancellation mutation accepted"
+fi
+printf 'PASS: runtime-switch early active-name cancellation mutation rejected\n'
+
+check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
+  "$PENDING_SCHEDULER_BLOCK" "$SWITCH_BLOCK" ||
+  fail "runtime-switch: rename/unregister does not synchronously invalidate pending identity"
+PENDING_SCHEDULER_NO_RENAME_CANCEL="$(printf '%s\n' "$PENDING_SCHEDULER_BLOCK" |
+  sed 's/event == NETDEV_CHANGENAME/event == NETDEV_CHANGE/')"
+if check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
+    "$PENDING_SCHEDULER_NO_RENAME_CANCEL" "$SWITCH_BLOCK"; then
+  fail "runtime-switch: rename/name-reuse cancellation mutation accepted"
+fi
+printf 'PASS: runtime-switch rename/name-reuse mutation rejected\n'
+SWITCH_NO_RTNL_GENERATION_RECHECK="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /moal_bridge_pending_matches\(ifname, expected_generation\)/ {
+    matches++
+    if (matches == 2) {
+      sub(/moal_bridge_pending_matches\(ifname, expected_generation\)/, "true")
+    }
+  }
+  { print }
+')"
+if check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
+    "$PENDING_SCHEDULER_BLOCK" "$SWITCH_NO_RTNL_GENERATION_RECHECK"; then
+  fail "runtime-switch: name-reuse generation-recheck mutation accepted"
+fi
+printf 'PASS: runtime-switch name-reuse generation-recheck mutation rejected\n'
 
 check_standard_artifact_fault_absence
 check_fault_hook_compile_guard "$SWITCH_BLOCK" ||
@@ -1199,7 +1383,7 @@ printf '%s\n' "$SWITCH_BLOCK" | grep -Fq '#ifdef BRIDGE_SWITCH_FAULT_INJECT' || 
 grep -q 'module_param(bridge_switch_fault_mask, int, 0600)' "$INIT_C" || \
   fail "runtime-switch: QA fault mask is not root-only"
 printf '%s\n' "$SWITCH_BLOCK" | awk '
-  /target\.dev == bridge_owner->bridge->wlan_dev/ { same=NR }
+  /!strcmp\(br->wlan_dev->name, ifname\)/ { same=NR }
   /fault_mask = xchg\(&bridge_switch_fault_mask, 0\)/ { consume=NR }
   /__moal_bridge_deinit_locked\(old.old_owner\)/ && !deinit { deinit=NR }
   END { exit !(same && consume && deinit && same < consume && consume < deinit) }
