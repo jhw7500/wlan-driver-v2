@@ -753,6 +753,105 @@ check_qa_cleanup_contract() {
   '
 }
 
+check_deferred_qa_contract() {
+  local qa="$1" off waiting cancel cleanup capture assertions
+
+  for token in \
+    'DEFERRED_PARAM="$PARAM_DIR/bridge_runtime_deferred"' \
+    'PENDING_PARAM="$PARAM_DIR/bridge_pending_iface"' \
+    'DEFERRED_TIMEOUT="${DEFERRED_TIMEOUT:-30}"' \
+    'deferred-off) run_deferred_off ;;' \
+    'deferred-wait) run_deferred_wait ;;' \
+    'deferred-cancel) run_deferred_cancel ;;'; do
+    grep -Fq "$token" <<< "$qa" || return 1
+  done
+
+  off="$(extract_c_function '^run_deferred_off\(\)' "$QA_SCRIPT")" || return 1
+  waiting="$(extract_c_function '^run_deferred_wait\(\)' "$QA_SCRIPT")" || return 1
+  cancel="$(extract_c_function '^run_deferred_cancel\(\)' "$QA_SCRIPT")" || return 1
+  cleanup="$(extract_c_function '^cleanup\(\)' "$QA_SCRIPT")" || return 1
+  capture="$(extract_c_function '^capture_state\(\)' "$QA_SCRIPT")" || return 1
+  assertions="$(extract_c_function '^require_waiting_unchanged\(\)' "$QA_SCRIPT")" || return 1
+
+  printf '%s\n' "$off" | awk '
+    /require_gate 1/ { gate=NR }
+    /require_deferred_gate 0/ { deferred=NR }
+    /ip link set dev "\$TO_IF" down/ { down=NR }
+    /run_prevalidation_reject "\$TO_IF" 100/ { reject=NR }
+    END { exit !(gate && deferred && down && reject &&
+                 gate < deferred && deferred < down && down < reject) }
+  ' || return 1
+  printf '%s\n' "$capture" | awk '
+    /DEFERRED_PARAM/ { deferred=NR }
+    /read_pending/ { pending=NR }
+    END { exit !(deferred && pending) }
+  ' || return 1
+  printf '%s\n' "$waiting" | awk '
+    /require_gate 1/ { gate=NR }
+    /require_deferred_gate 1/ { deferred=NR }
+    /require_associated "\$FROM_IF"/ { source=NR }
+    /ip link set dev "\$TO_IF" down/ { down=NR }
+    /require_admin_down "\$TO_IF"/ { admin_down=NR }
+    /snapshot_outcomes/ { snapshot=NR }
+    /> "\$IFACE_PARAM"/ { write=NR }
+    /require_waiting_unchanged "\$FROM_IF" "\$TO_IF"/ { waiting=NR }
+    /ip link set dev "\$TO_IF" up/ { up=NR }
+    /wait_for_deferred_completion "\$TO_IF"/ { complete=NR }
+    /SWITCH_OK_BEFORE \+ 1/ { success=NR }
+    END { exit !(gate && deferred && source && down && admin_down && snapshot &&
+                 write && waiting && up && complete && success &&
+                 gate < deferred && deferred < source && source < down &&
+                 down < snapshot && snapshot < write && write < waiting &&
+                 waiting < up && up < complete && complete < success) }
+  ' || return 1
+  printf '%s\n' "$cancel" | awk '
+    /ip link set dev "\$TO_IF" down/ { down=NR }
+    /snapshot_outcomes/ { snapshot=NR }
+    /> "\$IFACE_PARAM"/ { writes++ }
+    /require_waiting_unchanged "\$FROM_IF" "\$TO_IF"/ { waiting=NR }
+    /pending_is_empty/ { cleared=NR }
+    /assert_all_outcomes_unchanged/ { counters=NR }
+    END { exit !(down && snapshot && writes >= 2 && waiting && cleared && counters &&
+                 down < snapshot && snapshot < waiting && waiting < cleared &&
+                 cleared < counters) }
+  ' || return 1
+  printf '%s\n' "$assertions" | awk '
+    /read_binding/ { binding=NR }
+    /stats_value active/ { active=NR }
+    /read_pending/ { pending=NR }
+    /assert_all_outcomes_unchanged/ { counters=NR }
+    END { exit !(binding && active && pending && counters &&
+                 binding < active && active < pending && pending < counters) }
+  ' || return 1
+  printf '%s\n' "$cleanup" | awk '
+    /pending_is_empty/ && !pending_check { pending_check=NR }
+    /pending_binding=.*read_binding/ { pending_owner=NR }
+    /> "\$IFACE_PARAM"/ && pending_owner && !cancel { cancel=NR }
+    /current_binding=/ { restore=NR }
+    END { exit !(pending_check && pending_owner && cancel && restore &&
+                 pending_check < pending_owner && pending_owner < cancel && cancel < restore) }
+  '
+}
+
+check_deferred_docs_contract() {
+  local doc
+
+  for doc in "$PARAM_DOC" "$QA_RUNBOOK"; do
+    grep -Fq 'bridge_runtime_deferred' "$doc" || return 1
+    grep -Fq 'bridge_pending_iface' "$doc" || return 1
+  done
+  for token in 'one-write' 'no timeout' 'cancel' 'replace' 'worker' \
+               'NETDEV_UP' 'NETDEV_CHANGE' 'NETDEV_UNREGISTER' \
+               'NETDEV_CHANGENAME' 'same-MAC' 'multi-BSSID' 'data-plane'; do
+    grep -Fq "$token" "$ROOT/docs/runtime-bridge-interface-switch.design.md" || return 1
+  done
+  for token in 'QA_CASE=deferred-off' 'QA_CASE=deferred-wait' \
+               'QA_CASE=deferred-cancel' 'link-ready' 'end-to-end' \
+               'name-reuse' 'unregister'; do
+    grep -Fq "$token" "$QA_RUNBOOK" || return 1
+  done
+}
+
 # Fast-path excerpts are shared by the legacy packet/RCU checks below. Keep
 # their windows explicit so a later function growth cannot silently turn a
 # missing declaration into an unbound-variable false gate.
@@ -1361,6 +1460,10 @@ printf '%s\n' "$STATS_SHOW_BLOCK" | awk '
 ' || fail "runtime-switch: stats bridge/handle RCU lifetime missing"
 check_qa_cleanup_contract "$QA_CLEANUP_BLOCK" || \
   fail "runtime-switch: QA cleanup status/evidence/restore ordering invalid"
+check_deferred_qa_contract "$(cat "$QA_SCRIPT")" || \
+  fail "runtime-switch: deferred QA case/setup/cleanup contract missing"
+check_deferred_docs_contract || \
+  fail "runtime-switch: deferred operator documentation contract missing"
 for qa_case in stress same-target concurrent peer-cycle gate-off no-active malformed \
                reject target-down target-disconnected fault-target fault-double \
                reset-interaction unload-interaction; do
@@ -1402,7 +1505,9 @@ done
 
 QA_RESTORE_BEFORE_CAPTURE="$(printf '%s\n' "$QA_CLEANUP_BLOCK" | awk '
   /capture_state "final-before-restore"/ { saved=$0; next }
-  /> "\$IFACE_PARAM"/ && saved && !moved { print; print saved; moved=1; next }
+  /INITIAL_BINDING.*> "\$IFACE_PARAM"/ && saved && !moved {
+    print; print saved; moved=1; next
+  }
   { print }
   END { exit !moved }
 ')"

@@ -6,6 +6,8 @@ export LC_ALL=C
 PARAM_DIR=/sys/module/moal/parameters
 IFACE_PARAM="$PARAM_DIR/bridge_iface"
 GATE_PARAM="$PARAM_DIR/bridge_runtime_switch"
+DEFERRED_PARAM="$PARAM_DIR/bridge_runtime_deferred"
+PENDING_PARAM="$PARAM_DIR/bridge_pending_iface"
 FAULT_PARAM="$PARAM_DIR/bridge_switch_fault_mask"
 STATS=/sys/kernel/moal_bridge/stats
 QA_CASE="${QA_CASE:-stress}"
@@ -17,6 +19,7 @@ EXPECTED_ERRNO="${EXPECTED_ERRNO:-19}"
 SWITCH_LOOPS="${SWITCH_LOOPS:-100}"
 MAX_SWITCH_LOOPS=100000
 INTERACTION_TIMEOUT="${INTERACTION_TIMEOUT:-120}"
+DEFERRED_TIMEOUT="${DEFERRED_TIMEOUT:-30}"
 QA_EVIDENCE_DIR="${QA_EVIDENCE_DIR:-/tmp/bridge-runtime-switch-qa.$(date +%Y%m%d-%H%M%S).$$}"
 DMESG_STREAM="$QA_EVIDENCE_DIR/dmesg-follow.log"
 DMESG_STREAM_PID=
@@ -39,6 +42,21 @@ read_binding() {
   fi
 }
 
+read_pending() {
+  if [ -r "$PENDING_PARAM" ]; then
+    tr -d '\r\n' < "$PENDING_PARAM"
+  else
+    printf 'unavailable'
+  fi
+}
+
+pending_is_empty() {
+  local pending
+
+  pending="$(read_pending)"
+  [ -z "$pending" ] || [ "$pending" = none ]
+}
+
 capture_state() {
   local label="$1"
 
@@ -48,6 +66,8 @@ capture_state() {
     printf 'qa_case=%s initial_binding=%s current_binding=%s\n' \
       "$QA_CASE" "${INITIAL_BINDING:-unknown}" "$(read_binding)"
     [ -r "$GATE_PARAM" ] && printf 'gate=%s\n' "$(tr -d '\r\n' < "$GATE_PARAM")"
+    [ -r "$DEFERRED_PARAM" ] && printf 'deferred_gate=%s\n' "$(tr -d '\r\n' < "$DEFERRED_PARAM")"
+    printf 'pending_iface=%s\n' "$(read_pending)"
     [ -r "$FAULT_PARAM" ] && printf 'fault_mask=%s\n' "$(tr -d '\r\n' < "$FAULT_PARAM")"
     [ -r "$STATS" ] && cat "$STATS"
     for iface in "$FROM_IF" "$TO_IF" "$PEER_IF"; do
@@ -159,6 +179,27 @@ cleanup() {
       cleanup_failed=1
   fi
 
+  # A surviving deferred request must not complete while cleanup restores the
+  # original owner. Writing the current owner is the documented cancellation
+  # API; a vanished module has no surviving request to cancel.
+  if [ -r "$PENDING_PARAM" ] && ! pending_is_empty; then
+    pending_binding="$(read_binding)"
+    if [ -n "$pending_binding" ] && [ "$pending_binding" != none ] &&
+       [ "$pending_binding" != unavailable ] && [ -w "$IFACE_PARAM" ]; then
+      printf '%s\n' "$pending_binding" > "$IFACE_PARAM" \
+        2>> "$QA_EVIDENCE_DIR/restore.log" || cleanup_failed=1
+    else
+      printf 'cannot cancel pending request: active owner unavailable\n' \
+        >> "$QA_EVIDENCE_DIR/restore.log"
+      cleanup_failed=1
+    fi
+  fi
+  if [ -r "$PENDING_PARAM" ] && ! pending_is_empty; then
+    printf 'pending request remained after cleanup cancellation: %s\n' \
+      "$(read_pending)" >> "$QA_EVIDENCE_DIR/restore.log"
+    cleanup_failed=1
+  fi
+
   if [ "$PEER_TOUCHED" -eq 1 ] && [ "$PEER_WAS_UP" -eq 1 ]; then
     ip link set dev "$PEER_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
   fi
@@ -209,6 +250,22 @@ cleanup() {
   exit "$final_status"
 }
 
+stats_value() {
+  awk -v key="$1" '
+    {
+      for (i = 1; i <= NF; i++) {
+        split($i, field, "=")
+        if (field[1] == key) {
+          print field[2]
+          found = 1
+          exit
+        }
+      }
+    }
+    END { exit !found }
+  ' "$STATS"
+}
+
 stats_counter() {
   awk -v key="$1" '
     {
@@ -239,6 +296,14 @@ require_gate() {
 
   actual="$(tr -d '\r\n' < "$GATE_PARAM")"
   [ "$actual" = "$expected" ] || fail "gate=$actual, expected $expected"
+}
+
+require_deferred_gate() {
+  local expected="$1" actual
+
+  actual="$(tr -d '\r\n' < "$DEFERRED_PARAM")"
+  [ "$actual" = "$expected" ] ||
+    fail "deferred_gate=$actual, expected $expected"
 }
 
 write_expect_errno() {
@@ -304,6 +369,37 @@ assert_all_outcomes_unchanged() {
   assert_no_failure_outcome
 }
 
+require_waiting_unchanged() {
+  local expected_owner="$1" expected_pending="$2" owner active pending
+
+  owner="$(read_binding)"
+  [ "$owner" = "$expected_owner" ] ||
+    fail "waiting request changed owner: expected=$expected_owner actual=$owner"
+  active="$(stats_value active)" || fail "active state missing"
+  [ "$active" = 1 ] || fail "waiting request changed active=$active"
+  pending="$(read_pending)"
+  [ "$pending" = "$expected_pending" ] ||
+    fail "pending target mismatch: expected=$expected_pending actual=$pending"
+  assert_all_outcomes_unchanged
+}
+
+wait_for_deferred_completion() {
+  local wanted="$1" attempt limit
+
+  case "$DEFERRED_TIMEOUT" in
+    ''|*[!0-9]*) fail "DEFERRED_TIMEOUT must be a non-negative integer" ;;
+  esac
+  limit=$((10#$DEFERRED_TIMEOUT * 10))
+  for ((attempt = 0; attempt <= limit; attempt++)); do
+    if binding_ready "$wanted" && [ "$(read_binding)" = "$wanted" ] &&
+       [ "$(stats_value active)" = 1 ] && pending_is_empty; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 run_prevalidation_reject() {
   local payload="$1" expected="$2" binding_before active_before
 
@@ -325,6 +421,66 @@ wait_for_active() {
     sleep 0.1
   done
   return 1
+}
+
+run_deferred_off() {
+  require_gate 1
+  require_deferred_gate 0
+  [ "$(read_binding)" = "$FROM_IF" ] || fail "deferred-off must start bound to $FROM_IF"
+  bridge_binding_healthy "$FROM_IF" || fail "deferred-off requires a healthy current bridge"
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "deferred-off target is missing"
+  admin_up "$TO_IF" && TO_WAS_ADMIN_UP=1
+  TO_TOUCHED=1
+  ip link set dev "$TO_IF" down
+  require_admin_down "$TO_IF"
+  capture_state deferred-off-target-down
+  run_prevalidation_reject "$TO_IF" 100
+}
+
+run_deferred_wait() {
+  require_gate 1
+  require_deferred_gate 1
+  [ "$(read_binding)" = "$FROM_IF" ] || fail "deferred-wait must start bound to $FROM_IF"
+  bridge_binding_healthy "$FROM_IF" || fail "deferred-wait requires a healthy current bridge"
+  require_associated "$FROM_IF"
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "deferred-wait target is missing"
+  admin_up "$TO_IF" && TO_WAS_ADMIN_UP=1
+  TO_TOUCHED=1
+  ip link set dev "$TO_IF" down
+  require_admin_down "$TO_IF"
+  binding_ready "$TO_IF" && fail "$TO_IF unexpectedly ready after admin-down"
+  snapshot_outcomes
+  printf '%s\n' "$TO_IF" > "$IFACE_PARAM" || fail "deferred request to $TO_IF failed"
+  require_waiting_unchanged "$FROM_IF" "$TO_IF"
+  capture_state deferred-waiting
+  ip link set dev "$TO_IF" up
+  wait_for_deferred_completion "$TO_IF" ||
+    fail "deferred switch did not complete within ${DEFERRED_TIMEOUT}s"
+  [ "$(stats_counter switch_ok)" -eq $((SWITCH_OK_BEFORE + 1)) ] ||
+    fail "deferred completion did not increment switch_ok exactly once"
+  assert_no_failure_outcome
+}
+
+run_deferred_cancel() {
+  require_gate 1
+  require_deferred_gate 1
+  [ "$(read_binding)" = "$FROM_IF" ] || fail "deferred-cancel must start bound to $FROM_IF"
+  bridge_binding_healthy "$FROM_IF" || fail "deferred-cancel requires a healthy current bridge"
+  require_associated "$FROM_IF"
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "deferred-cancel target is missing"
+  admin_up "$TO_IF" && TO_WAS_ADMIN_UP=1
+  TO_TOUCHED=1
+  ip link set dev "$TO_IF" down
+  require_admin_down "$TO_IF"
+  snapshot_outcomes
+  printf '%s\n' "$TO_IF" > "$IFACE_PARAM" || fail "deferred request to $TO_IF failed"
+  require_waiting_unchanged "$FROM_IF" "$TO_IF"
+  printf '%s\n' "$FROM_IF" > "$IFACE_PARAM" || fail "deferred cancellation write failed"
+  pending_is_empty || fail "deferred cancellation did not clear pending target"
+  [ "$(read_binding)" = "$FROM_IF" ] || fail "cancellation changed active owner"
+  [ "$(stats_value active)" = 1 ] || fail "cancellation changed active state"
+  assert_all_outcomes_unchanged
+  capture_state deferred-cancelled
 }
 
 run_stress() {
@@ -633,6 +789,8 @@ sleep 0.2
 kill -0 "$DMESG_STREAM_PID" 2>/dev/null || fail "dmesg --follow-new is unavailable"
 
 [ -r "$GATE_PARAM" ] || fail "missing $GATE_PARAM"
+[ -r "$DEFERRED_PARAM" ] || fail "missing $DEFERRED_PARAM"
+[ -r "$PENDING_PARAM" ] || fail "missing $PENDING_PARAM"
 [ -r "$STATS" ] || fail "missing $STATS"
 INITIAL_BINDING="$(read_binding)"
 capture_state before
@@ -642,6 +800,9 @@ case "$QA_CASE" in
   same-target) run_same_target ;;
   concurrent) run_concurrent ;;
   peer-cycle) run_peer_cycle ;;
+  deferred-off) run_deferred_off ;;
+  deferred-wait) run_deferred_wait ;;
+  deferred-cancel) run_deferred_cancel ;;
   gate-off)
     require_gate 0
     run_prevalidation_reject "$TO_IF" 95

@@ -377,6 +377,32 @@ enable-only 정책으로 합쳐진다. 따라서 다른 선택된 DBDC 블록이
 이미 `1`로 활성화된 값을, 어떤 블록의 `bridge_runtime_deferred=0`도 되돌릴 수 없다. 모든
 입력이 0일 때만 최종값이 0이며, 0/1 이외의 값은 해당 블록을 거부한다.
 
+`bridge_runtime_deferred=0`은 호환성 기본값이다. 이때 `bridge_iface`의 한 번의
+one-write는 기존의 strict synchronous 동작을 유지한다. 즉 admin-DOWN target은
+`ENETDOWN`, admin-UP이지만 association되지 않은 target은 `ENOLINK`로 즉시 실패하며,
+현재 effective owner와 counter를 바꾸지 않는다.
+
+`bridge_runtime_deferred=1`일 때만 위 두 link-readiness 실패가 **보류 요청**으로
+전환된다. `bridge_iface`는 계속 active/effective owner만 반환하고,
+읽기 전용 `/sys/module/moal/parameters/bridge_pending_iface`는 별도로 pending target
+이름(없으면 `none`)을 반환한다. 따라서 application은 별도의 ioctl/netlink/polling
+write protocol 없이 한 번의 one-write로 요청하고, 필요하면 두 getter를 읽어 owner와
+pending을 구분한다. pending write의 성공은 아직 data-plane 전환 성공이 아니라 요청 수락이다.
+
+보류 요청에는 no timeout이 없다. target이 `NETDEV_UP`/`NETDEV_CHANGE` 뒤 operational,
+carrier, association 조건을 충족하면 worker가 자동으로 일반 switch transaction을 실행한다.
+현재 active interface 이름을 다시 쓰면 pending을 cancel하며, 다른 target을 쓰면 기존
+pending을 replace한다. `NETDEV_UNREGISTER` 또는 `NETDEV_CHANGENAME`은 해당 identity를
+cancel하여 같은 이름의 새 netdev가 나중에 나타나도 이전 요청을 재사용하지 않는다. worker
+실패는 readiness pre-validation error(대기 유지)와 terminal switch/rollback error(요청 소거)를
+kernel log와 pending stats state로 구분한다.
+
+stats의 `pending_iface=<name|none> pending_state=<waiting|switching|none>`도 함께
+캡처한다. active `iface=`/`bridge_iface`와 pending getter는 동의어가 아니다. link-ready,
+association 및 active owner 전환은 target-ready evidence일 뿐 `mlan1`을 통한 end-to-end
+data-plane 성공을 증명하지 않는다. same-MAC/multi-BSSID 환경에서 mlan1 data-plane이
+실패하는 현상은 runtime bridge policy와 별개로 추적·보고한다.
+
 ---
 
 ## 12. 설정 우선순위 & 수명주기

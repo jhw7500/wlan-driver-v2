@@ -378,6 +378,53 @@ marker는 shell에서 가능한 syscall-attempt 직전 경계일 뿐 실제 in-k
 `WIFI_STATUS_OK`가 실패 뒤 오게시되지 않았는지와 structured suspend/restore log의 정확한 phase
 상관관계는 별도 target log/trace 검토 항목이며, 이 스크립트가 자동 증명하거나 PASS로 주장하지 않는다.
 
+### T-15c — Deferred readiness target matrix
+
+이 절도 **실장비 전용**이다. 아래 case를 시작하기 전에 두 getter와 stats를 매번 보존한다.
+`bridge_iface`는 active owner이고 `bridge_pending_iface`는 pending request이므로 서로 같은
+값일 필요가 없다. deferred gate 기본값 0은 기존 strict synchronous compatibility를 보장한다.
+
+```bash
+cat /sys/module/moal/parameters/bridge_runtime_switch
+cat /sys/module/moal/parameters/bridge_runtime_deferred
+cat /sys/module/moal/parameters/bridge_iface
+cat /sys/module/moal/parameters/bridge_pending_iface
+cat /sys/kernel/moal_bridge/stats
+```
+
+| 케이스 | 준비/실행 | pass criteria |
+|---|---|---|
+| deferred off | gate=1, deferred=0, mlan1 admin-DOWN; `QA_CASE=deferred-off` | write가 `ENETDOWN`; active `bridge_iface=mlan0`, `active=1`, four outcome counters 불변 |
+| deferred wait | gate=1/deferred=1, mlan0 healthy/associated, mlan1 initially admin-DOWN; `QA_CASE=deferred-wait DEFERRED_TIMEOUT=30` | first one-write는 pending `mlan1`을 수락하고 owner/counters를 보존; mlan1 UP/association 후 pending clear 및 `switch_ok +1` exactly once |
+| deferred cancel | 동일한 wait 준비; `QA_CASE=deferred-cancel` | current `mlan0` one-write가 pending을 clear; owner/active/four counters 불변 |
+
+```bash
+FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-off \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.deferred-off \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-wait DEFERRED_TIMEOUT=30 \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.deferred-wait \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-cancel \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.deferred-cancel \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+```
+
+`deferred-wait`의 link-ready/association 및 active owner 전환은 driver target-ready evidence다.
+이는 AP 반대편까지의 end-to-end mlan1 data-plane 성공을 뜻하지 않는다. 양방향 iperf3/ping
+로그는 별도로 보존하고, same-MAC/multi-BSSID mlan1 data-plane 이상은 deferred runtime bridge
+결과와 분리하여 조사한다.
+
+보드는 STA가 둘뿐일 수 있으므로 replacement는 가짜 세 번째 target을 만들지 않는다. 두 writer가
+각기 다른 valid target을 쓰는 concurrent-writer/manual extension으로 기록하고, 마지막 accepted
+pending request와 generation만 평가한다.
+
+**unregister/name-reuse (runbook-only)**: pending mlan1을 만든 뒤 board-approved bus unregister
+또는 module/remove command를 실행한다. target unregister가 모듈 제거를 유발하거나 board-specific
+bus command를 요구할 수 있으므로 이 case는 script에 강제하지 않는다. 이후 같은 이름의 netdev가
+나타나도 old request가 실행되지 않는지 확인한다. pass criteria는 pending clear, no later switch,
+valid current owner, 그리고 follow-new dmesg에 kernel warning 없음이다.
+
 ### T-15b — QA-only target/rollback fault injection
 
 표준 산출물은 `CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n`이다. static gate는 parameter, mask variable,

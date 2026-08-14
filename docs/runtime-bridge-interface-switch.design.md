@@ -11,7 +11,9 @@ Allow an application to switch an already-active in-driver MOAL L2 bridge
 between connected STA interfaces such as `mlan0` and `mlan1` without unloading
 `moal.ko` or reloading firmware.
 
-The application contract is a synchronous sysfs write:
+The application contract is a one-write sysfs application API. With the default
+strict policy it is synchronous; with explicitly enabled deferred policy the same
+write can accept a pending request that the worker completes later:
 
 ```sh
 echo mlan1 > /sys/module/moal/parameters/bridge_iface
@@ -108,6 +110,35 @@ if (write(fd, "mlan1\n", 6) < 0)
 ```
 
 No ioctl, netlink message, helper process, or polling protocol is required.
+
+### 3.3 Deferred readiness policy and pending getter
+
+`bridge_runtime_deferred=0` is the default compatibility mode. A one-write to
+`bridge_iface` remains strict and synchronous: a target that is admin-DOWN or
+not associated returns its normal readiness errno and cannot alter the active
+owner or outcome counters.
+
+With both `bridge_runtime_switch=1` and `bridge_runtime_deferred=1`, a write
+for an otherwise valid but not link-ready STA records one singleton pending
+request and returns success. It does not tear down the current bridge. The
+application reads active ownership from `bridge_iface` and independently reads
+`/sys/module/moal/parameters/bridge_pending_iface`; the latter returns the
+pending name or `none`. This separation is required because an active owner and
+a pending target can coexist.
+
+There is no timeout. `NETDEV_UP` and `NETDEV_CHANGE` schedule a process-context
+worker, which rechecks identity and readiness and then performs the normal
+switch/rollback transaction. A readiness error returns the request to waiting;
+a terminal switch or rollback outcome consumes it. `NETDEV_UNREGISTER` and
+`NETDEV_CHANGENAME` cancel identity before name reuse. Writing the current active
+name cancels a pending request; writing a different target replaces it. These
+are request lifecycle rules, not an additional application protocol: one-write
+is still the initiating API.
+
+Target-ready is not an end-to-end data-plane result. In particular, mlan1
+link-ready/associated evidence must not be conflated with success across an AP.
+The same-MAC/multi-BSSID mlan1 data-plane investigation is a separate diagnosis
+and must be reported separately from bridge switching status.
 
 ## 4. Architecture
 
@@ -262,7 +293,7 @@ The application can distinguish it through errno and by reading
 Extend `/sys/kernel/moal_bridge/stats` with non-breaking lines:
 
 ```text
-iface=mlan1 peer=eth0
+iface=mlan1 peer=eth0 pending_iface=none pending_state=none
 switch_ok=4 switch_fail=1 rollback_ok=1 rollback_fail=0
 ```
 
@@ -376,6 +407,14 @@ or persistent JSON rewriting are part of this driver change.
     `bridge_iface=none`, readable inactive counters, and explicit error logging.
     Standard builds may claim no hook only after the compile-guard and artifact
     checks pass for the source/artifact under review.
+14. Deferred off: an admin-DOWN target still returns `ENETDOWN` synchronously.
+15. Deferred wait: active owner and all outcomes remain unchanged while
+    `pending_iface=mlan1`; association then produces exactly one switch.
+16. Deferred cancel/replace: writing the active owner clears pending without an
+    outcome delta. With only two STA interfaces, replacement is concurrent-writer
+    evidence/manual extension, not an invented third target.
+17. Target unregister/name reuse: pending clears, a new same-name netdev cannot
+    complete the old request, and no warning is emitted.
 
 ### 9.3 Success criteria
 
