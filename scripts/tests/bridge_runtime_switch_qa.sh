@@ -200,17 +200,9 @@ cleanup() {
     cleanup_failed=1
   fi
 
-  if [ "$PEER_TOUCHED" -eq 1 ] && [ "$PEER_WAS_UP" -eq 1 ]; then
-    ip link set dev "$PEER_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
-  fi
-  if [ "$TO_TOUCHED" -eq 1 ]; then
-    if [ "$TO_WAS_ADMIN_UP" -eq 1 ]; then
-      ip link set dev "$TO_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
-    else
-      ip link set dev "$TO_IF" down >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
-    fi
-  fi
-
+  # Restore the original bridge while a completed deferred target is still
+  # usable. In particular, do not down TO_IF first: that would make a successful
+  # deferred TO_IF owner fail the health gate and strand the test on TO_IF.
   current_binding="$(read_binding)"
   if [ -n "$INITIAL_BINDING" ] && [ "$INITIAL_BINDING" != none ] &&
      [ "$INITIAL_BINDING" != unavailable ] &&
@@ -220,6 +212,17 @@ cleanup() {
      binding_ready "$INITIAL_BINDING"; then
     printf '%s\n' "$INITIAL_BINDING" > "$IFACE_PARAM" 2>> "$QA_EVIDENCE_DIR/restore.log" ||
       cleanup_failed=1
+  fi
+
+  if [ "$PEER_TOUCHED" -eq 1 ] && [ "$PEER_WAS_UP" -eq 1 ]; then
+    ip link set dev "$PEER_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
+  fi
+  if [ "$TO_TOUCHED" -eq 1 ]; then
+    if [ "$TO_WAS_ADMIN_UP" -eq 1 ]; then
+      ip link set dev "$TO_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
+    else
+      ip link set dev "$TO_IF" down >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
+    fi
   fi
 
   capture_state "final-after-restore"

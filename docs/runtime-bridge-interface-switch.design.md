@@ -19,9 +19,13 @@ write can accept a pending request that the worker completes later:
 echo mlan1 > /sys/module/moal/parameters/bridge_iface
 ```
 
-When the write returns success, forwarding is active on the requested WLAN
-interface. On failure, the write returns a negative errno and the previous
-bridge is restored whenever rollback succeeds.
+A **strict-mode completion** (`bridge_runtime_deferred=0`, or a ready target)
+means forwarding is active on the requested WLAN when the write returns
+success. A **deferred request acceptance** means only that the request was
+recorded while the current bridge remains active. In deferred mode callers must
+read `bridge_iface` and `bridge_pending_iface` to distinguish the active owner
+from the pending target. On failure, the write returns a negative errno and the
+previous bridge is restored whenever rollback succeeds.
 
 ## 2. Compatibility Requirements
 
@@ -94,8 +98,10 @@ Add a custom module parameter:
 - Write accepts one interface name, with the sysfs trailing newline removed.
 - Names must fit `IFNAMSIZ` and resolve to a MOAL STA netdev.
 - Writing the already-active interface is a successful no-op.
-- The setter does not merely store text; it performs and completes the switch
-  before returning.
+- In strict mode the setter does not merely store text; it performs and
+  completes the switch before returning. With deferred mode enabled for a
+  not-ready target, success instead records pending request acceptance; callers
+  use the active and pending getters to observe later completion.
 
 Example application flow:
 
@@ -106,7 +112,8 @@ if (fd < 0)
 
 if (write(fd, "mlan1\n", 6) < 0)
         /* inspect errno; the old bridge should still be active */;
-/* success: bridge is now active on mlan1 */
+/* strict-mode completion: bridge is active on mlan1; deferred request
+ * acceptance: read bridge_iface and bridge_pending_iface for owner/pending */
 ```
 
 No ioctl, netlink message, helper process, or polling protocol is required.
@@ -218,9 +225,10 @@ public bridge init/deinit wrappers but do not reacquire that semaphore. The
 runtime switch entry acquires `AddRemoveCardSem` before the lifecycle mutex.
 No path may take these locks in reverse order.
 
-## 5. Synchronous Switch Transaction
+## 5. Strict or worker-completed Switch Transaction
 
-The setter calls `moal_bridge_switch_iface()` in process context.
+For strict mode, or after the deferred worker observes readiness, the setter or
+worker calls `moal_bridge_switch_iface()` in process context.
 
 1. Reject unless `bridge_runtime_switch == 1`.
 2. Parse and validate the requested interface name.
@@ -421,9 +429,11 @@ or persistent JSON rewriting are part of this driver change.
 - With `bridge_runtime_switch=0`, forwarding and runtime switch behavior are
   unchanged; only documented teardown-before-destruction safety and
   module-lifetime inactive diagnostics are additionally observable.
-- With the gate enabled, a successful sysfs write means source-level terminal validation
-  accepted the requested connected STA. Bidirectional forwarding remains target-runtime
-  evidence and is not established by static checks alone.
+- With the gate enabled and strict-mode completion, a successful sysfs write means
+  source-level terminal validation accepted the requested connected STA. Deferred
+  request acceptance is not completion; its active/pending getters and later worker
+  result are target-runtime evidence. Bidirectional forwarding remains separate
+  data-plane evidence and is not established by static checks alone.
 - All validation failures before teardown leave the active bridge untouched.
 - Any post-teardown failure restores the previous bridge unless rollback itself
   fails, which is explicit and observable.

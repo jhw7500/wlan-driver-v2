@@ -852,6 +852,31 @@ check_deferred_docs_contract() {
   done
 }
 
+check_deferred_cleanup_restore_contract() {
+  printf '%s\n' "$1" | awk '
+    /pending_is_empty/ && !pending_check { pending_check=NR }
+    /current_binding=/ { current=NR }
+    /bridge_binding_healthy "\$current_binding"/ { healthy=NR }
+    /binding_ready "\$INITIAL_BINDING"/ { initial_ready=NR }
+    /INITIAL_BINDING.*> "\$IFACE_PARAM"/ { restore=NR }
+    /if \[ "\$TO_TOUCHED"/ { target_admin_restore=NR }
+    END { exit !(pending_check && current && healthy && initial_ready && restore &&
+                 target_admin_restore && pending_check < current && current < healthy &&
+                 healthy < initial_ready && initial_ready < restore &&
+                 restore < target_admin_restore) }
+  '
+}
+
+check_deferred_docs_completion_contract() {
+  local design="$ROOT/docs/runtime-bridge-interface-switch.design.md"
+
+  grep -Fq 'strict-mode completion' "$design" || return 1
+  grep -Fq 'deferred request acceptance' "$design" || return 1
+  grep -Fq 'bridge_iface` and `bridge_pending_iface' "$design" || return 1
+  ! grep -Fq 'When the write returns success, forwarding is active on the requested WLAN' "$design" || return 1
+  ! grep -Fq 'success: bridge is now active on mlan1' "$design" || return 1
+}
+
 # Fast-path excerpts are shared by the legacy packet/RCU checks below. Keep
 # their windows explicit so a later function growth cannot silently turn a
 # missing declaration into an unbound-variable false gate.
@@ -1462,6 +1487,10 @@ check_qa_cleanup_contract "$QA_CLEANUP_BLOCK" || \
   fail "runtime-switch: QA cleanup status/evidence/restore ordering invalid"
 check_deferred_qa_contract "$(cat "$QA_SCRIPT")" || \
   fail "runtime-switch: deferred QA case/setup/cleanup contract missing"
+check_deferred_cleanup_restore_contract "$QA_CLEANUP_BLOCK" || \
+  fail "runtime-switch: deferred cleanup restores target admin state before initial binding"
+check_deferred_docs_completion_contract || \
+  fail "runtime-switch: deferred API documentation claims request acceptance is completion"
 check_deferred_docs_contract || \
   fail "runtime-switch: deferred operator documentation contract missing"
 for qa_case in stress same-target concurrent peer-cycle gate-off no-active malformed \
