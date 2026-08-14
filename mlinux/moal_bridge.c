@@ -1613,6 +1613,18 @@ void moal_bridge_stats_cleanup(void)
 	mutex_unlock(&bridge_lifecycle_lock);
 }
 
+static int moal_bridge_target_link_status(
+	const struct moal_bridge_target *target)
+{
+	if (!netif_running(target->dev))
+		return -ENETDOWN;
+	if (READ_ONCE(target->priv->media_connected) != MTRUE)
+		return -ENOLINK;
+	if (!netif_carrier_ok(target->dev))
+		return -ENETDOWN;
+	return 0;
+}
+
 /* Caller holds AddRemoveCardSem. */
 static int moal_bridge_find_target(const char *ifname,
 				   struct moal_bridge_target *target)
@@ -1639,18 +1651,16 @@ static int moal_bridge_find_target(const char *ifname,
 			    handle->hardware_status != HardwareStatusReady)
 				return -EBUSY;
 			if (priv->netdev->reg_state != NETREG_REGISTERED ||
-			    !netif_device_present(priv->netdev) ||
-			    !netif_running(priv->netdev))
+			    !netif_device_present(priv->netdev))
 				return -ENETDOWN;
-			if (READ_ONCE(priv->media_connected) != MTRUE)
-				return -ENOLINK;
-			if (!netif_carrier_ok(priv->netdev))
-				return -ENETDOWN;
-			target->handle = handle;
-			target->priv = priv;
-			target->dev = priv->netdev;
-			target->bss_index = j;
-			return 0;
+			if (handle->priv[j] == priv) {
+				target->handle = handle;
+				target->priv = priv;
+				target->dev = priv->netdev;
+				target->bss_index = j;
+				return 0;
+			}
+			return -ENODEV;
 		}
 	}
 	return -ENODEV;
@@ -2307,6 +2317,8 @@ int moal_bridge_get_iface(char *buf, size_t len)
 static int moal_bridge_validate_binding_locked(
 	const struct moal_bridge_target *target, struct net_device *peer)
 {
+	int ret;
+
 	if (!target || !target->handle || !target->priv || !target->dev || !peer)
 		return -ENODEV;
 	if (target->handle->surprise_removed || target->handle->fw_reseting ||
@@ -2324,13 +2336,11 @@ static int moal_bridge_validate_binding_locked(
 	    atomic_read(&target->handle->bridge->peer_released))
 		return -EBUSY;
 	if (target->dev->reg_state != NETREG_REGISTERED ||
-	    !netif_device_present(target->dev) ||
-	    !netif_running(target->dev))
+	    !netif_device_present(target->dev))
 		return -ENETDOWN;
-	if (READ_ONCE(target->priv->media_connected) != MTRUE)
-		return -ENOLINK;
-	if (!netif_carrier_ok(target->dev))
-		return -ENETDOWN;
+	ret = moal_bridge_target_link_status(target);
+	if (ret)
+		return ret;
 	if (peer->reg_state != NETREG_REGISTERED ||
 	    !netif_device_present(peer) || !moal_bridge_dev_ready(peer))
 		return -ENETDOWN;
@@ -2387,6 +2397,8 @@ int moal_bridge_switch_iface(const char *ifname)
 
 	rtnl_lock();
 	ret = moal_bridge_find_target(ifname, &target);
+	if (!ret)
+		ret = moal_bridge_target_link_status(&target);
 	rtnl_unlock();
 	if (ret)
 		goto out_unlock;

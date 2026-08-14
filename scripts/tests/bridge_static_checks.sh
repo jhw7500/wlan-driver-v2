@@ -267,6 +267,55 @@ check_cleanup_transaction() {
   '
 }
 
+check_target_readiness_split_contract() {
+  local resolver="$1" readiness="$2" switch="$3" validator="$4"
+
+  printf '%s\n' "$resolver" | awk '
+    /priv->bss_type != MLAN_BSS_TYPE_STA/ { sta=NR }
+    /handle->surprise_removed/ { removed=NR }
+    /handle->fw_reseting/ { resetting=NR }
+    /handle->fw_reload/ { reload=NR }
+    /handle->driver_status/ { driver=NR }
+    /handle->hardware_status != HardwareStatusReady/ { hardware=NR }
+    /priv->netdev->reg_state != NETREG_REGISTERED/ { registered=NR }
+    /netif_device_present\(priv->netdev\)/ { present=NR }
+    /handle->priv\[j\] == priv/ { owner=NR }
+    /netif_running\(priv->netdev\)|media_connected|netif_carrier_ok/ { readiness_in_resolver=1 }
+    END { exit !(sta && removed && resetting && reload && driver && hardware &&
+                 registered && present && owner && !readiness_in_resolver) }
+  ' || return 1
+
+  printf '%s\n' "$readiness" | awk '
+    /if \(!netif_running\(target->dev\)\)/ { running=NR }
+    running && /return -ENETDOWN/ && !running_ret { running_ret=NR }
+    /if \(READ_ONCE\(target->priv->media_connected\) != MTRUE\)/ { media=NR }
+    media && /return -ENOLINK/ && !media_ret { media_ret=NR }
+    /if \(!netif_carrier_ok\(target->dev\)\)/ { carrier=NR }
+    carrier && /return -ENETDOWN/ && !carrier_ret { carrier_ret=NR }
+    /return 0/ { success=NR }
+    END { exit !(running && running_ret && media && media_ret && carrier &&
+                 carrier_ret && success && running < running_ret &&
+                 running_ret < media && media < media_ret && media_ret < carrier &&
+                 carrier < carrier_ret && carrier_ret < success) }
+  ' || return 1
+
+  printf '%s\n' "$switch" | awk '
+    /ret = moal_bridge_find_target\(ifname, &target\)/ { find=NR }
+    /ret = moal_bridge_target_link_status\(&target\)/ { readiness=NR }
+    /__moal_bridge_deinit_locked\(old.old_owner\)/ && !teardown { teardown=NR }
+    END { exit !(find && readiness && teardown && find < readiness &&
+                 readiness < teardown) }
+  ' || return 1
+
+  printf '%s\n' "$validator" | awk '
+    /target->priv->netdev != target->dev/ { pointer=NR }
+    /bridge_owner \|\| !target->handle->bridge/ { owner=NR }
+    /ret = moal_bridge_target_link_status\(target\)/ { readiness=NR }
+    END { exit !(pointer && owner && readiness && pointer < owner &&
+                 owner < readiness) }
+  '
+}
+
 check_terminal_switch_contract() {
   printf '%s\n' "$1" | awk '
     /ret = __moal_bridge_init_locked/ && !target_init { target_init=NR }
@@ -484,6 +533,8 @@ MAIN_WORK_BLOCK="$(extract_c_function '^t_void woal_main_work_queue' "$MAIN_C")"
 FW_DPC_BLOCK="$(extract_c_function '^static mlan_status woal_request_fw_dpc' "$MAIN_C")"
 INIT_FW_BLOCK="$(extract_c_function '^mlan_status woal_init_fw' "$MAIN_C")"
 DRV_MODE_BLOCK="$(extract_c_function '^mlan_status woal_switch_drv_mode' "$MAIN_C")"
+FIND_TARGET_BLOCK="$(extract_c_function '^static int moal_bridge_find_target' "$BRIDGE_C")"
+LINK_STATUS_BLOCK="$(extract_c_function '^static int moal_bridge_target_link_status' "$BRIDGE_C" || true)"
 SWITCH_BLOCK="$(extract_switch_block "$BRIDGE_C")"
 VALIDATE_BLOCK="$(extract_c_function '^static int moal_bridge_validate_binding_locked' "$BRIDGE_C")"
 BRIDGE_INIT_BLOCK="$(extract_c_function '^static int __moal_bridge_init_locked' "$BRIDGE_C")"
@@ -698,11 +749,61 @@ printf 'PASS: runtime-switch unload ordering mutation rejected\n'
 # terminally revalidated before an owner/counter can be published.
 for token in 'surprise_removed' 'fw_reseting' 'fw_reload' 'driver_status' \
              'HardwareStatusReady' 'NETREG_REGISTERED' \
-             'netif_device_present' 'moal_bridge_dev_ready' \
-             'media_connected' 'peer_released'; do
+             'netif_device_present' 'moal_bridge_dev_ready' 'peer_released'; do
   printf '%s\n' "$VALIDATE_BLOCK" | grep -Fq "$token" || \
     fail "runtime-switch: terminal validator missing $token"
 done
+check_target_readiness_split_contract "$FIND_TARGET_BLOCK" "$LINK_STATUS_BLOCK" \
+  "$SWITCH_BLOCK" "$VALIDATE_BLOCK" || \
+  fail "runtime-switch: structural identity and link readiness are not split"
+
+FIND_TARGET_WITH_MEDIA="$(printf '%s\n' "$FIND_TARGET_BLOCK" | awk '
+  /target->handle = handle/ && !injected {
+    print "\t\t\tif (READ_ONCE(priv->media_connected) != MTRUE)"
+    print "\t\t\t\treturn -ENOLINK;"
+    injected=1
+  }
+  { print }
+  END { exit !injected }
+')"
+if check_target_readiness_split_contract "$FIND_TARGET_WITH_MEDIA" "$LINK_STATUS_BLOCK" \
+    "$SWITCH_BLOCK" "$VALIDATE_BLOCK"; then
+  fail "runtime-switch: structural resolver accepted media-connected readiness mutation"
+fi
+printf 'PASS: runtime-switch structural media readiness mutation rejected\n'
+
+FIND_TARGET_NO_REGISTERED="$(printf '%s\n' "$FIND_TARGET_BLOCK" |
+  sed 's/NETREG_REGISTERED/NETREG_UNREGISTERING/')"
+if check_target_readiness_split_contract "$FIND_TARGET_NO_REGISTERED" "$LINK_STATUS_BLOCK" \
+    "$SWITCH_BLOCK" "$VALIDATE_BLOCK"; then
+  fail "runtime-switch: structural resolver accepted missing registered-state mutation"
+fi
+printf 'PASS: runtime-switch structural registered-state mutation rejected\n'
+
+LINK_STATUS_CARRIER_FIRST="$(printf '%s\n' "$LINK_STATUS_BLOCK" | awk '
+  /if \(READ_ONCE\(target->priv->media_connected\) != MTRUE\)/ && !media {
+    media=$0
+    getline
+    media=media "\n" $0
+    next
+  }
+  /if \(!netif_carrier_ok\(target->dev\)\)/ && !carrier {
+    carrier=$0
+    getline
+    carrier=carrier "\n" $0
+    print carrier
+    print media
+    moved=1
+    next
+  }
+  { print }
+  END { exit !(media && carrier && moved) }
+')"
+if check_target_readiness_split_contract "$FIND_TARGET_BLOCK" "$LINK_STATUS_CARRIER_FIRST" \
+    "$SWITCH_BLOCK" "$VALIDATE_BLOCK"; then
+  fail "runtime-switch: readiness helper accepted carrier-before-media mutation"
+fi
+printf 'PASS: runtime-switch readiness ordering mutation rejected\n'
 check_terminal_switch_contract "$SWITCH_BLOCK" || \
   fail "runtime-switch: target validation/deinit/rollback/success order invalid"
 check_peer_identity_contract "$SWITCH_BLOCK" "$BRIDGE_INIT_BLOCK" || \
@@ -1263,16 +1364,18 @@ grep -q 'ether_addr_copy(((struct ethhdr \*)skb2->data)->h_source' "$BRIDGE_C" |
 P2W_PT_INJECT="$(printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | grep -c 'netif_rx(skb)')"
 [ "${P2W_PT_INJECT:-0}" -ge 1 ] || fail "hairpin: pt_func REPLY inject 분기 누락"
 
-TARGET_BLOCK="$(grep -n -A100 -m1 '^static int moal_bridge_find_target' "$BRIDGE_C")"
-# The target checker deliberately checks admin/running before association and
-# carrier after association so its errno precedence is ENETDOWN (device down)
-# before ENOLINK (admin-UP but unassociated). Assert the concrete source
-# predicates, not an obsolete broad-helper token.
+# Structural lookup intentionally excludes operational link state. The
+# dedicated readiness helper preserves running -> association -> carrier errno
+# precedence for a structurally valid target.
 for token in 'm_handle\[' MLAN_BSS_TYPE_STA NETREG_REGISTERED \
-             netif_device_present netif_running media_connected netif_carrier_ok \
-             HardwareStatusReady fw_reseting surprise_removed; do
-  printf '%s\n' "$TARGET_BLOCK" | grep -q "$token" || \
-    fail "runtime-switch: target validator missing $token"
+             netif_device_present HardwareStatusReady fw_reseting \
+             surprise_removed fw_reload driver_status; do
+  printf '%s\n' "$FIND_TARGET_BLOCK" | grep -q "$token" || \
+    fail "runtime-switch: structural target resolver missing $token"
+done
+for token in netif_running media_connected netif_carrier_ok; do
+  printf '%s\n' "$LINK_STATUS_BLOCK" | grep -q "$token" || \
+    fail "runtime-switch: target link readiness helper missing $token"
 done
 
 printf 'PASS: keepalive, bounded queues, worker accounting, F1 RCU drain ordering + atomic peer_released + hairpin smoke enforced\n'
