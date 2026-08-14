@@ -545,6 +545,44 @@ check_pcie_flr_unsupported_noop_contract() {
   '
 }
 
+# The hardening rework moved every surprise_removed/is_suspended clear into
+# the FLR perform-init resume gate, which a non-allowlist chipset's no-op
+# early exit skips entirely.  The base driver cleared both flags at caller
+# level in resume, reset_done/reset_notify, and the in-band reset work, so
+# each post-FLR success arm must republish through the idempotent
+# woal_pcie_resume_gate() or unsupported parts finish the cycle with a dead
+# WLAN until reload.
+check_pcie_flr_republish_contract() {
+  local resume="$1" done_blk="$2" notify="$3" work="$4" flat
+
+  printf '%s\n' "$resume" | awk '
+    /woal_do_flr_locked\(handle, false, false\)/ { flr=NR }
+    flr && !gate && NR > flr && /woal_pcie_resume_gate\(handle\)/ {
+      gate=NR
+    }
+    /moal_bridge_resume_owner\(\)/ && !bridge { bridge=NR }
+    END { exit !(flr && gate && bridge && flr < gate && gate < bridge) }
+  ' || return 1
+  flat="$(printf '%s\n' "$done_blk" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq 'woal_do_flr_locked(handle, false, true) && MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle))' \
+    <<< "$flat" || return 1
+  grep -Fq 'woal_do_flr_locked(ref_handle, false, true) && MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle))' \
+    <<< "$flat" || return 1
+  flat="$(printf '%s\n' "$notify" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq 'woal_do_flr_locked(handle, prepare, true) && MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle))' \
+    <<< "$flat" || return 1
+  grep -Fq 'woal_do_flr_locked(ref_handle, prepare, true) && MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle))' \
+    <<< "$flat" || return 1
+  flat="$(printf '%s\n' "$work" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq 'woal_do_flr_locked(handle, false, true) && MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle))' \
+    <<< "$flat" || return 1
+  grep -Fq 'woal_do_flr_locked(ref_handle, false, true) && MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle))' \
+    <<< "$flat"
+}
+
 # The kernel synthesizes NETDEV_UNREGISTER (and GOING_DOWN/DOWN) for every
 # registered device to a notifier being unregistered.  The instance notifier
 # is unregistered on every bridge deinit, so it must never feed identity
@@ -1415,6 +1453,7 @@ PCIE_PREP_BLOCK="$(extract_c_function '^static void woal_pcie_reset_prepare' "$P
 PCIE_DONE_BLOCK="$(extract_c_function '^static void woal_pcie_reset_done' "$PCIE_C")"
 PCIE_NOTIFY_BLOCK="$(extract_c_function '^static void woal_pcie_reset_notify' "$PCIE_C")"
 PCIE_WORK_BLOCK="$(extract_c_function '^static void woal_pcie_work\(struct work_struct \*work\)$' "$PCIE_C")"
+PCIE_RESUME_BLOCK="$(extract_c_function '^static int woal_pcie_resume\(struct pci_dev \*pdev\)$' "$PCIE_C" || true)"
 SDIO_FLR_BLOCK="$(extract_c_function '^static mlan_status __woal_do_sdiommc_flr' "$SDIO_C")"
 SDIO_WORK_BLOCK="$(extract_c_function '^static void woal_sdiommc_work\(struct work_struct \*work\)$' "$SDIO_C")"
 SDIO_REMOVE_BLOCK="$(extract_c_function '^void woal_sdio_remove\(struct sdio_func \*func\)$' "$SDIO_C")"
@@ -1733,6 +1772,36 @@ if check_pcie_flr_unsupported_noop_contract "$PCIE_FLR_UNSUPPORTED_FATAL"; then
   fail "runtime-switch: unsupported-chipset fatal FLR mutation accepted"
 fi
 printf 'PASS: runtime-switch unsupported-chipset FLR mutation rejected\n'
+
+check_pcie_flr_republish_contract "$PCIE_RESUME_BLOCK" "$PCIE_DONE_BLOCK" \
+  "$PCIE_NOTIFY_BLOCK" "$PCIE_WORK_BLOCK" ||
+  fail "runtime-switch: no-op FLR paths do not republish producer gates"
+PCIE_RESUME_NO_REPUBLISH="$(printf '%s\n' "$PCIE_RESUME_BLOCK" | awk '
+  /woal_do_flr_locked\(handle, false, false\)/ { flr=1 }
+  flr && !cut && /woal_pcie_resume_gate\(handle\)/ {
+    sub(/woal_pcie_resume_gate\(handle\)/, "MLAN_STATUS_SUCCESS")
+    cut=1
+  }
+  { print }
+')"
+if check_pcie_flr_republish_contract "$PCIE_RESUME_NO_REPUBLISH" \
+    "$PCIE_DONE_BLOCK" "$PCIE_NOTIFY_BLOCK" "$PCIE_WORK_BLOCK"; then
+  fail "runtime-switch: resume republication-loss mutation accepted"
+fi
+printf 'PASS: runtime-switch resume republication mutation rejected\n'
+PCIE_DONE_NO_REPUBLISH="$(printf '%s\n' "$PCIE_DONE_BLOCK" | awk '
+  !cut && /MLAN_STATUS_SUCCESS == woal_pcie_resume_gate\(handle\)\)/ {
+    sub(/MLAN_STATUS_SUCCESS == woal_pcie_resume_gate\(handle\)\)/,
+        "MLAN_STATUS_SUCCESS)")
+    cut=1
+  }
+  { print }
+')"
+if check_pcie_flr_republish_contract "$PCIE_RESUME_BLOCK" \
+    "$PCIE_DONE_NO_REPUBLISH" "$PCIE_NOTIFY_BLOCK" "$PCIE_WORK_BLOCK"; then
+  fail "runtime-switch: reset-done republication-loss mutation accepted"
+fi
+printf 'PASS: runtime-switch reset-done republication mutation rejected\n'
 
 check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
   "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \

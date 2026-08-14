@@ -1075,6 +1075,16 @@ static int woal_pcie_resume(struct pci_dev *pdev)
 			ret = -EIO;
 			goto done;
 		}
+		/* A chipset outside the FLR allowlist no-ops the rebuild above,
+		 * skipping the perform-init publication that clears
+		 * surprise_removed/is_suspended.  Republish at caller level as
+		 * the base driver did; a rebuilt chipset's gate revalidates and
+		 * re-clears idempotently. */
+		if (woal_pcie_resume_gate(handle) != MLAN_STATUS_SUCCESS) {
+			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			ret = -ENODEV;
+			goto done;
+		}
 		ref_handle = handle->pref_mac;
 		if ((!ref_handle || !ref_handle->fw_reseting) &&
 		    moal_bridge_resume_owner()) {
@@ -1270,8 +1280,11 @@ static void woal_pcie_reset_done(struct pci_dev *pdev)
 		 (ref_handle && ref_handle->fw_reset_prepare_failed);
 	if (failed)
 		goto reset_failed;
+	/* Republish through the gate after each no-op or rebuilt FLR so a
+	 * non-allowlist chipset does not finish with its producer gates set. */
 	if (MLAN_STATUS_SUCCESS ==
-	    woal_do_flr_locked(handle, false, true)) {
+	    woal_do_flr_locked(handle, false, true) &&
+	    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle)) {
 		handle->fw_reseting = MFALSE;
 	} else {
 		handle = NULL;
@@ -1279,7 +1292,8 @@ static void woal_pcie_reset_done(struct pci_dev *pdev)
 	}
 	if (ref_handle) {
 		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_flr_locked(ref_handle, false, true)) {
+		    woal_do_flr_locked(ref_handle, false, true) &&
+		    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle)) {
 			ref_handle->fw_reseting = MFALSE;
 		} else {
 			ref_handle = NULL;
@@ -1412,8 +1426,12 @@ static void woal_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
 			 (ref_handle && ref_handle->fw_reset_prepare_failed);
 		if (failed)
 			goto reset_failed;
+		/* Republish through the gate after each no-op or rebuilt FLR so
+		 * a non-allowlist chipset does not finish with its producer
+		 * gates set. */
 		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_flr_locked(handle, prepare, true)) {
+		    woal_do_flr_locked(handle, prepare, true) &&
+		    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle)) {
 			handle->fw_reseting = MFALSE;
 		} else {
 			handle = NULL;
@@ -1421,7 +1439,9 @@ static void woal_pcie_reset_notify(struct pci_dev *pdev, bool prepare)
 		}
 		if (ref_handle) {
 			if (MLAN_STATUS_SUCCESS ==
-			    woal_do_flr_locked(ref_handle, prepare, true)) {
+			    woal_do_flr_locked(ref_handle, prepare, true) &&
+			    MLAN_STATUS_SUCCESS ==
+				    woal_pcie_resume_gate(ref_handle)) {
 				ref_handle->fw_reseting = MFALSE;
 			} else {
 				ref_handle = NULL;
@@ -3415,7 +3435,10 @@ static void woal_pcie_work(struct work_struct *work)
 		failed = true;
 		goto done;
 	}
-	if (MLAN_STATUS_SUCCESS == woal_do_flr_locked(handle, false, true))
+	/* Republish through the gate after each no-op or rebuilt FLR so a
+	 * non-allowlist chipset does not finish with its producer gates set. */
+	if (MLAN_STATUS_SUCCESS == woal_do_flr_locked(handle, false, true) &&
+	    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(handle))
 		handle->fw_reseting = MFALSE;
 	else {
 		handle = NULL;
@@ -3423,7 +3446,8 @@ static void woal_pcie_work(struct work_struct *work)
 	}
 	if (ref_handle) {
 		if (MLAN_STATUS_SUCCESS ==
-		    woal_do_flr_locked(ref_handle, false, true)) {
+		    woal_do_flr_locked(ref_handle, false, true) &&
+		    MLAN_STATUS_SUCCESS == woal_pcie_resume_gate(ref_handle)) {
 			ref_handle->fw_reseting = MFALSE;
 		} else {
 			ref_handle = NULL;
