@@ -278,6 +278,33 @@ out_unlock:
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
 }
 
+/* Destructive resets suspend the effective owner, which deinitializes the
+ * bridge instance and unregisters its notifier, while AddRemoveCardSem does
+ * not serialize an external rename under RTNL.  Rename/unregister of a
+ * pending target must therefore be observed independently of any bridge
+ * instance for the whole suspension window, or a destructively recreated
+ * netdev could reuse the retained name and inherit the old request.  This
+ * module-lifetime notifier is registered before deferred admission is first
+ * enabled and unregistered only at module cleanup, so no identity event can
+ * be lost while a request exists.  Readiness edges stay instance-delivered:
+ * a kick without an owner cannot complete, and resume re-kicks explicitly. */
+static int moal_bridge_pending_netdev_event(struct notifier_block *nb,
+					    unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+
+	/* This notifier never re-registers, so no registration replay can
+	 * reach it; identity events carry the published contract directly. */
+	if (event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER)
+		moal_bridge_pending_schedule_event(event, dev, true);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block bridge_pending_nb = {
+	.notifier_call = moal_bridge_pending_netdev_event,
+};
+static bool bridge_pending_nb_registered;
+
 struct moal_bridge_target {
 	moal_handle *handle;
 	moal_private *priv;
@@ -2661,6 +2688,15 @@ void moal_bridge_pending_start(void)
 {
 	unsigned long flags;
 
+	/* Identity-event delivery must exist before the first admission is
+	 * possible.  If registration fails, deferred admission stays disabled
+	 * so no request can ever exist without rename/unregister coverage. */
+	if (register_netdevice_notifier(&bridge_pending_nb)) {
+		PRINTM(MERROR,
+		       "bridge: pending identity notifier unavailable; deferred switching disabled\n");
+		return;
+	}
+	bridge_pending_nb_registered = true;
 	spin_lock_irqsave(&bridge_pending_lock, flags);
 	bridge_pending_events_enabled = true;
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
@@ -2670,6 +2706,13 @@ void moal_bridge_pending_cleanup(void)
 {
 	unsigned long flags;
 
+	/* Unregister synchronizes with in-flight notifier calls under RTNL; a
+	 * call that raced ahead can only have scheduled work that the final
+	 * cancel_work_sync() below drains. */
+	if (bridge_pending_nb_registered) {
+		unregister_netdevice_notifier(&bridge_pending_nb);
+		bridge_pending_nb_registered = false;
+	}
 	spin_lock_irqsave(&bridge_pending_lock, flags);
 	bridge_pending_events_enabled = false;
 	bridge_pending.state = MOAL_BR_PENDING_NONE;

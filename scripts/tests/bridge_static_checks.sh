@@ -480,6 +480,43 @@ check_pending_handle_invalidation_contract() {
   '
 }
 
+check_pending_module_notifier_contract() {
+  local nb_block="$1" callback="$2" start="$3" cleanup="$4" suspend="$5"
+
+  printf '%s\n' "$nb_block" | awk '
+    /static struct notifier_block bridge_pending_nb/ { block=NR }
+    /\.notifier_call = moal_bridge_pending_netdev_event/ { wire=NR }
+    END { exit !(block && wire && block < wire) }
+  ' || return 1
+  printf '%s\n' "$callback" | awk '
+    /event == NETDEV_CHANGENAME/ { rename=NR }
+    /event == NETDEV_UNREGISTER/ { unregister=NR }
+    /moal_bridge_pending_schedule_event\(event, dev, true\)/ { deliver=NR }
+    END { exit !(rename && unregister && deliver &&
+                 rename <= unregister && unregister < deliver) }
+  ' || return 1
+  printf '%s\n' "$start" | awk '
+    /register_netdevice_notifier\(&bridge_pending_nb\)/ { register=NR }
+    /^[[:space:]]*return;/ && register && !bail { bail=NR }
+    /bridge_pending_nb_registered = true/ { mark=NR }
+    /bridge_pending_events_enabled = true/ { enable=NR }
+    END { exit !(register && bail && mark && enable && register < bail &&
+                 bail < mark && mark < enable) }
+  ' || return 1
+  printf '%s\n' "$cleanup" | awk '
+    /unregister_netdevice_notifier\(&bridge_pending_nb\)/ { unregister=NR }
+    /bridge_pending_events_enabled = false/ { disable=NR }
+    /cancel_work_sync\(&bridge_pending_work\)/ { drain=NR }
+    END { exit !(unregister && disable && drain && unregister < disable &&
+                 disable < drain) }
+  ' || return 1
+  if printf '%s\n' "$suspend" |
+      grep -Eq 'bridge_pending_nb|bridge_pending_events_enabled'; then
+    return 1
+  fi
+  return 0
+}
+
 check_pending_terminal_cancel_contract() {
   local cancel="$1" request="$2" drv_mode="$3" reload="$4" forget="$5"
   local discard="$6" resume="$7"
@@ -1307,6 +1344,8 @@ PENDING_CLEAR_BLOCK="$(extract_c_function '^static bool moal_bridge_pending_clea
 PENDING_START_BLOCK="$(extract_c_function '^void moal_bridge_pending_start' "$BRIDGE_C" || true)"
 PENDING_CLEANUP_BLOCK="$(extract_c_function '^void moal_bridge_pending_cleanup' "$BRIDGE_C" || true)"
 PENDING_INVALIDATE_HANDLE_BLOCK="$(extract_c_function '^void moal_bridge_pending_invalidate_handle' "$BRIDGE_C" || true)"
+PENDING_MODULE_NOTIFIER_BLOCK="$(extract_c_function '^static int moal_bridge_pending_netdev_event' "$BRIDGE_C" || true)"
+PENDING_MODULE_NB_BLOCK="$(extract_c_block "$(cat "$BRIDGE_C")" '^static struct notifier_block bridge_pending_nb' || true)"
 PENDING_CANCEL_ALL_BLOCK="$(extract_c_function '^void moal_bridge_pending_cancel_all' "$BRIDGE_C" || true)"
 PENDING_GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_pending_iface' "$BRIDGE_C" || true)"
 REQUEST_REJECTION_LOG_BLOCK="$(extract_c_function '^static void moal_bridge_log_request_rejection' "$BRIDGE_C" || true)"
@@ -1551,6 +1590,43 @@ if check_pending_handle_invalidation_contract "$PENDING_INVALIDATE_HANDLE_BLOCK"
   fail "runtime-switch: SDIO FLR recreation invalidation mutation accepted"
 fi
 printf 'PASS: runtime-switch SDIO FLR identity mutation rejected\n'
+
+check_pending_module_notifier_contract "$PENDING_MODULE_NB_BLOCK" \
+  "$PENDING_MODULE_NOTIFIER_BLOCK" "$PENDING_START_BLOCK" \
+  "$PENDING_CLEANUP_BLOCK" "$SUSPEND_OWNER_BLOCK" ||
+  fail "runtime-switch: module-lifetime pending identity notifier missing"
+START_ENABLE_WITHOUT_REGISTER="$(printf '%s\n' "$PENDING_START_BLOCK" |
+  sed 's/register_netdevice_notifier(&bridge_pending_nb)/0/')"
+if check_pending_module_notifier_contract "$PENDING_MODULE_NB_BLOCK" \
+    "$PENDING_MODULE_NOTIFIER_BLOCK" "$START_ENABLE_WITHOUT_REGISTER" \
+    "$PENDING_CLEANUP_BLOCK" "$SUSPEND_OWNER_BLOCK"; then
+  fail "runtime-switch: admission-without-identity-notifier mutation accepted"
+fi
+printf 'PASS: runtime-switch module notifier registration mutation rejected\n'
+CLEANUP_NO_NOTIFIER_UNREGISTER="$(printf '%s\n' "$PENDING_CLEANUP_BLOCK" |
+  sed 's/unregister_netdevice_notifier(&bridge_pending_nb);/\/\* leaked module notifier *\//')"
+if check_pending_module_notifier_contract "$PENDING_MODULE_NB_BLOCK" \
+    "$PENDING_MODULE_NOTIFIER_BLOCK" "$PENDING_START_BLOCK" \
+    "$CLEANUP_NO_NOTIFIER_UNREGISTER" "$SUSPEND_OWNER_BLOCK"; then
+  fail "runtime-switch: module notifier unload-leak mutation accepted"
+fi
+printf 'PASS: runtime-switch module notifier unload mutation rejected\n'
+MODULE_NOTIFIER_NO_UNREGISTER_EVENT="$(printf '%s\n' "$PENDING_MODULE_NOTIFIER_BLOCK" |
+  sed 's/event == NETDEV_UNREGISTER/0/')"
+if check_pending_module_notifier_contract "$PENDING_MODULE_NB_BLOCK" \
+    "$MODULE_NOTIFIER_NO_UNREGISTER_EVENT" "$PENDING_START_BLOCK" \
+    "$PENDING_CLEANUP_BLOCK" "$SUSPEND_OWNER_BLOCK"; then
+  fail "runtime-switch: module notifier unregister-event mutation accepted"
+fi
+printf 'PASS: runtime-switch module notifier identity-event mutation rejected\n'
+SUSPEND_DISABLES_IDENTITY_DELIVERY="$(printf '%s\n' "$SUSPEND_OWNER_BLOCK" |
+  sed 's/__moal_bridge_deinit_locked(bridge_owner);/unregister_netdevice_notifier(\&bridge_pending_nb);\n\t__moal_bridge_deinit_locked(bridge_owner);/')"
+if check_pending_module_notifier_contract "$PENDING_MODULE_NB_BLOCK" \
+    "$PENDING_MODULE_NOTIFIER_BLOCK" "$PENDING_START_BLOCK" \
+    "$PENDING_CLEANUP_BLOCK" "$SUSPEND_DISABLES_IDENTITY_DELIVERY"; then
+  fail "runtime-switch: suspension identity-delivery-loss mutation accepted"
+fi
+printf 'PASS: runtime-switch suspension identity-delivery mutation rejected\n'
 
 check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
   "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \
