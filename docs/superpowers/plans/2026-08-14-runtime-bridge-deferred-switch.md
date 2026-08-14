@@ -579,7 +579,7 @@ rtk git commit -m "test(moal): cover deferred bridge switching"
 
 **Files:**
 - Review: every file changed by Tasks 1-4
-- Create: `.superpowers/sdd/runtime-bridge-interface-switch.implementation-plan/deferred-switch-validation.md`
+- Create: `.superpowers/sdd/2026-08-14-runtime-bridge-deferred-switch/deferred-switch-validation.md`
 
 **Interfaces:**
 - Consumes: complete deferred feature and QA contracts.
@@ -648,7 +648,7 @@ The report must mark these as `NOT RUN` until target artifacts are returned. Req
 Write exact command results, commit IDs, artifact paths, warnings, unexecuted target cases, and the separate unresolved mlan1 data-plane diagnosis to:
 
 ```text
-.superpowers/sdd/runtime-bridge-interface-switch.implementation-plan/deferred-switch-validation.md
+.superpowers/sdd/2026-08-14-runtime-bridge-deferred-switch/deferred-switch-validation.md
 ```
 
 Then commit only the report if that directory is tracked; otherwise leave it as a local evidence artifact and report its path. Verify the final diff one more time:
