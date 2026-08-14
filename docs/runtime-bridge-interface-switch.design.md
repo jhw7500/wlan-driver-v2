@@ -54,10 +54,15 @@ bridge_runtime_switch=0|1
 - Default: `0`.
 - Sysfs permission: `0444`; changing the feature gate itself requires module
   reload.
-- It is a global module option supplied alongside `mod_para`, for example
-  `insmod moal.ko mod_para=... bridge_runtime_switch=1`. It is deliberately not
-  a per-radio `wifi_mod_para.conf` key because one global bridge instance moves
-  between radio handles.
+- It is a global module option. It can be supplied alongside `mod_para`, for
+  example `insmod moal.ko mod_para=... bridge_runtime_switch=1`, or enabled by
+  setting `bridge_runtime_switch=1` in any matched per-radio
+  `wifi_mod_para.conf` block.
+- Although the configuration file is parsed per radio, this is not a per-radio
+  permission. Values are combined as an enable-only OR: an explicit module
+  argument or any successfully parsed block containing `1` enables the single
+  global gate, and a later block containing `0` cannot disable it. Values other
+  than zero or one reject the configuration block.
 
 The gate is intentionally load-time-only. This prevents an application from
 changing lifecycle policy accidentally on a deployed system and makes legacy

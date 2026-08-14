@@ -684,6 +684,8 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 					moal_handle *handle)
 {
 	int out_data = 0, end = 0;
+	int bridge_runtime_switch_cfg = 0;
+	int bridge_runtime_switch_present = 0;
 	char *out_str = NULL;
 	t_u8 line[MAX_LINE_LEN];
 	moal_mod_para *params = &handle->params;
@@ -913,6 +915,18 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->mgmt_hex_dump = out_data;
 			PRINTM(MMSG, "mgmt_hex_dump = %d\n",
 			       params->mgmt_hex_dump);
+		} else if (strncmp(line, "bridge_runtime_switch",
+				   strlen("bridge_runtime_switch")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			if (out_data != 0 && out_data != 1) {
+				PRINTM(MERROR,
+				       "bridge_runtime_switch must be 0 or 1\n");
+				goto err;
+			}
+			bridge_runtime_switch_cfg = out_data;
+			bridge_runtime_switch_present = 1;
 		} else if (strncmp(line, "bridge_mode",
 				   strlen("bridge_mode")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1739,8 +1753,20 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 	params->mclient_scheduling = 0;
 #endif
 
-	if (end)
+	if (end) {
+		/* The runtime switch is one module-wide policy for the singleton
+		 * bridge, although mod_para is parsed once per adapter block.  Enable
+		 * it monotonically so a later DBDC block containing 0 cannot undo an
+		 * earlier block containing 1 or an explicit insmod argument. */
+		if (bridge_runtime_switch_cfg)
+			WRITE_ONCE(bridge_runtime_switch, 1);
+		if (bridge_runtime_switch_present)
+			PRINTM(MMSG,
+			       "bridge_runtime_switch = %d (conf=%d)\n",
+			       READ_ONCE(bridge_runtime_switch),
+			       bridge_runtime_switch_cfg);
 		return ret;
+	}
 err:
 	PRINTM(MMSG, "Invalid line: %s\n", line);
 	ret = MLAN_STATUS_FAILURE;
@@ -3249,7 +3275,7 @@ MODULE_PARM_DESC(bridge_mode, "L2 bridge: 0=off(default), 1=on");
 module_param(bridge_runtime_switch, int, 0444);
 MODULE_PARM_DESC(
 	bridge_runtime_switch,
-	"Allow synchronous runtime switching of an active L2 bridge: 0=off(default), 1=on");
+	"Allow synchronous runtime switching of an active L2 bridge: 0=off(default), 1=on; a matched mod_para block may also enable it");
 module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644);
 MODULE_PARM_DESC(
 	bridge_iface,

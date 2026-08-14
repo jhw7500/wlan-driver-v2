@@ -165,6 +165,35 @@ check_ready_switch_contract() {
   '
 }
 
+check_runtime_switch_conf_contract() {
+  local parser="$1"
+
+  printf '%s\n' "$parser" | awk '
+    /int bridge_runtime_switch_cfg = 0/ { cfg_decl=NR }
+    /int bridge_runtime_switch_present = 0/ { present_decl=NR }
+    /strncmp\(line, "bridge_runtime_switch"/ { key=NR }
+    /parse_line_read_int\(line, &out_data\)/ && key && !parse { parse=NR }
+    /out_data != 0 && out_data != 1/ { range=NR }
+    /bridge_runtime_switch_cfg = out_data/ { save=NR }
+    /bridge_runtime_switch_present = 1/ { mark=NR }
+    /^[[:space:]]*if \(end\)[[:space:]]*\{/ { commit=NR }
+    /if \(bridge_runtime_switch_cfg\)/ { enable=NR }
+    /WRITE_ONCE\(bridge_runtime_switch, 1\)/ { write=NR }
+    /if \(bridge_runtime_switch_present\)/ { log_gate=NR }
+    /bridge_runtime_switch = %d \(conf=%d\)/ { log_line=NR }
+    END {
+      exit !(cfg_decl && present_decl && key && parse && range && save && mark &&
+             commit && enable && write && log_gate && log_line &&
+             cfg_decl < key && present_decl < key && key < parse &&
+             parse < range && range < save && save <= mark && mark < commit &&
+             commit < enable && enable < write && write < log_gate &&
+             log_gate < log_line)
+    }
+  ' || return 1
+
+  ! grep -Eq 'WRITE_ONCE\(bridge_runtime_switch,[[:space:]]*(0|out_data|bridge_runtime_switch_cfg)\)' <<< "$parser"
+}
+
 check_cleanup_transaction() {
   printf '%s\n' "$1" | awk '
     /WRITE_ONCE\(bridge_runtime_control_ready, 0\)/ { clear=NR }
@@ -394,6 +423,10 @@ P2W_PACKET_TYPE_BLOCK="$(grep -n -A220 -m1 'moal_bridge_peer_pt_func' "$BRIDGE_C
 # Extract scoped subjects once. Every subsequent source-order and mutation check
 # uses these exact functions rather than a whole-file token match.
 SETTER_BLOCK="$(extract_c_function '^static int bridge_iface_set' "$INIT_C")"
+# parse_cfg_read_block compares against the literal string "}"; the generic
+# brace scanner intentionally does not parse C strings, so use the function's
+# column-zero closing brace as the boundary for this one large parser.
+CONF_PARSER_BLOCK="$(sed -n '/^static mlan_status parse_cfg_read_block/,/^}/p' "$INIT_C")"
 INIT_MODULE_BLOCK="$(extract_c_function '^static int woal_init_module' "$MAIN_C")"
 CLEANUP_MODULE_BLOCK="$(extract_c_function '^static void woal_cleanup_module' "$MAIN_C")"
 REQUEST_RELOAD_BLOCK="$(extract_c_function '^int woal_request_fw_reload' "$MAIN_C")"
@@ -429,6 +462,27 @@ QA_CLEANUP_BLOCK="$(extract_c_function '^cleanup\(\)' "$QA_SCRIPT")"
 check_standard_artifact_fault_absence
 check_fault_hook_compile_guard "$SWITCH_BLOCK" ||
   fail "runtime-switch: every fault declaration and injected branch must be inside BRIDGE_SWITCH_FAULT_INJECT"
+check_runtime_switch_conf_contract "$CONF_PARSER_BLOCK" ||
+  fail "runtime-switch: conf parser must validate and monotonically enable the global gate"
+
+CONF_PARSER_NO_ENABLE="$(printf '%s\n' "$CONF_PARSER_BLOCK" |
+  sed 's|WRITE_ONCE(bridge_runtime_switch, 1);|/* missing global gate enable */|')"
+if check_runtime_switch_conf_contract "$CONF_PARSER_NO_ENABLE"; then
+  fail "runtime-switch: missing conf gate-enable mutation accepted"
+fi
+printf 'PASS: runtime-switch conf gate-enable mutation rejected\n'
+
+CONF_PARSER_NO_RANGE="$(printf '%s\n' "$CONF_PARSER_BLOCK" |
+  sed 's/out_data != 0 && out_data != 1/out_data < 0/')"
+if check_runtime_switch_conf_contract "$CONF_PARSER_NO_RANGE"; then
+  fail "runtime-switch: invalid conf range-check mutation accepted"
+fi
+printf 'PASS: runtime-switch conf range-check mutation rejected\n'
+
+grep -Fq '✓(전역 enable-only)' "$PARAM_DOC" ||
+  fail "runtime-switch: parameter docs missing conf enable-only contract"
+grep -Fq 'bridge_runtime_switch = %d (conf=%d)' "$INIT_C" ||
+  fail "runtime-switch: conf parser missing effective/configured diagnostic"
 
 # A: module-argument parsing cannot reach an uninitialized semaphore, and exit
 # closes the post-wait race before destructive teardown.

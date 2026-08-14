@@ -235,7 +235,11 @@ unload
 
 ```bash
 unload
-load mod_para=cts/wifi_mod_para.conf bridge_mode=1 bridge_runtime_switch=1
+# 선택된 초기 owner 블록에는 bridge_mode=1, 어느 matched 블록 하나에는
+# bridge_runtime_switch=1을 둔다. conf를 수정할 수 없으면 기존
+# bridge_runtime_switch=1 insmod 인자를 대신 사용할 수 있다.
+load mod_para=cts/wifi_mod_para.conf
+test "$(cat /sys/module/moal/parameters/bridge_runtime_switch)" = 1
 
 # 기존 보드 절차(wpa_supplicant/제품 network manager)로 두 STA를 먼저 association한다.
 # 다음 두 출력 모두 "Connected to ..."여야 한다.

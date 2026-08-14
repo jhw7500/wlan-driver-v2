@@ -12,7 +12,9 @@
 
 - Work from `wlan-driver-v2/main`, never the legacy sibling repository.
 - Create an isolated worktree with `superpowers:using-git-worktrees` before execution; the current checkout contains unrelated user changes.
-- `bridge_runtime_switch` defaults to `0`, permission `0444`, and is a global `insmod` option—not a `wifi_mod_para.conf` key.
+- `bridge_runtime_switch` defaults to `0`, permission `0444`, and is a global
+  load-time option. A module argument or any matched `wifi_mod_para.conf` block
+  containing `1` enables it; per-block values are combined as enable-only OR.
 - `bridge_iface` uses `module_param_cb()` with permission `0644`, never `charp` storage.
 - A write is synchronous and never enables a bridge when none is active.
 - Only registered, present, running, associated MOAL STA interfaces are valid targets.

@@ -218,7 +218,7 @@ perm `0644`일 때만 sysfs 런타임 변경 가능하며, `bridge_iface`는 전
 | 파라미터 | 타입 | perm | 기본값 | 런타임변경 | conf 파싱 | 도입 커밋 |
 |---|---|---|---|---|---|---|
 | ✅ `bridge_mode` | int | 0 | 0(off) | ✗ | ✓ | 35ec541 |
-| ✅ `bridge_runtime_switch` | int | 0444 | 0(off) | ✗(로드 시에만) | ✗ | runtime-switch |
+| ✅ `bridge_runtime_switch` | int | 0444 | 0(off) | ✗(로드 시에만) | ✓(전역 enable-only) | runtime-switch |
 | ✅ `bridge_iface` | custom string | 0644 | `none`(비활성) | ✓(활성 브릿지만) | ✗ | runtime-switch |
 | ✅ `bridge_peer` | charp | 0 | eth0 | ✗ | ✓ | 35ec541 |
 | ✅ `bridge_wlan_idx` | int | 0 | 0 | ✗ | ✓ | 35ec541 |
@@ -272,7 +272,30 @@ conf per-adapter 키 `mlanN.mgmt_hex_dump_enable`. 동작하려면 `net_rx>=2`(R
 ### 11.9 런타임 브릿지 인터페이스 전환
 
 `bridge_runtime_switch`는 전역 int, 기본값 0, perm `0444`인 **모듈 로드 시 opt-in**이다.
-로드 후 sysfs로 값을 바꿀 수 없으며 값이 정확히 1일 때만 전환 write를 허용한다.
+`insmod ... bridge_runtime_switch=1` 또는 선택된 `wifi_mod_para.conf` 블록의
+`bridge_runtime_switch=1`로 활성화할 수 있다. 로드 후 sysfs로 값을 바꿀 수 없으며 값이 정확히
+1일 때만 전환 write를 허용한다.
+
+`mod_para`는 DBDC 어댑터 블록마다 파싱되지만 runtime switch gate는 단일 브릿지에 대한 모듈
+전역 정책이다. 따라서 값은 **enable-only OR**로 합쳐진다. 명시적인 insmod 값이나 정상 파싱된
+블록 중 하나라도 1이면 최종값은 1이며, 뒤에서 읽은 다른 블록의 0은 이미 활성화된 gate를 끄지
+않는다. 모든 블록이 0이고 insmod 인자도 없을 때만 0이다. 0 또는 1 이외의 conf 값은 해당 블록을
+invalid로 거절한다. 파싱 시 effective/conf 값을 함께 출력한다.
+
+```text
+SD9098_0 = {
+    bridge_mode=1
+    bridge_runtime_switch=1
+}
+SD9098_1 = {
+    bridge_mode=0
+    bridge_runtime_switch=0
+}
+```
+
+위 설정에서 초기 owner는 mlan0이고 runtime gate는 전역으로 1이다. mlan1의
+`bridge_runtime_switch=0`은 mlan1을 전환 대상으로 금지한다는 뜻이 아니며, 연결된 MOAL STA이면
+아래 sysfs write로 전환할 수 있다.
 `bridge_iface`는 perm `0644`인 custom string 파라미터다. read는 설정 문자열이 아니라 현재
 effective owner가 binding한 현재 WLAN 이름(`none`이면 owner 없음)을 반환하고, write는 이미 존재하며
 연결된 MOAL STA 인터페이스를 새 타겟으로 지정한다.
@@ -282,10 +305,13 @@ terminal state만 뜻한다. WLAN/peer rename은 notifier와 name lock으로 get
 전환 identity는 이름이 아닌 transaction 동안 참조된 exact netdev다.
 
 ```bash
-insmod moal.ko mod_para=cts/wifi_mod_para.conf bridge_runtime_switch=1
+insmod moal.ko mod_para=cts/wifi_mod_para.conf
 cat /sys/module/moal/parameters/bridge_iface
 echo mlan1 > /sys/module/moal/parameters/bridge_iface
 ```
+
+conf를 변경할 수 없는 환경에서는 기존처럼
+`insmod moal.ko mod_para=... bridge_runtime_switch=1`을 사용할 수 있다.
 
 write는 비동기 요청을 예약하는 동작이 아니다. 전체 deinit → target init → target/peer 최종
 readiness 검증과, 실패 시 rollback 검증이 끝난 뒤 반환하므로 `echo`/`write(2)`가 받은 errno가
