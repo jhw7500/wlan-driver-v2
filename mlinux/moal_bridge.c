@@ -1565,8 +1565,13 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 	unsigned long flags;
 	struct sk_buff *skb;
 
-	if (event == NETDEV_UP || event == NETDEV_CHANGE ||
-	    event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER)
+	/* Readiness edges only.  Identity events (rename/unregister) are
+	 * delivered exclusively by the module-lifetime notifier: this instance
+	 * notifier is unregistered on every bridge deinit, and the kernel then
+	 * synthesizes NETDEV_UNREGISTER for every registered device to the
+	 * removed notifier, which would spuriously cancel a retained request
+	 * at each owner suspension or switch-transaction teardown. */
+	if (event == NETDEV_UP || event == NETDEV_CHANGE)
 		moal_bridge_pending_schedule_event(event, dev,
 						   atomic_read(&br->published));
 
@@ -2706,13 +2711,12 @@ void moal_bridge_pending_cleanup(void)
 {
 	unsigned long flags;
 
-	/* Unregister synchronizes with in-flight notifier calls under RTNL; a
-	 * call that raced ahead can only have scheduled work that the final
-	 * cancel_work_sync() below drains. */
-	if (bridge_pending_nb_registered) {
-		unregister_netdevice_notifier(&bridge_pending_nb);
-		bridge_pending_nb_registered = false;
-	}
+	/* Disable admission and destroy the request before unregistering the
+	 * module notifier: unregistering synthesizes NETDEV_UNREGISTER for
+	 * every registered device to the removed notifier, and the identity
+	 * path must observe that replay only in the disabled state.  Every
+	 * enqueue site rechecks the gate under this lock, so nothing can
+	 * schedule after the disable and the final drain is terminal. */
 	spin_lock_irqsave(&bridge_pending_lock, flags);
 	bridge_pending_events_enabled = false;
 	bridge_pending.state = MOAL_BR_PENDING_NONE;
@@ -2720,6 +2724,10 @@ void moal_bridge_pending_cleanup(void)
 	bridge_pending.generation++;
 	bridge_pending_event_during_switch = false;
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	if (bridge_pending_nb_registered) {
+		unregister_netdevice_notifier(&bridge_pending_nb);
+		bridge_pending_nb_registered = false;
+	}
 	cancel_work_sync(&bridge_pending_work);
 }
 
