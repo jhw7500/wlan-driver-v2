@@ -24,6 +24,24 @@ static atomic_long_t bridge_switch_fail = ATOMIC_LONG_INIT(0);
 static atomic_long_t bridge_rollback_ok = ATOMIC_LONG_INIT(0);
 static atomic_long_t bridge_rollback_fail = ATOMIC_LONG_INIT(0);
 
+enum moal_bridge_pending_state {
+	MOAL_BR_PENDING_NONE,
+	MOAL_BR_PENDING_WAITING,
+	MOAL_BR_PENDING_SWITCHING,
+};
+
+struct moal_bridge_pending_request {
+	char ifname[IFNAMSIZ];
+	unsigned long generation;
+	enum moal_bridge_pending_state state;
+};
+
+static DEFINE_SPINLOCK(bridge_pending_lock);
+static struct moal_bridge_pending_request bridge_pending;
+static bool bridge_pending_events_enabled;
+static void moal_bridge_pending_work_fn(struct work_struct *work);
+static DECLARE_WORK(bridge_pending_work, moal_bridge_pending_work_fn);
+
 struct moal_bridge_suspended_owner {
 	moal_handle *handle;
 	struct net_device *peer_dev;
@@ -41,6 +59,7 @@ extern int bridge_consume_link_local;
 /** bridge_keepalive_ms: module param default copied into handle->params at init */
 extern int bridge_keepalive_ms;
 extern int bridge_runtime_switch;
+extern int bridge_runtime_deferred;
 #ifdef BRIDGE_SWITCH_FAULT_INJECT
 extern int bridge_switch_fault_mask;
 #endif
@@ -53,6 +72,120 @@ extern int bridge_switch_fault_mask;
  * their definitions appear later in the file. */
 static inline bool moal_bridge_dev_ready(const struct net_device *dev);
 static void moal_bridge_peer_release_work(struct work_struct *work);
+
+static unsigned long moal_bridge_pending_set(const char *ifname)
+{
+	unsigned long flags;
+	unsigned long generation = 0;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (bridge_pending_events_enabled) {
+		bridge_pending.generation++;
+		strncpy(bridge_pending.ifname, ifname,
+			sizeof(bridge_pending.ifname) - 1);
+		bridge_pending.ifname[sizeof(bridge_pending.ifname) - 1] = '\0';
+		bridge_pending.state = MOAL_BR_PENDING_WAITING;
+		generation = bridge_pending.generation;
+	}
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	return generation;
+}
+
+static bool moal_bridge_pending_matches(const char *ifname,
+					unsigned long generation)
+{
+	unsigned long flags;
+	bool matches;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	matches = bridge_pending.state != MOAL_BR_PENDING_NONE &&
+		  bridge_pending.generation == generation &&
+		  !strcmp(bridge_pending.ifname, ifname);
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	return matches;
+}
+
+static bool moal_bridge_pending_clear_if(const char *ifname,
+					 unsigned long generation)
+{
+	unsigned long flags;
+	bool cleared = false;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (bridge_pending.state != MOAL_BR_PENDING_NONE &&
+	    !strcmp(bridge_pending.ifname, ifname) &&
+	    bridge_pending.generation == generation) {
+		bridge_pending.state = MOAL_BR_PENDING_NONE;
+		bridge_pending.ifname[0] = '\0';
+		bridge_pending.generation++;
+		cleared = true;
+	}
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	return cleared;
+}
+
+static bool moal_bridge_pending_state_if(
+	const char *ifname, unsigned long generation,
+	enum moal_bridge_pending_state from,
+	enum moal_bridge_pending_state to)
+{
+	unsigned long flags;
+	bool changed = false;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (bridge_pending.state == from &&
+	    bridge_pending.generation == generation &&
+	    !strcmp(bridge_pending.ifname, ifname)) {
+		bridge_pending.state = to;
+		changed = true;
+	}
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	return changed;
+}
+
+static void moal_bridge_pending_snapshot(
+	char *ifname, size_t len, unsigned long *generation,
+	enum moal_bridge_pending_state *state)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (ifname && len) {
+		strncpy(ifname, bridge_pending.ifname, len - 1);
+		ifname[len - 1] = '\0';
+	}
+	if (generation)
+		*generation = bridge_pending.generation;
+	if (state)
+		*state = bridge_pending.state;
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+}
+
+static const char *moal_bridge_pending_state_name(
+	enum moal_bridge_pending_state state)
+{
+	if (state == MOAL_BR_PENDING_WAITING)
+		return "waiting";
+	if (state == MOAL_BR_PENDING_SWITCHING)
+		return "switching";
+	return "none";
+}
+
+static void moal_bridge_pending_schedule_event(unsigned long event)
+{
+	unsigned long flags;
+
+	(void)event;
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	/* A rollback rebuild replays notifier events while the current attempt is
+	 * still SWITCHING.  Ignore those replays so a deterministic transaction
+	 * failure cannot self-requeue forever; a later link event retries WAITING. */
+	if (bridge_pending_events_enabled &&
+	    READ_ONCE(bridge_runtime_deferred) == 1 &&
+	    bridge_pending.state == MOAL_BR_PENDING_WAITING)
+		schedule_work(&bridge_pending_work);
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+}
 
 struct moal_bridge_target {
 	moal_handle *handle;
@@ -1314,6 +1447,10 @@ static int moal_bridge_netdev_event(struct notifier_block *nb,
 	unsigned long flags;
 	struct sk_buff *skb;
 
+	if (event == NETDEV_UP || event == NETDEV_CHANGE ||
+	    event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER)
+		moal_bridge_pending_schedule_event(event);
+
 	if (dev != br->peer_dev && dev != br->wlan_dev)
 		return NOTIFY_DONE;
 
@@ -1435,13 +1572,22 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 	moal_handle *handle;
 	char wlan_name[IFNAMSIZ];
 	char peer_name[IFNAMSIZ];
+	char pending_name[IFNAMSIZ];
+	const char *pending_state_name;
+	enum moal_bridge_pending_state pending_state;
 	unsigned long flags;
 	ssize_t ret;
 	long w2p_n, p2w_n, w2p_avg, p2w_avg;
 	long rx_gap_n, rx_gap_avg;
 	long rx_pull_n, rx_pull_avg, tx_write_n, tx_write_avg;
 
-	/* The whole snapshot stays in one RCU read-side critical section.
+	moal_bridge_pending_snapshot(pending_name, sizeof(pending_name), NULL,
+				     &pending_state);
+	if (pending_state == MOAL_BR_PENDING_NONE)
+		strncpy(pending_name, "none", sizeof(pending_name));
+	pending_state_name = moal_bridge_pending_state_name(pending_state);
+
+	/* The bridge snapshot stays in one RCU read-side critical section.
 	 * Teardown clears this publication and waits for every in-flight show
 	 * callback before the bridge (or its owning handle) can be freed. */
 	rcu_read_lock();
@@ -1449,8 +1595,10 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 	if (!br) {
 		ret = scnprintf(buf, PAGE_SIZE,
 				"bridge: inactive\n"
-				"iface=none peer=none\n"
+				"iface=none peer=none pending_iface=%s pending_state=%s\n"
 				"switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
+				pending_name,
+				pending_state_name,
 				atomic_long_read(&bridge_switch_ok),
 				atomic_long_read(&bridge_switch_fail),
 				atomic_long_read(&bridge_rollback_ok),
@@ -1505,7 +1653,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 "rx_pull avg=%ldus max=%ldus n=%ld\n"
 			 "tx_write avg=%ldus max=%ldus n=%ld\n"
 			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n"
-			 "iface=%s peer=%s\n"
+			 "iface=%s peer=%s pending_iface=%s pending_state=%s\n"
 			 "switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
 			 atomic_long_read(&br->wlan_to_peer.fwd_bytes),
@@ -1543,6 +1691,8 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->hairpin_arp_inject),
 			 wlan_name,
 			 peer_name,
+			 pending_name,
+			 pending_state_name,
 			 atomic_long_read(&bridge_switch_ok),
 			 atomic_long_read(&bridge_switch_fail),
 			 atomic_long_read(&bridge_rollback_ok),
@@ -2088,8 +2238,10 @@ int moal_bridge_init(void *phandle, const char *peer_name, int wlan_bss_idx)
 		handle, peer_name, NULL, wlan_bss_idx,
 		handle->params.bridge_keepalive_ms,
 		handle->params.bridge_keepalive_idle_ms);
-	if (!ret)
+	if (!ret) {
 		bridge_owner = handle;
+		moal_bridge_pending_schedule_event(NETDEV_CHANGE);
+	}
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
 }
@@ -2223,8 +2375,10 @@ static int __moal_bridge_resume_owner(void *expected_handle,
 		saved.handle, peer_name, saved.peer_dev,
 		saved.wlan_bss_idx, saved.keepalive_ms,
 		saved.keepalive_idle_ms);
-	if (!ret)
+	if (!ret) {
 		bridge_owner = saved.handle;
+		moal_bridge_pending_schedule_event(NETDEV_CHANGE);
+	}
 	dev_put(saved.peer_dev);
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
@@ -2270,13 +2424,37 @@ void moal_bridge_discard_suspended_owner_for_reset(void *handle)
 	__moal_bridge_discard_suspended_owner(handle, true);
 }
 
+/* Caller holds AddRemoveCardSem, so handle->priv[] stays live; RTNL below
+ * stabilizes each netdev name until a matching generation is cancelled. */
 void moal_bridge_forget_handle(void *phandle)
 {
 	moal_handle *handle = phandle;
+	char pending_ifname[IFNAMSIZ];
+	unsigned long pending_generation;
+	enum moal_bridge_pending_state pending_state;
+	int i;
 
 	if (!handle)
 		return;
 	mutex_lock(&bridge_lifecycle_lock);
+	moal_bridge_pending_snapshot(pending_ifname, sizeof(pending_ifname),
+				     &pending_generation, &pending_state);
+	if (pending_state != MOAL_BR_PENDING_NONE) {
+		rtnl_lock();
+		for (i = 0; i < MIN(handle->priv_num, MLAN_MAX_BSS_NUM); i++) {
+			if (!handle->priv[i] || !handle->priv[i]->netdev ||
+			    strcmp(handle->priv[i]->netdev->name,
+				   pending_ifname))
+				continue;
+			if (moal_bridge_pending_clear_if(pending_ifname,
+						 pending_generation))
+				PRINTM(MMSG,
+				       "bridge: deferred switch cancelled target=%s generation=%lu unregister\n",
+				       pending_ifname, pending_generation);
+			break;
+		}
+		rtnl_unlock();
+	}
 	if (bridge_owner == handle) {
 		__moal_bridge_deinit_locked(handle);
 		bridge_owner = NULL;
@@ -2312,6 +2490,41 @@ int moal_bridge_get_iface(char *buf, size_t len)
 	}
 	mutex_unlock(&bridge_lifecycle_lock);
 	return ret;
+}
+
+int moal_bridge_get_pending_iface(char *buf, size_t len)
+{
+	char ifname[IFNAMSIZ];
+	enum moal_bridge_pending_state state;
+
+	if (!buf || !len)
+		return -EINVAL;
+	moal_bridge_pending_snapshot(ifname, sizeof(ifname), NULL, &state);
+	if (state == MOAL_BR_PENDING_NONE)
+		return scnprintf(buf, len, "\n");
+	return scnprintf(buf, len, "%s\n", ifname);
+}
+
+void moal_bridge_pending_start(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	bridge_pending_events_enabled = true;
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+}
+
+void moal_bridge_pending_cleanup(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	bridge_pending_events_enabled = false;
+	bridge_pending.state = MOAL_BR_PENDING_NONE;
+	bridge_pending.ifname[0] = '\0';
+	bridge_pending.generation++;
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+	cancel_work_sync(&bridge_pending_work);
 }
 
 static int moal_bridge_validate_binding_locked(
@@ -2350,12 +2563,17 @@ static int moal_bridge_validate_binding_locked(
 	return 0;
 }
 
-int moal_bridge_switch_iface(const char *ifname)
+static int moal_bridge_switch_iface_request(const char *ifname,
+					     bool allow_defer,
+					     unsigned long expected_generation)
 {
 	struct moal_bridge_switch_snapshot old;
 	struct moal_bridge_target target;
 	struct moal_bridge_target rollback_target;
 	struct moal_bridge *br;
+	char pending_ifname[IFNAMSIZ];
+	unsigned long pending_generation;
+	enum moal_bridge_pending_state pending_state;
 	unsigned long flags;
 	int target_ret;
 	int rollback_ret;
@@ -2387,25 +2605,52 @@ int moal_bridge_switch_iface(const char *ifname)
 		ret = -ESHUTDOWN;
 		goto out_card;
 	}
+	if (expected_generation &&
+	    !moal_bridge_pending_matches(ifname, expected_generation)) {
+		ret = -ECANCELED;
+		goto out_card;
+	}
 
 	mutex_lock(&bridge_lifecycle_lock);
 	br = bridge_owner ? bridge_owner->bridge : NULL;
 	if (!br) {
-		ret = -ENODEV;
+		ret = expected_generation ? -EAGAIN : -ENODEV;
 		goto out_unlock;
 	}
+	moal_bridge_pending_snapshot(pending_ifname, sizeof(pending_ifname),
+				     &pending_generation, &pending_state);
 
 	rtnl_lock();
 	ret = moal_bridge_find_target(ifname, &target);
-	if (!ret)
-		ret = moal_bridge_target_link_status(&target);
-	rtnl_unlock();
-	if (ret)
+	if (ret) {
+		rtnl_unlock();
+		if (expected_generation &&
+		    (ret == -ENODEV || ret == -EINVAL || ret == -ENETDOWN))
+			ret = -ESTALE;
 		goto out_unlock;
+	}
+	/* A write of the current active identity is a cancellation request, not
+	 * an operational readiness probe.  This remains a successful no-op even
+	 * when carrier or association state is changing. */
+	if (target.dev == bridge_owner->bridge->wlan_dev) {
+		rtnl_unlock();
+		if (!expected_generation &&
+		    pending_state != MOAL_BR_PENDING_NONE &&
+		    moal_bridge_pending_clear_if(pending_ifname,
+						 pending_generation))
+			PRINTM(MMSG,
+			       "bridge: deferred switch cancelled target=%s generation=%lu\n",
+			       pending_ifname, pending_generation);
+		ret = 0;
+		terminal_logged = true;
+		PRINTM(MMSG,
+		       "bridge: runtime switch complete target=%s (no-op)\n",
+		       ifname);
+		goto out_unlock;
+	}
 
 	old.old_owner = bridge_owner;
 	old.old_bss_index = old.old_owner->bridge_effective_wlan_idx;
-	rtnl_lock();
 	spin_lock_irqsave(&br->name_lock, flags);
 	strncpy(old.old_iface, br->wlan_name, sizeof(old.old_iface) - 1);
 	old.old_iface[sizeof(old.old_iface) - 1] = '\0';
@@ -2421,19 +2666,35 @@ int moal_bridge_switch_iface(const char *ifname)
 	else
 		dev_hold(old.peer_dev);
 	spin_unlock_irqrestore(&br->name_lock, flags);
+	ret = moal_bridge_target_link_status(&target);
 	rtnl_unlock();
 	if (!old.peer_dev) {
-		ret = atomic_read(&br->peer_released) ? -ENODEV : -ENETDOWN;
+		if (!ret)
+			ret = atomic_read(&br->peer_released) ?
+				(expected_generation ? -EAGAIN : -ENODEV) :
+				-ENETDOWN;
 		goto out_unlock;
 	}
 	old.keepalive_ms = br->keepalive_ms;
 	old.keepalive_idle_ms = br->keepalive_idle_ms;
-	if (target.dev == bridge_owner->bridge->wlan_dev) {
-		ret = 0;
-		terminal_logged = true;
-		PRINTM(MMSG,
-		       "bridge: runtime switch complete target=%s (no-op)\n",
-		       ifname);
+	if (ret) {
+		if ((ret == -ENETDOWN || ret == -ENOLINK) && allow_defer &&
+		    READ_ONCE(bridge_runtime_deferred) == 1) {
+			unsigned long generation;
+
+			generation = moal_bridge_pending_set(ifname);
+			if (!generation) {
+				ret = -ESHUTDOWN;
+				goto out_peer;
+			}
+			PRINTM(MMSG,
+			       "bridge: deferred switch %s target=%s generation=%lu\n",
+			       pending_state == MOAL_BR_PENDING_NONE ?
+				       "registered" : "replaced",
+			       ifname, generation);
+			ret = 0;
+			terminal_logged = true;
+		}
 		goto out_peer;
 	}
 
@@ -2464,6 +2725,10 @@ int moal_bridge_switch_iface(const char *ifname)
 		}
 		bridge_owner = target.handle;
 		atomic_long_inc(&bridge_switch_ok);
+		if (!expected_generation &&
+		    pending_state != MOAL_BR_PENDING_NONE)
+			moal_bridge_pending_clear_if(pending_ifname,
+						     pending_generation);
 		PRINTM(MMSG, "bridge: runtime switch complete %s -> %s\n",
 		       old.old_iface, ifname);
 		terminal_logged = true;
@@ -2499,6 +2764,11 @@ int moal_bridge_switch_iface(const char *ifname)
 	}
 	if (!rollback_ret) {
 		bridge_owner = old.old_owner;
+		if (expected_generation)
+			moal_bridge_pending_state_if(
+				ifname, expected_generation,
+				MOAL_BR_PENDING_SWITCHING,
+				MOAL_BR_PENDING_WAITING);
 		atomic_long_inc(&bridge_switch_fail);
 		atomic_long_inc(&bridge_rollback_ok);
 		ret = target_ret;
@@ -2532,4 +2802,82 @@ out_card:
 		       ifname, ret);
 	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	return ret;
+}
+
+int moal_bridge_switch_iface(const char *ifname)
+{
+	return moal_bridge_switch_iface_request(ifname, true, 0);
+}
+
+static void moal_bridge_pending_work_fn(struct work_struct *work)
+{
+	char ifname[IFNAMSIZ];
+	char current_ifname[IFNAMSIZ];
+	unsigned long generation;
+	unsigned long current_generation;
+	enum moal_bridge_pending_state state;
+	enum moal_bridge_pending_state current_state;
+	int ret;
+
+	(void)work;
+	moal_bridge_pending_snapshot(ifname, sizeof(ifname), &generation, &state);
+	if (state != MOAL_BR_PENDING_WAITING ||
+	    !moal_bridge_pending_state_if(ifname, generation,
+					  MOAL_BR_PENDING_WAITING,
+					  MOAL_BR_PENDING_SWITCHING))
+		return;
+
+	PRINTM(MMSG,
+	       "bridge: deferred switch attempting target=%s generation=%lu\n",
+	       ifname, generation);
+	ret = moal_bridge_switch_iface_request(ifname, false, generation);
+	if (!moal_bridge_pending_matches(ifname, generation))
+		return;
+	if (!ret) {
+		if (moal_bridge_pending_clear_if(ifname, generation))
+			PRINTM(MMSG,
+			       "bridge: deferred switch complete target=%s generation=%lu\n",
+			       ifname, generation);
+		return;
+	}
+
+	/* A transaction that restored the old bridge returns its target errno,
+	 * but the common path has already restored this generation to waiting. */
+	moal_bridge_pending_snapshot(current_ifname, sizeof(current_ifname),
+				     &current_generation, &current_state);
+	if (current_generation == generation &&
+	    !strcmp(current_ifname, ifname) &&
+	    current_state == MOAL_BR_PENDING_WAITING) {
+		PRINTM(MWARN,
+		       "bridge: deferred switch retained target=%s generation=%lu err=%d\n",
+		       ifname, generation, ret);
+		return;
+	}
+
+	if (ret == -ENETDOWN || ret == -ENOLINK || ret == -EBUSY ||
+	    ret == -EAGAIN || ret == -ERESTARTSYS) {
+		if (moal_bridge_pending_state_if(ifname, generation,
+						 MOAL_BR_PENDING_SWITCHING,
+						 MOAL_BR_PENDING_WAITING))
+			PRINTM(MMSG,
+			       "bridge: deferred switch waiting target=%s generation=%lu err=%d\n",
+			       ifname, generation, ret);
+		return;
+	}
+
+	if (ret == -ESTALE || ret == -EINVAL || ret == -EOPNOTSUPP ||
+	    ret == -EIO) {
+		if (moal_bridge_pending_clear_if(ifname, generation))
+			PRINTM(MERROR,
+			       "bridge: deferred switch cancelled target=%s generation=%lu err=%d\n",
+			       ifname, generation, ret);
+		return;
+	}
+
+	if (moal_bridge_pending_state_if(ifname, generation,
+					 MOAL_BR_PENDING_SWITCHING,
+					 MOAL_BR_PENDING_WAITING))
+		PRINTM(MWARN,
+		       "bridge: deferred switch retained target=%s generation=%lu err=%d\n",
+		       ifname, generation, ret);
 }

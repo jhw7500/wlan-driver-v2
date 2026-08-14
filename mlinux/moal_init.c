@@ -3058,6 +3058,16 @@ static const struct kernel_param_ops bridge_iface_ops = {
 	.get = bridge_iface_get,
 };
 
+static int bridge_pending_iface_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return moal_bridge_get_pending_iface(buf, PAGE_SIZE);
+}
+
+static const struct kernel_param_ops bridge_pending_iface_ops = {
+	.get = bridge_pending_iface_get,
+};
+
 static int bridge_runtime_deferred_set(const char *val,
 					       const struct kernel_param *kp)
 {
@@ -3323,9 +3333,12 @@ MODULE_PARM_DESC(
 	bridge_runtime_deferred,
 	"Defer a runtime bridge request until a registered MOAL STA becomes operational: 0=off(default), 1=on; a matched mod_para block may also enable it");
 module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644);
+module_param_cb(bridge_pending_iface, &bridge_pending_iface_ops, NULL, 0444);
+MODULE_PARM_DESC(bridge_pending_iface,
+		 "Pending deferred L2 bridge interface (read-only)");
 MODULE_PARM_DESC(
 	bridge_iface,
-	"Active bridge STA interface; write a connected MOAL STA name to switch synchronously");
+	"Active bridge STA interface; write a MOAL STA name to switch now or defer per bridge_runtime_deferred");
 #ifdef BRIDGE_SWITCH_FAULT_INJECT
 module_param(bridge_switch_fault_mask, int, 0600);
 MODULE_PARM_DESC(

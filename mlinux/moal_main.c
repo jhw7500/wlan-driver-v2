@@ -15256,6 +15256,7 @@ static int woal_init_module(void)
 	PRINTM(MMSG, "wlan: Driver loaded successfully\n");
 	/* Runtime module-parameter callbacks are safe only after the global
 	 * semaphore, handle table, proc root, and bus/module state exist. */
+	moal_bridge_pending_start();
 	WRITE_ONCE(bridge_runtime_control_ready, 1);
 	LEAVE();
 	return ret;
@@ -15280,6 +15281,7 @@ static void woal_cleanup_module(void)
 
 	PRINTM(MMSG, "wlan: Unloading MWLAN driver\n");
 	WRITE_ONCE(bridge_runtime_control_ready, 0);
+	moal_bridge_pending_cleanup();
 	spin_lock_irqsave(&hang_work_lock, hang_flags);
 	WRITE_ONCE(driver_exit_in_progress, 1);
 	spin_unlock_irqrestore(&hang_work_lock, hang_flags);

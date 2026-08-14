@@ -142,6 +142,9 @@ void moal_bridge_discard_suspended_owner_for_reset(void *handle);
 void moal_bridge_forget_handle(void *handle);
 int moal_bridge_switch_iface(const char *ifname);
 int moal_bridge_get_iface(char *buf, size_t len);
+int moal_bridge_get_pending_iface(char *buf, size_t len);
+void moal_bridge_pending_start(void);
+void moal_bridge_pending_cleanup(void);
 int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv);
 int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb);
 

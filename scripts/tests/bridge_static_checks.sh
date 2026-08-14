@@ -24,7 +24,8 @@ extract_c_function() {
 }
 
 extract_switch_block() {
-  extract_c_function '^int moal_bridge_switch_iface' "$1"
+  extract_c_function '^static int moal_bridge_switch_iface_request' "$1" ||
+    extract_c_function '^int moal_bridge_switch_iface' "$1"
 }
 
 # Extract the matching braced region for a start regex. Scan braces in source
@@ -163,6 +164,146 @@ check_ready_switch_contract() {
     END { exit !(pre && lock && post && lifecycle &&
                  pre < lock && lock < post && post < lifecycle) }
   '
+}
+
+check_pending_storage_contract() {
+  local pending="$1"
+
+  printf '%s\n' "$pending" | awk '
+    /struct moal_bridge_pending_request/ { decl=NR }
+    decl && NR > decl && /;/ && $0 !~ /^[[:space:]]*};/ { total_fields++ }
+    /char ifname\[IFNAMSIZ\]/ { ifname=NR; fields++ }
+    /unsigned long generation/ { generation=NR; fields++ }
+    /enum moal_bridge_pending_state state/ { state=NR; fields++ }
+    /moal_handle[[:space:]]*\*|moal_private[[:space:]]*\*|struct net_device[[:space:]]*\*/ {
+      pointer=NR
+    }
+    END { exit !(decl && ifname && generation && state && fields == 3 &&
+                 total_fields == 3 &&
+                 !pointer && decl < ifname && ifname < generation &&
+                 generation < state) }
+  '
+}
+
+check_pending_notifier_contract() {
+  local notifier="$1" scheduler="$2"
+
+  printf '%s\n' "$notifier" | awk '
+    /event == NETDEV_UP/ && !up { up=NR }
+    /event == NETDEV_CHANGE/ && !change { change=NR }
+    /event == NETDEV_CHANGENAME/ && !rename { rename=NR }
+    /event == NETDEV_UNREGISTER/ && !unregister { unregister=NR }
+    /moal_bridge_pending_schedule_event\(event\)/ { schedule=NR }
+    /dev != br->peer_dev && dev != br->wlan_dev/ { filter=NR }
+    /moal_bridge_switch_iface|__moal_bridge_init_locked|__moal_bridge_deinit_locked|mutex_lock|rtnl_lock|down\(&AddRemoveCardSem\)/ {
+      direct=NR
+    }
+    END { exit !(up && change && rename && unregister && schedule && filter &&
+                 !direct && up <= schedule && change <= schedule &&
+                 rename <= schedule && unregister <= schedule &&
+                 schedule < filter) }
+  ' || return 1
+
+  printf '%s\n' "$scheduler" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending_events_enabled/ && lock { admission=NR }
+    /READ_ONCE\(bridge_runtime_deferred\)/ { deferred=NR }
+    /bridge_pending.state == MOAL_BR_PENDING_WAITING/ { pending=NR }
+    /schedule_work\(&bridge_pending_work\)/ { schedule=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && admission && deferred && pending && schedule && unlock &&
+                 lock < admission && admission <= deferred && deferred <= pending &&
+                 pending < schedule && schedule < unlock) }
+  '
+}
+
+check_pending_worker_contract() {
+  local worker="$1" request="$2"
+
+  printf '%s\n' "$worker" | awk '
+    /moal_bridge_pending_snapshot\(ifname/ { snapshot=NR }
+    /moal_bridge_switch_iface_request\(ifname, false, generation\)/ { request=NR }
+    END { exit !(snapshot && request && snapshot < request) }
+  ' || return 1
+
+  printf '%s\n' "$request" | awk '
+    /MOAL_ACQ_SEMAPHORE_BLOCK\(&AddRemoveCardSem\)/ { card=NR }
+    /READ_ONCE\(bridge_runtime_control_ready\)/ {
+      ready_count++
+      if (ready_count == 2) ready=NR
+    }
+    /mutex_lock\(&bridge_lifecycle_lock\)/ { lifecycle=NR }
+    /moal_bridge_find_target\(ifname, &target\)/ { resolve=NR }
+    END { exit !(card && ready && lifecycle && resolve &&
+                 card < ready && ready < lifecycle && lifecycle < resolve) }
+  '
+}
+
+check_pending_generation_clear_contract() {
+  local worker="$1" clear="$2"
+
+  printf '%s\n' "$worker" |
+    grep -Fq 'moal_bridge_pending_clear_if(ifname, generation)' || return 1
+  printf '%s\n' "$clear" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /strcmp\(bridge_pending.ifname, ifname\)/ { ifname=NR }
+    /bridge_pending.generation == generation/ { generation=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_NONE/ { clear=NR }
+    /bridge_pending.generation\+\+/ { advance=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && ifname && generation && clear && advance && unlock &&
+                 lock < ifname && ifname <= generation && generation < clear &&
+                 clear <= advance && advance < unlock) }
+  '
+}
+
+check_pending_admission_cleanup_contract() {
+  local init="$1" cleanup_module="$2" start="$3" cleanup="$4"
+
+  printf '%s\n' "$init" | awk '
+    /moal_bridge_pending_start\(\)/ { start=NR }
+    /WRITE_ONCE\(bridge_runtime_control_ready, 1\)/ { ready=NR }
+    END { exit !(start && ready && start < ready) }
+  ' || return 1
+  printf '%s\n' "$cleanup_module" | awk '
+    /WRITE_ONCE\(bridge_runtime_control_ready, 0\)/ { ready=NR }
+    /moal_bridge_pending_cleanup\(\)/ { cleanup=NR }
+    /down\(&AddRemoveCardSem\)/ { card=NR }
+    END { exit !(ready && cleanup && card && ready < cleanup && cleanup < card) }
+  ' || return 1
+  printf '%s\n' "$start" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending_events_enabled = true/ { enable=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && enable && unlock && lock < enable && enable < unlock) }
+  ' || return 1
+  printf '%s\n' "$cleanup" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending_events_enabled = false/ { disable=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_NONE/ { clear=NR }
+    /bridge_pending.generation\+\+/ { advance=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    /cancel_work_sync\(&bridge_pending_work\)/ { cancel=NR }
+    END { exit !(lock && disable && clear && advance && unlock && cancel &&
+                 lock < disable && disable <= clear && clear <= advance &&
+                 advance < unlock && unlock < cancel) }
+  '
+}
+
+check_bridge_getter_separation_contract() {
+  local active="$1" pending="$2"
+
+  printf '%s\n' "$active" |
+    grep -Fq 'return moal_bridge_get_iface(buf, PAGE_SIZE);' || return 1
+  if printf '%s\n' "$active" | grep -Fq 'moal_bridge_get_pending_iface'; then
+    return 1
+  fi
+  printf '%s\n' "$pending" |
+    grep -Fq 'return moal_bridge_get_pending_iface(buf, PAGE_SIZE);' || return 1
+  if printf '%s\n' "$pending" | grep -Fq 'moal_bridge_get_iface(buf, PAGE_SIZE)'; then
+    return 1
+  fi
+  return 0
 }
 
 check_runtime_switch_conf_contract() {
@@ -520,6 +661,8 @@ P2W_PACKET_TYPE_BLOCK="$(grep -n -A220 -m1 'moal_bridge_peer_pt_func' "$BRIDGE_C
 # Extract scoped subjects once. Every subsequent source-order and mutation check
 # uses these exact functions rather than a whole-file token match.
 SETTER_BLOCK="$(extract_c_function '^static int bridge_iface_set' "$INIT_C")"
+ACTIVE_PARAM_GETTER_BLOCK="$(extract_c_function '^static int bridge_iface_get' "$INIT_C")"
+PENDING_PARAM_GETTER_BLOCK="$(extract_c_function '^static int bridge_pending_iface_get' "$INIT_C" || true)"
 # parse_cfg_read_block compares against the literal string "}"; the generic
 # brace scanner intentionally does not parse C strings, so use the function's
 # column-zero closing brace as the boundary for this one large parser.
@@ -536,6 +679,12 @@ DRV_MODE_BLOCK="$(extract_c_function '^mlan_status woal_switch_drv_mode' "$MAIN_
 FIND_TARGET_BLOCK="$(extract_c_function '^static int moal_bridge_find_target' "$BRIDGE_C")"
 LINK_STATUS_BLOCK="$(extract_c_function '^static int moal_bridge_target_link_status' "$BRIDGE_C" || true)"
 SWITCH_BLOCK="$(extract_switch_block "$BRIDGE_C")"
+PENDING_REQUEST_BLOCK="$(extract_c_block "$(cat "$BRIDGE_C")" '^struct moal_bridge_pending_request' || true)"
+PENDING_SCHEDULER_BLOCK="$(extract_c_function '^static void moal_bridge_pending_schedule_event' "$BRIDGE_C" || true)"
+PENDING_WORKER_BLOCK="$(extract_c_function '^static void moal_bridge_pending_work_fn\(struct work_struct \*work\)$' "$BRIDGE_C" || true)"
+PENDING_CLEAR_BLOCK="$(extract_c_function '^static bool moal_bridge_pending_clear_if' "$BRIDGE_C" || true)"
+PENDING_START_BLOCK="$(extract_c_function '^void moal_bridge_pending_start' "$BRIDGE_C" || true)"
+PENDING_CLEANUP_BLOCK="$(extract_c_function '^void moal_bridge_pending_cleanup' "$BRIDGE_C" || true)"
 VALIDATE_BLOCK="$(extract_c_function '^static int moal_bridge_validate_binding_locked' "$BRIDGE_C")"
 BRIDGE_INIT_BLOCK="$(extract_c_function '^static int __moal_bridge_init_locked' "$BRIDGE_C")"
 LIFECYCLE_DEINIT_BLOCK="$(extract_c_function '^static void __moal_bridge_deinit_locked' "$BRIDGE_C")"
@@ -558,6 +707,67 @@ QA_CLEANUP_BLOCK="$(extract_c_function '^cleanup\(\)' "$QA_SCRIPT")"
 
 # Invoke all defined strong structural helpers; their focused mutations below
 # make these source-order checks regression gates rather than dead declarations.
+check_pending_storage_contract "$PENDING_REQUEST_BLOCK" ||
+  fail "runtime-switch: pointer-free single pending request state missing"
+PENDING_WITH_POINTER="$(printf '%s\n' "$PENDING_REQUEST_BLOCK" |
+  sed '/enum moal_bridge_pending_state state;/a\	struct net_device *target_dev;')"
+if check_pending_storage_contract "$PENDING_WITH_POINTER"; then
+  fail "runtime-switch: retained pending target pointer mutation accepted"
+fi
+printf 'PASS: runtime-switch pending pointer-lifetime mutation rejected\n'
+
+check_pending_notifier_contract "$NETDEV_EVENT_BLOCK" "$PENDING_SCHEDULER_BLOCK" ||
+  fail "runtime-switch: notifier does not use the non-sleeping pending scheduler"
+NOTIFIER_DIRECT_SWITCH="$(printf '%s\n' "$NETDEV_EVENT_BLOCK" |
+  sed 's/moal_bridge_pending_schedule_event(event);/moal_bridge_switch_iface(dev->name);/')"
+if check_pending_notifier_contract "$NOTIFIER_DIRECT_SWITCH" "$PENDING_SCHEDULER_BLOCK"; then
+  fail "runtime-switch: direct notifier switch mutation accepted"
+fi
+printf 'PASS: runtime-switch notifier-context mutation rejected\n'
+
+check_pending_worker_contract "$PENDING_WORKER_BLOCK" "$SWITCH_BLOCK" ||
+  fail "runtime-switch: pending worker card/readiness/lifecycle order missing"
+PENDING_REQUEST_NO_RECHECK="$(printf '%s\n' "$SWITCH_BLOCK" | awk '
+  /READ_ONCE\(bridge_runtime_control_ready\)/ { n++ }
+  n == 2 { sub(/READ_ONCE\(bridge_runtime_control_ready\)/, "1") }
+  { print }
+')"
+if check_pending_worker_contract "$PENDING_WORKER_BLOCK" "$PENDING_REQUEST_NO_RECHECK"; then
+  fail "runtime-switch: pending worker readiness-recheck mutation accepted"
+fi
+printf 'PASS: runtime-switch pending worker ordering mutation rejected\n'
+
+check_pending_generation_clear_contract "$PENDING_WORKER_BLOCK" "$PENDING_CLEAR_BLOCK" ||
+  fail "runtime-switch: pending completion lacks name/generation compare-and-clear"
+PENDING_CLEAR_NO_GENERATION="$(printf '%s\n' "$PENDING_CLEAR_BLOCK" |
+  sed 's/bridge_pending.generation == generation/true/')"
+if check_pending_generation_clear_contract "$PENDING_WORKER_BLOCK" "$PENDING_CLEAR_NO_GENERATION"; then
+  fail "runtime-switch: pending clear without generation mutation accepted"
+fi
+printf 'PASS: runtime-switch pending generation mutation rejected\n'
+
+check_pending_admission_cleanup_contract "$INIT_MODULE_BLOCK" "$CLEANUP_MODULE_BLOCK" \
+  "$PENDING_START_BLOCK" "$PENDING_CLEANUP_BLOCK" ||
+  fail "runtime-switch: pending admission/cleanup handshake missing"
+CLEANUP_NO_PENDING_DRAIN="$(printf '%s\n' "$CLEANUP_MODULE_BLOCK" |
+  sed 's/moal_bridge_pending_cleanup();/\/\* missing pending drain \*\//')"
+if check_pending_admission_cleanup_contract "$INIT_MODULE_BLOCK" \
+    "$CLEANUP_NO_PENDING_DRAIN" "$PENDING_START_BLOCK" "$PENDING_CLEANUP_BLOCK"; then
+  fail "runtime-switch: missing pending cleanup mutation accepted"
+fi
+printf 'PASS: runtime-switch pending cleanup mutation rejected\n'
+
+check_bridge_getter_separation_contract "$ACTIVE_PARAM_GETTER_BLOCK" \
+  "$PENDING_PARAM_GETTER_BLOCK" ||
+  fail "runtime-switch: active and pending getter separation missing"
+PENDING_GETTER_RETURNS_ACTIVE="$(printf '%s\n' "$PENDING_PARAM_GETTER_BLOCK" |
+  sed 's/moal_bridge_get_pending_iface/moal_bridge_get_iface/')"
+if check_bridge_getter_separation_contract "$ACTIVE_PARAM_GETTER_BLOCK" \
+    "$PENDING_GETTER_RETURNS_ACTIVE"; then
+  fail "runtime-switch: pending getter reporting active interface mutation accepted"
+fi
+printf 'PASS: runtime-switch active/pending getter mutation rejected\n'
+
 check_standard_artifact_fault_absence
 check_fault_hook_compile_guard "$SWITCH_BLOCK" ||
   fail "runtime-switch: every fault declaration and injected branch must be inside BRIDGE_SWITCH_FAULT_INJECT"
