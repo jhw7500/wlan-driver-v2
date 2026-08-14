@@ -525,6 +525,26 @@ check_pending_module_notifier_contract() {
   return 0
 }
 
+# The bridge hardening turned the unsupported-chipset FLR early exit into a
+# hard failure while suspend/resume/reset callers began treating any FLR
+# failure as terminal, so a non-allowlist PCIe part (e.g. PCIE8997) would
+# brick ordinary suspend.  Pin the historical no-op success for chipsets
+# outside the FLR allowlist, before any semaphore or teardown work.
+check_pcie_flr_unsupported_noop_contract() {
+  local flr="$1"
+
+  printf '%s\n' "$flr" | awk '
+    /!IS_PCIE9098\(handle->card_type\)\) \{/ { gate=NR }
+    gate && !ret && /return MLAN_STATUS_(SUCCESS|FAILURE);/ {
+      ret=NR
+      failure=($0 ~ /MLAN_STATUS_FAILURE/)
+    }
+    /down\(&AddRemoveCardSem\)/ && !sem { sem=NR }
+    END { exit !(gate && ret && sem && gate < ret && ret < sem &&
+                 !failure) }
+  '
+}
+
 # The kernel synthesizes NETDEV_UNREGISTER (and GOING_DOWN/DOWN) for every
 # registered device to a notifier being unregistered.  The instance notifier
 # is unregistered on every bridge deinit, so it must never feed identity
@@ -1698,6 +1718,21 @@ if check_pending_module_notifier_contract "$PENDING_MODULE_NB_BLOCK" \
   fail "runtime-switch: unregister-after-drain replay-window mutation accepted"
 fi
 printf 'PASS: runtime-switch cleanup replay-window mutation rejected\n'
+
+check_pcie_flr_unsupported_noop_contract "$PCIE_FLR_BLOCK" ||
+  fail "runtime-switch: unsupported PCIe chipset FLR must stay a no-op success"
+PCIE_FLR_UNSUPPORTED_FATAL="$(printf '%s\n' "$PCIE_FLR_BLOCK" | awk '
+  /!IS_PCIE9098\(handle->card_type\)\) \{/ { gate=1 }
+  gate && !done && /return MLAN_STATUS_SUCCESS;/ {
+    sub(/MLAN_STATUS_SUCCESS/, "MLAN_STATUS_FAILURE")
+    done=1
+  }
+  { print }
+')"
+if check_pcie_flr_unsupported_noop_contract "$PCIE_FLR_UNSUPPORTED_FATAL"; then
+  fail "runtime-switch: unsupported-chipset fatal FLR mutation accepted"
+fi
+printf 'PASS: runtime-switch unsupported-chipset FLR mutation rejected\n'
 
 check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
   "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \

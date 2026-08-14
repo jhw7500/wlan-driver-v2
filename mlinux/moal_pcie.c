@@ -409,8 +409,12 @@ static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
 	    !IS_PCIEIW624(handle->card_type) &&
 	    !IS_PCIEAW693(handle->card_type) &&
 	    !IS_PCIE9098(handle->card_type)) {
+		/* Chipsets outside the FLR allowlist keep the historical no-op
+		 * success: suspend/resume and PCI reset callbacks now treat an
+		 * FLR failure as a terminal recovery error, so a hard failure
+		 * here would brick ordinary suspend on unsupported parts. */
 		LEAVE();
-		return MLAN_STATUS_FAILURE;
+		return MLAN_STATUS_SUCCESS;
 	}
 
 	/* Once FLR has started callers cannot safely abort; use exclusive,
