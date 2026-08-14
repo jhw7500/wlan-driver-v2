@@ -113,6 +113,15 @@ CONFIG_TASKLET_SUPPORT=n
 
 CONFIG_JHW_TEST=n
 
+# Runtime bridge transaction fault injection (QA-only, production default off).
+# `make bridge-fault-guard-check` verifies that the source keeps every hook
+# declaration and injected branch behind the same default-off compile guard.
+CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n
+
+.PHONY: bridge-fault-guard-check
+bridge-fault-guard-check:
+	@bash scripts/tests/bridge_static_checks.sh
+
 #32bit app over 64bit kernel support
 CONFIG_USERSPACE_32BIT_OVER_KERNEL_64BIT=n
 
@@ -156,6 +165,10 @@ ccflags-y += -DLINUX
 
 ifeq ($(CONFIG_JHW_TEST),y)
 ccflags-y += -DJHW_TEST
+endif
+
+ifeq ($(CONFIG_BRIDGE_SWITCH_FAULT_INJECT),y)
+ccflags-y += -DBRIDGE_SWITCH_FAULT_INJECT
 endif
 
 

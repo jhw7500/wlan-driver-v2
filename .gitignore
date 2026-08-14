@@ -39,3 +39,6 @@ docs/superpowers/
 
 # Per-target object cache (obj_cache_swap.sh)
 .build-cache/
+
+# Local isolated development worktrees
+.worktrees/

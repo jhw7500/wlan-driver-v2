@@ -277,7 +277,7 @@ struct usb_card_rec {
 };
 
 void woal_kill_urbs(moal_handle *handle);
-void woal_resubmit_urbs(moal_handle *handle);
+mlan_status woal_resubmit_urbs(moal_handle *handle);
 
 mlan_status woal_write_data_async(moal_handle *handle, mlan_buffer *pmbuf,
 				  t_u8 ep);

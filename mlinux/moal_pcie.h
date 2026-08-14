@@ -152,6 +152,10 @@ typedef struct _pcie_service_card {
 	struct work_struct reset_work;
 	/** work flag */
 	t_u8 work_flags;
+	/** reset producer gate; protected by reset_lock */
+	bool reset_stopping;
+	/** serializes reset_stopping with schedule_work */
+	spinlock_t reset_lock;
 	/** I/O memory regions pointer to the bus */
 	void __iomem *pci_mmap;
 	/** I/O memory regions pointer to the bus */
@@ -162,5 +166,8 @@ typedef struct _pcie_service_card {
 mlan_status woal_pcie_bus_register(void);
 /** Unregister from bus driver function */
 void woal_pcie_bus_unregister(void);
+/** Stop/resume IRQ production across an in-place driver-mode rebuild. */
+mlan_status woal_pcie_drv_mode_quiesce(moal_handle *handle);
+mlan_status woal_pcie_drv_mode_resume(moal_handle *handle);
 
 #endif /* _MOAL_PCIE_H_ */

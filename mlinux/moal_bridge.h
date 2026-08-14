@@ -46,6 +46,9 @@ struct moal_bridge {
 	struct net_device *peer_dev;  /**< peer netdev (eth0, dev_hold'd) */
 	void *wlan_priv;             /**< moal_private* for media_connected check */
 	atomic_t active;             /**< 1 = bridge forwarding active */
+	/** Terminal-init publication gate.  Notifiers/capture can be registered
+	 * before handle->bridge is published, but may not activate forwarding. */
+	atomic_t published;
 
 	/** Filter context — populated from wlan_dev/peer_dev at init */
 	u8 wlan_mac[ETH_ALEN];
@@ -77,6 +80,9 @@ struct moal_bridge {
 	atomic_t p2w_qlen;             /**< hard cap counter for p2w_queue */
 	struct task_struct *p2w_thread;
 	wait_queue_head_t p2w_wait;
+	/** Deferred peer teardown; NETDEV_UNREGISTER runs with RTNL held and must
+	 * not stop kthreads or wait for network grace periods inline. */
+	struct work_struct peer_release_work;
 
 	/** ETH→WLAN capture method:
 	 *  0 = rx_handler (preferred, via netdev_rx_handler_register)
@@ -84,6 +90,12 @@ struct moal_bridge {
 	 */
 	int use_packet_type;
 	struct packet_type peer_pt;  /**< packet_type for fallback mode */
+	/** Stable names captured while both netdev references are valid. These
+	 * remain safe after NETDEV_UNREGISTER releases peer_dev. */
+	char wlan_name[IFNAMSIZ];
+	char peer_name[IFNAMSIZ];
+	/** Serializes whole-name snapshots with NETDEV_CHANGENAME updates. */
+	spinlock_t name_lock;
 
 	/** 1 when peer handler/ref already released via NETDEV_UNREGISTER.
 	 *  atomic_t — writer is the netdev notifier chain (RTNL/softirq),
@@ -105,6 +117,9 @@ struct moal_bridge {
 	 *  bridge_keepalive_idle_ms > 0. */
 	ktime_t ka_last_fwd;
 	atomic_t ka_armed;
+	/** Effective instance policy, independent of configured handle params. */
+	int keepalive_ms;
+	int keepalive_idle_ms;
 
 	/** Back-pointer to moal_handle */
 	void *handle;
@@ -113,6 +128,25 @@ struct moal_bridge {
 /* API — implemented in moal_bridge.c */
 int moal_bridge_init(void *handle, const char *peer_name, int wlan_bss_idx);
 void moal_bridge_deinit(void *handle);
+void moal_bridge_stats_cleanup(void);
+int moal_bridge_stats_init(void);
+/* Caller holds AddRemoveCardSem.  Snapshot/recreate preserve effective
+ * runtime ownership without mutating the configured per-handle policy. */
+int moal_bridge_suspend_owner(void);
+int moal_bridge_suspend_owner_for(void *handle);
+int moal_bridge_suspend_owner_for_reset(void *handle);
+int moal_bridge_resume_owner(void);
+int moal_bridge_resume_owner_for(void *handle);
+void moal_bridge_discard_suspended_owner(void);
+void moal_bridge_discard_suspended_owner_for_reset(void *handle);
+void moal_bridge_forget_handle(void *handle);
+void moal_bridge_pending_invalidate_handle(void *handle);
+void moal_bridge_pending_cancel_all(const char *reason);
+int moal_bridge_switch_iface(const char *ifname);
+int moal_bridge_get_iface(char *buf, size_t len);
+int moal_bridge_get_pending_iface(char *buf, size_t len);
+void moal_bridge_pending_start(void);
+void moal_bridge_pending_cleanup(void);
 int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv);
 int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb);
 

@@ -342,6 +342,8 @@ typedef t_u8 BOOLEAN;
 extern char driver_version[];
 
 extern struct semaphore AddRemoveCardSem;
+extern int bridge_runtime_control_ready;
+extern int driver_exit_in_progress;
 extern int wifi_status;
 extern int max_tx_buf;
 extern int pcie_int_mode;
@@ -2550,7 +2552,7 @@ typedef struct _moal_if_ops {
 	mlan_status (*get_fw_name)(moal_handle *handle);
 	void (*dump_fw_info)(moal_handle *handle);
 	int (*dump_reg_info)(moal_handle *handle, t_u8 *buf);
-	void (*card_reset)(moal_handle *handle);
+	mlan_status (*card_reset)(moal_handle *handle);
 	void (*reg_dbg)(moal_handle *handle);
 	t_u8 (*is_second_mac)(moal_handle *handle);
 } moal_if_ops;
@@ -2875,6 +2877,12 @@ struct _moal_handle {
 	struct mgmt_log_ring mgmt_dump;
 	/** L2 bridge context (NULL when bridge_mode=0) */
 	struct moal_bridge *bridge;
+	/** Effective runtime bridge BSS.  Configuration remains in params. */
+	int bridge_effective_wlan_idx;
+	/** The current synchronous firmware-init caller retains AddRemoveCardSem. */
+	BOOLEAN fw_init_card_sem_owned;
+	/** A void bus-reset prepare callback failed; post must not publish success. */
+	BOOLEAN fw_reset_prepare_failed;
 #ifdef CONFIG_PROC_FS
 	/** Proc top level directory entry */
 	struct proc_dir_entry *proc_wlan;
@@ -4060,6 +4068,8 @@ mlan_status woal_set_get_gen_ie(moal_private *priv, t_u32 action, t_u8 *ie,
 mlan_status woal_request_soft_reset(moal_handle *handle);
 #endif
 int woal_request_fw_reload(moal_handle *phandle, t_u8 mode);
+void woal_quiesce_reset_work(moal_handle *handle);
+void woal_cancel_hang_work(moal_handle *handle);
 
 /** Get debug information */
 mlan_status woal_get_debug_info(moal_private *priv, t_u8 wait_option,

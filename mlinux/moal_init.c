@@ -21,6 +21,7 @@
  *
  */
 #include "moal_main.h"
+#include "moal_bridge.h"
 
 /** Global moal_handle array */
 extern pmoal_handle m_handle[];
@@ -93,6 +94,16 @@ static int mgmt_hex_dump = 0;
 int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
+int bridge_runtime_switch;
+int bridge_runtime_deferred;
+/* Runtime-only bridge control is unavailable while module parameters are
+ * parsed and while teardown is in progress.  The module init/exit path owns
+ * publication after AddRemoveCardSem and the global handle table are valid. */
+int bridge_runtime_control_ready;
+int driver_exit_in_progress;
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+int bridge_switch_fault_mask;
+#endif
 int bridge_debug;
 /** Local hairpin: 로컬발 TX(dst==클론 MAC)를 공중 대신 유선 peer 로 divert
  *  + ARP tee/inject. 유선 peer IP 인지(peer_route/ip_discovery) 불요.
@@ -566,6 +577,30 @@ out:
 }
 
 /**
+ *  @brief Read an exact 0/1 runtime bridge policy from mod_para
+ *
+ *  parse_cfg_get_line() has already removed spaces and tabs.  Keep this
+ *  feature-specific parser narrow so legacy integer keys retain their syntax.
+ */
+static mlan_status parse_line_read_bridge_bool(t_u8 *line, const char *key,
+					       int *out_data)
+{
+	size_t key_len;
+
+	if (!line || !key || !out_data)
+		return MLAN_STATUS_FAILURE;
+	key_len = strlen(key);
+	if (strncmp(line, key, key_len) || line[key_len] != '=' ||
+	    (line[key_len + 1] != '0' && line[key_len + 1] != '1') ||
+	    line[key_len + 2] != '\0') {
+		*out_data = 0;
+		return MLAN_STATUS_FAILURE;
+	}
+	*out_data = line[key_len + 1] - '0';
+	return MLAN_STATUS_SUCCESS;
+}
+
+/**
  *  @brief This function read a string in module parameter file
  *
  *  @param line     A pointer to a line
@@ -674,6 +709,10 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 					moal_handle *handle)
 {
 	int out_data = 0, end = 0;
+	int bridge_runtime_switch_cfg = 0;
+	int bridge_runtime_switch_present = 0;
+	int bridge_runtime_deferred_cfg = 0;
+	int bridge_runtime_deferred_present = 0;
 	char *out_str = NULL;
 	t_u8 line[MAX_LINE_LEN];
 	moal_mod_para *params = &handle->params;
@@ -903,6 +942,32 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->mgmt_hex_dump = out_data;
 			PRINTM(MMSG, "mgmt_hex_dump = %d\n",
 			       params->mgmt_hex_dump);
+		} else if (strncmp(line, "bridge_runtime_switch=",
+				   strlen("bridge_runtime_switch=")) == 0) {
+			if (parse_line_read_bridge_bool(
+				    line, "bridge_runtime_switch", &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			if (out_data != 0 && out_data != 1) {
+				PRINTM(MERROR,
+				       "bridge_runtime_switch must be 0 or 1\n");
+				goto err;
+			}
+			bridge_runtime_switch_cfg = out_data;
+			bridge_runtime_switch_present = 1;
+		} else if (strncmp(line, "bridge_runtime_deferred=",
+				   strlen("bridge_runtime_deferred=")) == 0) {
+			if (parse_line_read_bridge_bool(
+				    line, "bridge_runtime_deferred", &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			if (out_data != 0 && out_data != 1) {
+				PRINTM(MERROR,
+				       "bridge_runtime_deferred must be 0 or 1\n");
+				goto err;
+			}
+			bridge_runtime_deferred_cfg = out_data;
+			bridge_runtime_deferred_present = 1;
 		} else if (strncmp(line, "bridge_mode",
 				   strlen("bridge_mode")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1729,8 +1794,26 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 	params->mclient_scheduling = 0;
 #endif
 
-	if (end)
+	if (end) {
+		/* The runtime switch is one module-wide policy for the singleton
+		 * bridge, although mod_para is parsed once per adapter block.  Enable
+		 * it monotonically so a later DBDC block containing 0 cannot undo an
+		 * earlier block containing 1 or an explicit insmod argument. */
+		if (bridge_runtime_switch_cfg)
+			WRITE_ONCE(bridge_runtime_switch, 1);
+		if (bridge_runtime_deferred_cfg)
+			WRITE_ONCE(bridge_runtime_deferred, 1);
+		if (bridge_runtime_switch_present)
+			PRINTM(MMSG,
+			       "bridge_runtime_switch = %d (conf=%d)\n",
+			       READ_ONCE(bridge_runtime_switch),
+			       bridge_runtime_switch_cfg);
+		if (bridge_runtime_deferred_present)
+			PRINTM(MMSG, "bridge_runtime_deferred = %d (conf=%d)\n",
+			       READ_ONCE(bridge_runtime_deferred),
+			       bridge_runtime_deferred_cfg);
 		return ret;
+	}
 err:
 	PRINTM(MMSG, "Invalid line: %s\n", line);
 	ret = MLAN_STATUS_FAILURE;
@@ -2961,6 +3044,76 @@ out:
 	return ret;
 }
 
+static int bridge_iface_set(const char *val, const struct kernel_param *kp)
+{
+	char ifname[IFNAMSIZ];
+	size_t len = 0, end;
+
+	(void)kp;
+	if (!READ_ONCE(bridge_runtime_control_ready))
+		return -EAGAIN;
+	if (!READ_ONCE(bridge_runtime_switch))
+		return -EOPNOTSUPP;
+	if (!val)
+		return -EINVAL;
+	while (val[len] && val[len] != '\r' && val[len] != '\n') {
+		if (len >= sizeof(ifname) - 1)
+			return -EINVAL;
+		len++;
+	}
+	end = len;
+	while (val[end] == '\r' || val[end] == '\n')
+		end++;
+	if (!len || val[end])
+		return -EINVAL;
+	memcpy(ifname, val, len);
+	ifname[len] = '\0';
+	if (!dev_valid_name(ifname))
+		return -EINVAL;
+	return moal_bridge_switch_iface(ifname);
+}
+
+static int bridge_iface_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return moal_bridge_get_iface(buf, PAGE_SIZE);
+}
+
+static const struct kernel_param_ops bridge_iface_ops = {
+	.set = bridge_iface_set,
+	.get = bridge_iface_get,
+};
+
+static int bridge_pending_iface_get(char *buf, const struct kernel_param *kp)
+{
+	(void)kp;
+	return moal_bridge_get_pending_iface(buf, PAGE_SIZE);
+}
+
+static const struct kernel_param_ops bridge_pending_iface_ops = {
+	.get = bridge_pending_iface_get,
+};
+
+static int bridge_runtime_deferred_set(const char *val,
+					       const struct kernel_param *kp)
+{
+	int value = 0;
+	int ret;
+
+	ret = kstrtoint(val, 0, &value);
+	if (ret)
+		return ret;
+	if (value != 0 && value != 1)
+		return -EINVAL;
+	*(int *)kp->arg = value;
+	return 0;
+}
+
+static const struct kernel_param_ops bridge_runtime_deferred_ops = {
+	.set = bridge_runtime_deferred_set,
+	.get = param_get_int,
+};
+
 module_param(mod_para, charp, 0);
 MODULE_PARM_DESC(mod_para, "Module parameters configuration file");
 module_param(hw_test, int, 0660);
@@ -3196,6 +3349,28 @@ MODULE_PARM_DESC(
 	"Mgmt frame full IE hex dump in /proc/mwlan/adapter*/mgmt_dump: 0=off (default), 1=on. Per-adapter via wifi_init_conf.json (mlanN.mgmt_hex_dump_enable). Requires net_rx>=2 (RX) and/or net_rx&0x4 (TX). Module reload required to change.");
 module_param(bridge_mode, int, 0);
 MODULE_PARM_DESC(bridge_mode, "L2 bridge: 0=off(default), 1=on");
+module_param(bridge_runtime_switch, int, 0444);
+MODULE_PARM_DESC(
+	bridge_runtime_switch,
+	"Allow synchronous runtime switching of an active L2 bridge: 0=off(default), 1=on; a matched mod_para block may also enable it");
+module_param_cb(bridge_runtime_deferred, &bridge_runtime_deferred_ops,
+		       &bridge_runtime_deferred, 0444);
+MODULE_PARM_DESC(
+	bridge_runtime_deferred,
+	"Defer a runtime bridge request until a registered MOAL STA becomes operational: 0=off(default), 1=on; a matched mod_para block may also enable it");
+module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644);
+module_param_cb(bridge_pending_iface, &bridge_pending_iface_ops, NULL, 0444);
+MODULE_PARM_DESC(bridge_pending_iface,
+		 "Pending deferred L2 bridge interface (read-only)");
+MODULE_PARM_DESC(
+	bridge_iface,
+	"Active bridge STA interface; write a MOAL STA name to switch now or defer per bridge_runtime_deferred");
+#ifdef BRIDGE_SWITCH_FAULT_INJECT
+module_param(bridge_switch_fault_mask, int, 0600);
+MODULE_PARM_DESC(
+	bridge_switch_fault_mask,
+	"QA-only one-shot bridge switch faults: bit0 target init, bit1 rollback init");
+#endif
 module_param(bridge_peer, charp, 0);
 MODULE_PARM_DESC(bridge_peer, "Bridge peer interface (default: eth0)");
 module_param(bridge_wlan_idx, int, 0);
