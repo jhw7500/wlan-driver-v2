@@ -211,7 +211,35 @@ check_runtime_deferred_conf_contract() {
                  range < save && save <= mark && mark < commit && commit < enable &&
                  enable < log_line) }
   ' || return 1
-  grep -q 'module_param(bridge_runtime_deferred, int, 0444)' "$INIT_C"
+  grep -q 'module_param_cb(bridge_runtime_deferred, &bridge_runtime_deferred_ops' "$INIT_C"
+}
+
+check_runtime_deferred_param_contract() {
+  check_runtime_deferred_param_contract_from_source "$(cat "$INIT_C")"
+}
+
+check_runtime_deferred_param_contract_from_source() {
+  local init_source="$1"
+
+  printf '%s\n' "$init_source" | awk '
+    /static int bridge_runtime_deferred_set\(const char \*val,/ { set_decl=NR }
+    /int value = 0/ { value_decl=NR }
+    /kstrtoint\(val, 0, &value\)/ { parse=NR }
+    /value != 0 && value != 1/ { range=NR }
+    /return -EINVAL/ && range && !reject { reject=NR }
+    /\*\(int \*\)kp->arg = value/ { store=NR }
+    /static const struct kernel_param_ops bridge_runtime_deferred_ops/ { ops=NR }
+    /\.set = bridge_runtime_deferred_set/ { set_op=NR }
+    /\.get = param_get_int/ { get_op=NR }
+    /module_param_cb\(bridge_runtime_deferred, &bridge_runtime_deferred_ops,/ { register=NR }
+    /&bridge_runtime_deferred, 0444\)/ { mode=NR }
+    /module_param_cb\(bridge_runtime_deferred, &bridge_runtime_deferred_ops, NULL, 0444\)/ { bad_register=NR }
+    END { exit !(set_decl && value_decl && parse && range && reject && store &&
+                 ops && set_op && get_op && register && mode && !bad_register &&
+                 set_decl < value_decl && value_decl < parse && parse < range &&
+                 range < reject && reject < store && store < ops && ops < set_op &&
+                 set_op < get_op && get_op < register && register < mode) }
+  '
 }
 
 check_cleanup_transaction() {
@@ -515,6 +543,23 @@ if check_runtime_deferred_conf_contract "$CONF_PARSER_DEFERRED_NO_RANGE"; then
   fail "runtime-switch: deferred conf range-check mutation accepted"
 fi
 printf 'PASS: runtime-switch deferred conf range-check mutation rejected\n'
+
+check_runtime_deferred_param_contract ||
+  fail "runtime-switch: deferred module parameter validator missing"
+
+DEFERRED_PARAM_NO_RANGE="$(sed 's/value != 0 && value != 1/value < 0/' "$INIT_C")"
+if check_runtime_deferred_param_contract_from_source "$DEFERRED_PARAM_NO_RANGE"; then
+  fail "runtime-switch: deferred module parameter range mutation accepted"
+fi
+printf 'PASS: runtime-switch deferred module parameter range mutation rejected\n'
+
+DEFERRED_PARAM_NO_CALLBACK="$(sed \
+  's/module_param_cb(bridge_runtime_deferred, &bridge_runtime_deferred_ops,/\/\* missing strict callback *\//' \
+  "$INIT_C")"
+if check_runtime_deferred_param_contract_from_source "$DEFERRED_PARAM_NO_CALLBACK"; then
+  fail "runtime-switch: deferred permissive module parameter mutation accepted"
+fi
+printf 'PASS: runtime-switch deferred permissive module parameter mutation rejected\n'
 
 grep -Fq '✓(전역 enable-only)' "$PARAM_DOC" ||
   fail "runtime-switch: parameter docs missing conf enable-only contract"

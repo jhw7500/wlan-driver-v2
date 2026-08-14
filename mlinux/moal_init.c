@@ -3058,6 +3058,26 @@ static const struct kernel_param_ops bridge_iface_ops = {
 	.get = bridge_iface_get,
 };
 
+static int bridge_runtime_deferred_set(const char *val,
+					       const struct kernel_param *kp)
+{
+	int value = 0;
+	int ret;
+
+	ret = kstrtoint(val, 0, &value);
+	if (ret)
+		return ret;
+	if (value != 0 && value != 1)
+		return -EINVAL;
+	*(int *)kp->arg = value;
+	return 0;
+}
+
+static const struct kernel_param_ops bridge_runtime_deferred_ops = {
+	.set = bridge_runtime_deferred_set,
+	.get = param_get_int,
+};
+
 module_param(mod_para, charp, 0);
 MODULE_PARM_DESC(mod_para, "Module parameters configuration file");
 module_param(hw_test, int, 0660);
@@ -3297,7 +3317,8 @@ module_param(bridge_runtime_switch, int, 0444);
 MODULE_PARM_DESC(
 	bridge_runtime_switch,
 	"Allow synchronous runtime switching of an active L2 bridge: 0=off(default), 1=on; a matched mod_para block may also enable it");
-module_param(bridge_runtime_deferred, int, 0444);
+module_param_cb(bridge_runtime_deferred, &bridge_runtime_deferred_ops,
+		       &bridge_runtime_deferred, 0444);
 MODULE_PARM_DESC(
 	bridge_runtime_deferred,
 	"Defer a runtime bridge request until a registered MOAL STA becomes operational: 0=off(default), 1=on; a matched mod_para block may also enable it");
