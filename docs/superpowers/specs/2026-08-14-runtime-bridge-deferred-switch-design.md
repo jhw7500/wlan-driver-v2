@@ -143,9 +143,13 @@ locks. The worker:
 6. clears pending state only if the generation still matches.
 
 The generation check prevents an old worker from clearing or applying a newer
-application request. Module/card teardown stops new scheduling, cancels and
-drains the work item, and clears pending state before runtime control data is
-destroyed.
+application request. A notifier-admission boolean is protected by the same
+pending-state spinlock: init enables admission before publishing runtime
+control readiness, while teardown clears readiness, disables admission under
+that lock, and only then cancels and drains the work item. This closes the
+read-gate-then-queue race in which a notifier could otherwise enqueue work just
+after `cancel_work_sync()` returned. Pending state is cleared before runtime
+control data is destroyed.
 
 ## 7. Failure Semantics and Logging
 
