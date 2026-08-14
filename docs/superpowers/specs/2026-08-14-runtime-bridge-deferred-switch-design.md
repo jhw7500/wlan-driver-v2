@@ -8,8 +8,9 @@
 Allow an application to request a runtime bridge interface switch before the
 target MOAL STA interface is operational, without interrupting the currently
 working bridge. The existing `bridge_iface` write remains the only control
-operation. A request for a disconnected or administratively down target becomes
-a pending request and is applied automatically when that target is ready.
+operation. With `bridge_runtime_deferred=1`, a request for a disconnected or
+administratively down target becomes a pending request and is applied
+automatically when that target is ready; default-off mode retains rejection.
 
 This feature does not change association policy, connect a WLAN, or validate
 end-to-end traffic over the selected AP. The separately observed mlan1
@@ -30,7 +31,9 @@ bridge_runtime_deferred=0
   configuration uses enable-only global aggregation: any successfully parsed
   block containing `1` enables it, while a block containing `0` cannot disable
   an enable selected by another block.
-- Only `0` and `1` are accepted. Invalid values fail parsing with a diagnostic.
+- Only exact, single-character `0` and `1` values after the exact key delimiter
+  are accepted. Empty/sign-only/extended values on the exact key fail parsing
+  with a diagnostic; a prefix-extended different key cannot select the policy.
 
 `bridge_runtime_switch=1` remains required. Enabling deferred mode does not
 enable runtime switching by itself.
@@ -45,9 +48,11 @@ echo mlan0 > /sys/module/moal/parameters/bridge_iface
 
 The driver resolves the request as follows:
 
-1. If the target is operational, perform the existing synchronous switch.
+1. If the target is operational, perform the existing synchronous switch; a
+   successful return is strict ready completion.
 2. If the target is structurally valid but down, disconnected, or has no
-   carrier, retain the current bridge and record the target as pending.
+   carrier, retain the current bridge and record the target as pending. This
+   successful return is deferred acceptance, not switch completion.
 3. If the target is absent, is not a MOAL STA, is unregistering, or belongs to
    an unavailable/resetting handle, reject the write without changing either
    active or pending state.
@@ -66,8 +71,9 @@ when no request is pending. Bridge stats also expose:
 iface=mlan1 pending_iface=mlan0 pending_state=waiting
 ```
 
-The state becomes `none` after completion or cancellation. The getter never
-reports a pending target as active.
+Stats state becomes `none` after completion or cancellation and uses
+`pending_iface=none pending_state=none`; the parameter getter's no-request wire
+value remains an empty line. The getter never reports a pending target as active.
 
 ## 4. State Machine
 
@@ -91,18 +97,23 @@ active=mlan0, pending=none
 
 Rules:
 
-- Writing a new structurally valid inactive target replaces the prior pending
-  request.
-- Writing the current active interface cancels any pending request and is a
-  successful no-op.
+- Writing a new structurally valid, link-not-ready target replaces the prior
+  pending request. A ready target instead runs the immediate transaction and
+  consumes the old pending request on successful completion.
+- Writing the current active interface cancels an actually existing pending
+  request and is a successful no-op even through transient readiness. With no
+  pending request, the same-target no-op still requires the legacy target and
+  peer readiness/identity checks.
 - A successful immediate switch clears a pending request.
 - A failed immediate switch leaves the previously committed pending request
   unchanged.
 - A pending request has no timeout. It remains until it completes, is replaced,
   is explicitly cancelled by writing the active interface, or the target is
   unregistered.
-- Target unregister cancels the matching pending request. A later interface
-  reusing the same name does not inherit the cancelled request.
+- An init_net target unregister cancels the exact matching pending name. A
+  rename cancels only if the pending old name has disappeared from init_net
+  under notifier-held RTNL; unrelated and cross-netns events are ignored. A
+  later interface reusing the same name does not inherit the cancelled request.
 
 ## 5. Readiness and Safety Boundaries
 
@@ -151,6 +162,12 @@ read-gate-then-queue race in which a notifier could otherwise enqueue work just
 after `cancel_work_sync()` returned. Pending state is cleared before runtime
 control data is destroyed.
 
+Pending is retained only across reset paths that preserve netdev identity.
+Before destructive interface recreation, the reset path synchronously
+invalidates matching pending identity while old handle/priv/netdev names are
+still pinned. Terminal reset/reload failure or other terminal no-owner teardown
+clears all pending state; a same-name recreated netdev cannot inherit it.
+
 ## 7. Failure Semantics and Logging
 
 - Registering a deferred request returns success because the request is durably
@@ -187,11 +204,19 @@ Target validation must cover:
    remain on the old interface, and pending reports the target.
 3. Bringing the target up and associating it produces exactly one automatic
    switch and clears pending state.
-4. Replacement and active-name cancellation behave deterministically.
+4. Replacement and active-name cancellation behave deterministically. True
+   replacement requires a third registered, present, link-not-ready STA distinct
+   from active and pending; a ready third target is an immediate completion.
+   Two-STA hardware records replacement as NOT RUN/UNSUPPORTED.
 5. Target unregister cancels pending without a stale switch after name reuse.
-6. Concurrent writers, reset/reload, remove, and module unload do not produce
+6. Unrelated init_net rename and cross-netns same-name events leave pending
+   unchanged, while exact target identity loss cancels it before name reuse.
+7. Destructive reset success invalidates a request for a recreated target and
+   terminal destructive failure leaves no unfulfillable pending request;
+   identity-preserving reset may retain it.
+8. Concurrent writers, reset/reload, remove, and module unload do not produce
    stale work, UAF, lockdep reports, or an incorrect owner.
-7. Existing synchronous successful switch and rollback fault cases still pass.
+9. Existing synchronous successful switch and rollback fault cases still pass.
 
 Builds are run only after code freeze: one i.MX93 build, followed by one final
 i.MX8 build, matching the project validation policy.

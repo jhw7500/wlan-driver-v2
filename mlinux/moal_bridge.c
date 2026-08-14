@@ -215,37 +215,52 @@ static void moal_bridge_pending_schedule_event(
 	bool notifier_published)
 {
 	char cancelled_ifname[IFNAMSIZ];
-	unsigned long cancelled_generation = 0;
+	unsigned long cancelled_generation;
 	unsigned long flags;
-	bool cancelled = false;
+	enum moal_bridge_pending_state pending_state;
+
+	/* The bridge resolves public names only in init_net.  A same-named device
+	 * in another namespace is unrelated to the retained request. */
+	if (!dev || dev_net(dev) != &init_net)
+		return;
+
+	/* Netdevice notifiers run with RTNL held.  After a target rename its old
+	 * name has disappeared from init_net, but an unrelated rename leaves the
+	 * pending name resolvable.  Snapshot under the pending spinlock, resolve
+	 * outside it, then generation-check the clear before RTNL permits reuse. */
+	if (event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER) {
+		spin_lock_irqsave(&bridge_pending_lock, flags);
+		if (!bridge_pending_events_enabled ||
+		    READ_ONCE(bridge_runtime_deferred) != 1) {
+			spin_unlock_irqrestore(&bridge_pending_lock, flags);
+			return;
+		}
+		strncpy(cancelled_ifname, bridge_pending.ifname,
+			sizeof(cancelled_ifname) - 1);
+		cancelled_ifname[sizeof(cancelled_ifname) - 1] = '\0';
+		cancelled_generation = bridge_pending.generation;
+		pending_state = bridge_pending.state;
+		spin_unlock_irqrestore(&bridge_pending_lock, flags);
+
+		if (pending_state == MOAL_BR_PENDING_NONE ||
+		    (event == NETDEV_UNREGISTER &&
+		     strcmp(cancelled_ifname, dev->name)) ||
+		    (event == NETDEV_CHANGENAME &&
+		     __dev_get_by_name(&init_net, cancelled_ifname)))
+			return;
+		if (moal_bridge_pending_clear_if(cancelled_ifname,
+						 cancelled_generation))
+			PRINTM(MMSG,
+			       "bridge: deferred switch cancelled target=%s generation=%lu event=%lu\n",
+			       cancelled_ifname, cancelled_generation, event);
+		return;
+	}
 
 	spin_lock_irqsave(&bridge_pending_lock, flags);
 	if (!bridge_pending_events_enabled ||
 	    READ_ONCE(bridge_runtime_deferred) != 1)
 		goto out_unlock;
-
-	/* CHANGENAME exposes only the new name, so conservatively invalidate the
-	 * sole pending identity before RTNL permits old-name reuse.  UNREGISTER
-	 * still exposes the old name and can cancel only the matching request. */
-	if (event == NETDEV_CHANGENAME ||
-	    (event == NETDEV_UNREGISTER && dev &&
-	     bridge_pending.state != MOAL_BR_PENDING_NONE &&
-	     !strcmp(bridge_pending.ifname, dev->name))) {
-		if (bridge_pending.state != MOAL_BR_PENDING_NONE) {
-			strncpy(cancelled_ifname, bridge_pending.ifname,
-				sizeof(cancelled_ifname) - 1);
-			cancelled_ifname[sizeof(cancelled_ifname) - 1] = '\0';
-			cancelled_generation = bridge_pending.generation;
-			bridge_pending.state = MOAL_BR_PENDING_NONE;
-			bridge_pending.ifname[0] = '\0';
-			bridge_pending.generation++;
-			bridge_pending_event_during_switch = false;
-			cancelled = true;
-		}
-		goto out_unlock;
-	}
-
-	if ((event != NETDEV_UP && event != NETDEV_CHANGE) || !dev ||
+	if ((event != NETDEV_UP && event != NETDEV_CHANGE) ||
 	    bridge_pending.state == MOAL_BR_PENDING_NONE ||
 	    strcmp(bridge_pending.ifname, dev->name))
 		goto out_unlock;
@@ -261,10 +276,6 @@ static void moal_bridge_pending_schedule_event(
 
 out_unlock:
 	spin_unlock_irqrestore(&bridge_pending_lock, flags);
-	if (cancelled)
-		PRINTM(MMSG,
-		       "bridge: deferred switch cancelled target=%s generation=%lu event=%lu\n",
-		       cancelled_ifname, cancelled_generation, event);
 }
 
 struct moal_bridge_target {
@@ -2459,6 +2470,10 @@ static int __moal_bridge_resume_owner(void *expected_handle,
 	if (!ret) {
 		bridge_owner = saved.handle;
 		moal_bridge_pending_kick();
+	} else {
+		/* The saved identity was consumed, but no owner could be
+		 * republished.  A retained request can no longer complete. */
+		moal_bridge_pending_cancel_all("suspended owner resume failure");
 	}
 	dev_put(saved.peer_dev);
 	mutex_unlock(&bridge_lifecycle_lock);
@@ -2479,6 +2494,13 @@ static void __moal_bridge_discard_suspended_owner(void *expected_handle,
 						   bool allow_companion)
 {
 	mutex_lock(&bridge_lifecycle_lock);
+	/* A handle-scoped reset may not own the active bridge.  In that case no
+	 * identity was suspended, so its terminal path must not clear another
+	 * bridge owner's otherwise valid pending request. */
+	if (!bridge_suspended_owner.valid) {
+		mutex_unlock(&bridge_lifecycle_lock);
+		return;
+	}
 	if (expected_handle && bridge_suspended_owner.valid &&
 	    ((!allow_companion &&
 	      bridge_suspended_owner.handle != expected_handle) ||
@@ -2488,6 +2510,10 @@ static void __moal_bridge_discard_suspended_owner(void *expected_handle,
 		mutex_unlock(&bridge_lifecycle_lock);
 		return;
 	}
+	/* Every caller that discards (rather than resumes) the saved owner is on a
+	 * terminal recovery/removal path.  No active-name cancellation route
+	 * remains, so retained requests would be unfulfillable. */
+	moal_bridge_pending_cancel_all("suspended owner discarded");
 	if (bridge_suspended_owner.peer_dev)
 		dev_put(bridge_suspended_owner.peer_dev);
 	memset(&bridge_suspended_owner, 0,
@@ -2506,8 +2532,8 @@ void moal_bridge_discard_suspended_owner_for_reset(void *handle)
 }
 
 /* Caller holds AddRemoveCardSem, so handle->priv[] stays live; RTNL below
- * stabilizes each netdev name until a matching generation is cancelled. */
-void moal_bridge_forget_handle(void *phandle)
+ * stabilizes each old netdev name until a matching generation is cancelled. */
+void moal_bridge_pending_invalidate_handle(void *phandle)
 {
 	moal_handle *handle = phandle;
 	char pending_ifname[IFNAMSIZ];
@@ -2530,12 +2556,57 @@ void moal_bridge_forget_handle(void *phandle)
 			if (moal_bridge_pending_clear_if(pending_ifname,
 						 pending_generation))
 				PRINTM(MMSG,
-				       "bridge: deferred switch cancelled target=%s generation=%lu unregister\n",
+				       "bridge: deferred switch cancelled target=%s generation=%lu interface identity destroyed\n",
 				       pending_ifname, pending_generation);
 			break;
 		}
 		rtnl_unlock();
 	}
+	mutex_unlock(&bridge_lifecycle_lock);
+}
+
+void moal_bridge_pending_cancel_all(const char *reason)
+{
+	char cancelled_ifname[IFNAMSIZ];
+	unsigned long cancelled_generation = 0;
+	unsigned long flags;
+	bool cancelled = false;
+
+	spin_lock_irqsave(&bridge_pending_lock, flags);
+	if (bridge_pending.state != MOAL_BR_PENDING_NONE) {
+		strncpy(cancelled_ifname, bridge_pending.ifname,
+			sizeof(cancelled_ifname) - 1);
+		cancelled_ifname[sizeof(cancelled_ifname) - 1] = '\0';
+		cancelled_generation = bridge_pending.generation;
+		bridge_pending.state = MOAL_BR_PENDING_NONE;
+		bridge_pending.ifname[0] = '\0';
+		bridge_pending.generation++;
+		bridge_pending_event_during_switch = false;
+		cancelled = true;
+	}
+	spin_unlock_irqrestore(&bridge_pending_lock, flags);
+
+	if (cancelled)
+		PRINTM(MERROR,
+		       "bridge: deferred switch cancelled target=%s generation=%lu reason=%s\n",
+		       cancelled_ifname, cancelled_generation,
+		       reason ? reason : "terminal owner loss");
+}
+
+void moal_bridge_forget_handle(void *phandle)
+{
+	moal_handle *handle = phandle;
+	bool owner_will_be_lost;
+
+	if (!handle)
+		return;
+	moal_bridge_pending_invalidate_handle(handle);
+	mutex_lock(&bridge_lifecycle_lock);
+	owner_will_be_lost = bridge_owner == handle ||
+		(bridge_suspended_owner.valid &&
+		 bridge_suspended_owner.handle == handle);
+	if (owner_will_be_lost)
+		moal_bridge_pending_cancel_all("bridge owner removed");
 	if (bridge_owner == handle) {
 		__moal_bridge_deinit_locked(handle);
 		bridge_owner = NULL;
@@ -2645,6 +2716,15 @@ static int moal_bridge_validate_binding_locked(
 	return 0;
 }
 
+static void moal_bridge_log_request_rejection(
+	const char *ifname, int error, unsigned long expected_generation)
+{
+	if (expected_generation)
+		return;
+	PRINTM(MERROR, "bridge: runtime switch rejected target=%s err=%d\n",
+	       ifname, error);
+}
+
 static int moal_bridge_switch_iface_request(const char *ifname,
 					     bool allow_defer,
 					     unsigned long expected_generation)
@@ -2664,23 +2744,24 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 	int fault_mask = 0;
 #endif
 	bool terminal_logged = false;
+	bool same_target = false;
 
 	if (!ifname || !ifname[0])
 		return -EINVAL;
 	PRINTM(MMSG, "bridge: runtime switch requested target=%s\n", ifname);
 	if (!READ_ONCE(bridge_runtime_control_ready)) {
-		PRINTM(MERROR, "bridge: runtime switch rejected target=%s err=%d\n",
-		       ifname, -EAGAIN);
+		moal_bridge_log_request_rejection(ifname, -EAGAIN,
+					  expected_generation);
 		return -EAGAIN;
 	}
 	if (READ_ONCE(bridge_runtime_switch) != 1) {
-		PRINTM(MERROR, "bridge: runtime switch rejected target=%s err=%d\n",
-		       ifname, -EOPNOTSUPP);
+		moal_bridge_log_request_rejection(ifname, -EOPNOTSUPP,
+					  expected_generation);
 		return -EOPNOTSUPP;
 	}
 	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
-		PRINTM(MERROR, "bridge: runtime switch interrupted target=%s err=%d\n",
-		       ifname, -ERESTARTSYS);
+		moal_bridge_log_request_rejection(ifname, -ERESTARTSYS,
+					  expected_generation);
 		return -ERESTARTSYS;
 	}
 	if (!READ_ONCE(bridge_runtime_control_ready)) {
@@ -2713,18 +2794,18 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 		goto out_unlock;
 	}
 	/* The current owner's pointer identity is already pinned by the card and
-	 * lifecycle locks.  Compare its RTNL-stable live name before resolver
-	 * reset/presence predicates so cancellation remains available during a
-	 * temporary reset or unregister transition. */
-	if (!strcmp(br->wlan_dev->name, ifname)) {
+	 * lifecycle locks.  A real pending cancellation must remain available
+	 * during transient reset/link failure, but an ordinary same-name write
+	 * retains the strict legacy target/readiness/peer validation below. */
+	same_target = !strcmp(br->wlan_dev->name, ifname);
+	if (same_target && !expected_generation &&
+	    pending_state != MOAL_BR_PENDING_NONE &&
+	    moal_bridge_pending_clear_if(pending_ifname,
+					 pending_generation)) {
 		rtnl_unlock();
-		if (!expected_generation &&
-		    pending_state != MOAL_BR_PENDING_NONE &&
-		    moal_bridge_pending_clear_if(pending_ifname,
-						 pending_generation))
-			PRINTM(MMSG,
-			       "bridge: deferred switch cancelled target=%s generation=%lu\n",
-			       pending_ifname, pending_generation);
+		PRINTM(MMSG,
+		       "bridge: deferred switch cancelled target=%s generation=%lu\n",
+		       pending_ifname, pending_generation);
 		ret = 0;
 		terminal_logged = true;
 		PRINTM(MMSG,
@@ -2738,6 +2819,12 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 		if (expected_generation &&
 		    (ret == -ENODEV || ret == -EINVAL || ret == -ENETDOWN))
 			ret = -ESTALE;
+		goto out_unlock;
+	}
+	if (same_target &&
+	    (target.handle != bridge_owner || target.dev != br->wlan_dev)) {
+		rtnl_unlock();
+		ret = expected_generation ? -ESTALE : -ENODEV;
 		goto out_unlock;
 	}
 	old.old_owner = bridge_owner;
@@ -2769,8 +2856,8 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 	old.keepalive_ms = br->keepalive_ms;
 	old.keepalive_idle_ms = br->keepalive_idle_ms;
 	if (ret) {
-		if ((ret == -ENETDOWN || ret == -ENOLINK) && allow_defer &&
-		    READ_ONCE(bridge_runtime_deferred) == 1) {
+		if ((ret == -ENETDOWN || ret == -ENOLINK) && !same_target &&
+		    allow_defer && READ_ONCE(bridge_runtime_deferred) == 1) {
 			unsigned long generation;
 
 			generation = moal_bridge_pending_set(ifname);
@@ -2786,6 +2873,14 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 			ret = 0;
 			terminal_logged = true;
 		}
+		goto out_peer;
+	}
+	if (same_target) {
+		ret = 0;
+		terminal_logged = true;
+		PRINTM(MMSG,
+		       "bridge: runtime switch complete target=%s (no-op)\n",
+		       ifname);
 		goto out_peer;
 	}
 
@@ -2865,6 +2960,7 @@ static int moal_bridge_switch_iface_request(const char *ifname,
 		ret = target_ret;
 	} else {
 		bridge_owner = NULL;
+		moal_bridge_pending_cancel_all("runtime switch rollback failure");
 		atomic_long_inc(&bridge_switch_fail);
 		atomic_long_inc(&bridge_rollback_fail);
 		ret = -EIO;
@@ -2880,17 +2976,15 @@ out_peer:
 
 out_unlock:
 	if (ret && !terminal_logged) {
-		PRINTM(MERROR,
-		       "bridge: runtime switch rejected target=%s err=%d\n",
-		       ifname, ret);
+		moal_bridge_log_request_rejection(ifname, ret,
+					  expected_generation);
 		terminal_logged = true;
 	}
 	mutex_unlock(&bridge_lifecycle_lock);
 out_card:
 	if (ret && !terminal_logged)
-		PRINTM(MERROR,
-		       "bridge: runtime switch rejected target=%s err=%d\n",
-		       ifname, ret);
+		moal_bridge_log_request_rejection(ifname, ret,
+					  expected_generation);
 	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	return ret;
 }

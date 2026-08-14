@@ -295,11 +295,13 @@ SD9098_1 = {
 ```
 
 위 설정에서 초기 owner는 mlan0이고 runtime gate는 전역으로 1이다. mlan1의
-`bridge_runtime_switch=0`은 mlan1을 전환 대상으로 금지한다는 뜻이 아니며, 연결된 MOAL STA이면
-아래 sysfs write로 전환할 수 있다.
+`bridge_runtime_switch=0`은 mlan1을 전환 대상으로 금지한다는 뜻이 아니다. 등록되어 있고
+수명이 유효한 MOAL STA이면 아래 sysfs write의 구조적 target이 될 수 있다. strict mode 또는
+이미 ready인 target은 operational/association 검증을 통과해야 완료되며, deferred mode의
+not-ready target은 현재 owner를 유지한 채 요청만 수락한다.
 `bridge_iface`는 perm `0644`인 custom string 파라미터다. read는 설정 문자열이 아니라 현재
 effective owner가 binding한 현재 WLAN 이름(`none`이면 owner 없음)을 반환하고, write는 이미 존재하며
-연결된 MOAL STA 인터페이스를 새 타겟으로 지정한다.
+등록된 MOAL STA 인터페이스를 새 타겟으로 지정한다.
 peer가 일시 DOWN이라 forwarding의 `active=0`이어도 **effective owner가 남아 있으면** 이름을
 반환한다. 즉 `active`는 forwarding 상태이고 `bridge_iface`의 `none`은 owner가 없는 inactive
 terminal state만 뜻한다. WLAN/peer rename은 notifier와 name lock으로 getter/stats에 반영되며,
@@ -314,15 +316,21 @@ echo mlan1 > /sys/module/moal/parameters/bridge_iface
 conf를 변경할 수 없는 환경에서는 기존처럼
 `insmod moal.ko mod_para=... bridge_runtime_switch=1`을 사용할 수 있다.
 
-write는 비동기 요청을 예약하는 동작이 아니다. 전체 deinit → target init → target/peer 최종
-readiness 검증과, 실패 시 rollback 검증이 끝난 뒤 반환하므로 `echo`/`write(2)`가 받은 errno가
-최종 결과다. module argument parsing 시점의 `bridge_iface=...`는 runtime lock 준비 전이므로
-의도적으로 `EAGAIN`으로 module load를 거절한다.
+`bridge_runtime_deferred=0`이거나 target이 이미 ready인 경우의 **strict ready completion**은
+전체 deinit → target init → target/peer 최종 readiness 검증과, 실패 시 rollback 검증이 끝난
+뒤 반환하므로 성공은 최종 owner 전환을 뜻한다. 반면 not-ready target에 대한
+**deferred acceptance**는 pending 요청 등록 성공일 뿐 forwarding 전환 완료가 아니다. 이 구분은
+아래 11.10절의 active/pending getter로 확인한다. module argument parsing 시점의
+`bridge_iface=...`는 runtime lock 준비 전이므로 의도적으로 `EAGAIN`으로 module load를 거절한다.
 활성 stats 끝에는 `iface=<wlan> peer=<peer>`와
 `switch_ok=<n> switch_fail=<n> rollback_ok=<n> rollback_fail=<n>`이 추가된다. 네 outcome
 counter는 모듈 전역 누계라 rebind 중 재생성되는 bridge instance와 함께 reset되지 않으며,
 모듈을 unload/reload할 때만 초기화된다. stats node는 module-lifetime이므로 owner가 없을 때도
 `bridge: inactive`, `iface=none peer=none` 및 네 counter를 읽을 수 있다.
+
+아래 readiness errno(`ENETDOWN`, `ENOLINK`)는 deferred=0의 strict validation 또는 deferred
+worker가 실제 transaction을 시작할 때의 결과다. deferred=1 public write에서 structurally valid한
+not-ready target은 이 errno 대신 deferred acceptance로 pending에 등록된다.
 
 | errno | 의미 |
 |---|---|
@@ -343,13 +351,17 @@ counter는 모듈 전역 누계라 rebind 중 재생성되는 bridge instance와
 보장하지 않는다. 실장비 검증 절차는 `docs/driver-bridge.qa-runbook.md`의 런타임 전환 절을 따른다.
 
 PCIe/SDIO FLR, driver-mode switch, 또는 netdev를 직접 재생성하는 post-reset은 인터페이스 제거
-전에 활성 브릿지를 동기 해제한다. primary/companion rebuild 전체가 성공한 뒤에만 reset 전의
-exact effective owner/BSS/peer/keepalive snapshot을 한 번 복구한다. runtime switch는
+전에 활성 브릿지를 동기 해제한다. **identity-preserving reset**은 target netdev identity가
+유지될 때만 pending을 보존한다. **destructive netdev recreation**은 old handle/priv/netdev 이름을
+아직 pin한 상태에서 그 identity에 해당하는 pending generation을 동기 무효화한 뒤 interface를
+제거한다. primary/companion rebuild 전체가 성공한 뒤에만 reset 전의 exact effective
+owner/BSS/peer/keepalive snapshot을 한 번 복구한다. runtime switch는
 `handle->params.bridge_*` configured policy를 변경하지 않으므로 이후 same-card fallback이나
 module reload에 누출되지 않는다. destructive firmware 단계 이후 실패는 firmware rollback을
-주장하지 않으며 configured policy는 유지하되 effective owner는 `none`, recovery status는 failure로
-끝난다. gate가 0이어도 netdev/firmware/handle free 전에 bridge를 drain하는 순서는 UAF 방지
-수명주기 invariant라 항상 적용된다. 정상 forwarding과 runtime write gate 의미는 변하지 않는다.
+주장하지 않으며, **terminal reset failure**에서는 unfulfillable pending을 모두 지우고 configured
+policy는 유지하되 effective owner는 `none`, recovery status는 failure로 끝난다. gate가 0이어도
+netdev/firmware/handle free 전에 bridge를 drain하는 순서는 UAF 방지 수명주기 invariant라 항상
+적용된다. 정상 forwarding과 runtime write gate 의미는 변하지 않는다.
 
 격리된 target QA용 빌드에서만 `CONFIG_BRIDGE_SWITCH_FAULT_INJECT=y`를 명시하면 root-only perm
 `0600`의 one-shot `bridge_switch_fault_mask`가 생긴다(bit0 target init, bit1 rollback init).
@@ -375,7 +387,9 @@ bridge_runtime_deferred=1
 블록에서 각각 활성화할 수 있다. `mod_para`는 DBDC 블록마다 파싱되지만 두 값 모두 모듈 전역
 enable-only 정책으로 합쳐진다. 따라서 다른 선택된 DBDC 블록이나 명시적인 insmod 인자에서
 이미 `1`로 활성화된 값을, 어떤 블록의 `bridge_runtime_deferred=0`도 되돌릴 수 없다. 모든
-입력이 0일 때만 최종값이 0이며, 0/1 이외의 값은 해당 블록을 거부한다.
+입력이 0일 때만 최종값이 0이며, key는 정확한 `bridge_runtime_deferred=` delimiter를 사용하고
+value는 정확히 한 글자 `0` 또는 `1`이어야 한다. exact key의 empty, sign-only, leading-zero,
+suffix 값은 해당 블록을 거부한다. prefix가 연장된 다른 key는 이 정책 key로 선택되지 않는다.
 
 `bridge_runtime_deferred=0`은 호환성 기본값이다. 이때 `bridge_iface`의 한 번의
 one-write는 기존의 strict synchronous 동작을 유지한다. 즉 admin-DOWN target은
@@ -385,15 +399,21 @@ one-write는 기존의 strict synchronous 동작을 유지한다. 즉 admin-DOWN
 `bridge_runtime_deferred=1`일 때만 위 두 link-readiness 실패가 **보류 요청**으로
 전환된다. `bridge_iface`는 계속 active/effective owner만 반환하고,
 읽기 전용 `/sys/module/moal/parameters/bridge_pending_iface`는 별도로 pending target
-이름(없으면 `none`)을 반환한다. 따라서 application은 별도의 ioctl/netlink/polling
+이름을 반환한다. 요청이 없을 때 이 getter의 wire value는 newline만 있는 **empty line**이다.
+반대로 stats는 `pending_iface=none pending_state=none`을 사용한다. 따라서 application은 별도의 ioctl/netlink/polling
 write protocol 없이 한 번의 one-write로 요청하고, 필요하면 두 getter를 읽어 owner와
 pending을 구분한다. pending write의 성공은 아직 data-plane 전환 성공이 아니라 요청 수락이다.
 
 보류 요청에는 no timeout이 없다. target이 `NETDEV_UP`/`NETDEV_CHANGE` 뒤 operational,
 carrier, association 조건을 충족하면 worker가 자동으로 일반 switch transaction을 실행한다.
-현재 active interface 이름을 다시 쓰면 pending을 cancel하며, 다른 target을 쓰면 기존
-pending을 replace한다. `NETDEV_UNREGISTER` 또는 `NETDEV_CHANGENAME`은 해당 identity를
-cancel하여 같은 이름의 새 netdev가 나중에 나타나도 이전 요청을 재사용하지 않는다. worker
+실제로 pending이 있을 때 현재 active interface 이름을 다시 쓰면 readiness와 무관하게 그
+pending을 cancel한다. pending이 없으면 동일-name write도 기존 strict target/peer readiness
+검증을 거친다. 다른 **link-not-ready** target을 쓰면 기존 pending을 replace하며, true
+replacement에는 active와 기존 pending 양쪽과 다른 registered/present third STA가 필요하다.
+ready target write는 replace가 아니라 immediate transaction을 수행한다. init_net의 `NETDEV_UNREGISTER` 또는
+pending old name이 init_net에서 실제로 사라진 `NETDEV_CHANGENAME`만 해당 identity를 cancel한다.
+unrelated device rename이나 cross-netns same-name event는 무시하며, 이름 재사용 전에 generation을
+무효화하므로 같은 이름의 새 netdev가 이전 요청을 재사용하지 않는다. worker
 실패는 readiness pre-validation error(대기 유지)와 terminal switch/rollback error(요청 소거)를
 kernel log와 pending stats state로 구분한다.
 

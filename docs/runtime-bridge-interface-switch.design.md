@@ -19,9 +19,9 @@ write can accept a pending request that the worker completes later:
 echo mlan1 > /sys/module/moal/parameters/bridge_iface
 ```
 
-A **strict-mode completion** (`bridge_runtime_deferred=0`, or a ready target)
+A **strict ready completion** (`bridge_runtime_deferred=0`, or a ready target)
 means forwarding is active on the requested WLAN when the write returns
-success. A **deferred request acceptance** means only that the request was
+success. A **deferred acceptance** means only that the request was
 recorded while the current bridge remains active. In deferred mode callers must
 read `bridge_iface` and `bridge_pending_iface` to distinguish the active owner
 from the pending target. On failure, the write returns a negative errno and the
@@ -38,9 +38,10 @@ Existing behavior is the primary invariant.
    this is a lifetime-safety invariant, not opt-in switching behavior.
 3. Writing `bridge_iface` never enables a disabled bridge. If no bridge is
    active, the operation fails.
-4. The target must already exist as a registered STA netdev and be operational
-   and associated. A disconnected target is rejected before the current bridge
-   is disturbed.
+4. The target must already exist as a registered, present STA netdev. Under the
+   default strict policy, and before any strict/worker-completed transaction,
+   it must also be operational and associated. Deferred policy may accept only
+   those link-readiness failures while leaving the current bridge undisturbed.
 5. Existing load-time parameters `bridge_mode`, `bridge_peer`, and
    `bridge_wlan_idx` retain their meanings.
 6. Existing runtime parameters (`bridge_debug`, keepalive controls,
@@ -97,7 +98,10 @@ Add a custom module parameter:
 - Read returns `none` only when there is no effective owner/binding.
 - Write accepts one interface name, with the sysfs trailing newline removed.
 - Names must fit `IFNAMSIZ` and resolve to a MOAL STA netdev.
-- Writing the already-active interface is a successful no-op.
+- Writing the already-active interface cancels an actually existing pending
+  request without requiring transient link readiness. With no pending request,
+  it remains a successful no-op only after the legacy target and peer
+  readiness/identity validation succeeds.
 - In strict mode the setter does not merely store text; it performs and
   completes the switch before returning. With deferred mode enabled for a
   not-ready target, success instead records pending request acceptance; callers
@@ -130,17 +134,23 @@ for an otherwise valid but not link-ready STA records one singleton pending
 request and returns success. It does not tear down the current bridge. The
 application reads active ownership from `bridge_iface` and independently reads
 `/sys/module/moal/parameters/bridge_pending_iface`; the latter returns the
-pending name or `none`. This separation is required because an active owner and
-a pending target can coexist.
+pending name plus newline, or an **empty line** when there is no request. Stats
+use the distinct sentinel `pending_iface=none pending_state=none`. This
+separation is required because an active owner and a pending target can coexist.
 
 There is no timeout. `NETDEV_UP` and `NETDEV_CHANGE` schedule a process-context
 worker, which rechecks identity and readiness and then performs the normal
 switch/rollback transaction. A readiness error returns the request to waiting;
-a terminal switch or rollback outcome consumes it. `NETDEV_UNREGISTER` and
-`NETDEV_CHANGENAME` cancel identity before name reuse. Writing the current active
-name cancels a pending request; writing a different target replaces it. These
-are request lifecycle rules, not an additional application protocol: one-write
-is still the initiating API.
+a terminal switch or rollback outcome consumes it. Only init_net events are in
+scope. `NETDEV_UNREGISTER` cancels an exact matching pending name, while
+`NETDEV_CHANGENAME` cancels only when that pending old name has actually
+disappeared from init_net under notifier-held RTNL, before name reuse. An
+unrelated rename and a cross-netns same-name unregister are ignored. Writing
+the current active name cancels an existing pending request; writing a different
+link-not-ready target replaces it. A true replacement needs a third registered,
+present, link-not-ready STA distinct from the active and pending interfaces. A
+ready third target instead performs an immediate transaction. These are request lifecycle rules, not
+an additional application protocol: one-write is still the initiating API.
 
 Target-ready is not an end-to-end data-plane result. In particular, mlan1
 link-ready/associated evidence must not be conflated with success across an AP.
@@ -240,7 +250,9 @@ worker calls `moal_bridge_switch_iface()` in process context.
      logging only);
    - effective keepalive policy.
 5. Resolve and fully validate the target tuple.
-6. If the target equals the active WLAN, return success without teardown.
+6. If the target equals the active WLAN, return success without teardown only
+   after target and peer validation (unless the early operation just cancelled
+   an actually existing pending generation).
 7. Deactivate and fully deinitialize the old bridge using the existing order:
    forwarding stop, timer/notifier/capture removal, `synchronize_net()`, RCU
    pointer clear and `synchronize_rcu()`, kthread stop, and queue purge.
@@ -263,7 +275,10 @@ helpers acquire RTNL only around operations that require it.
 ## 6. Rollback and Error Contract
 
 Target validation occurs before teardown so common errors leave the active
-bridge untouched.
+bridge untouched. The link-readiness rows below are synchronous public-write
+results only with deferred disabled; with deferred enabled they describe the
+worker's later transaction check, while an otherwise structurally valid
+not-ready public request receives deferred acceptance.
 
 | Condition | errno | Existing bridge |
 |---|---:|---|
@@ -333,6 +348,14 @@ all participating handles, then restores that exact effective snapshot once.
 On any failure it publishes recovery failure and leaves no effective owner;
 configured policy remains available for a later explicit reload.
 
+Pending requests are retained only across an **identity-preserving reset**.
+Before **destructive netdev recreation**, the reset path synchronously advances
+and clears any generation naming one of the old handle's interfaces while the
+old handle/priv/netdev names remain pinned. A **terminal reset failure** or any
+other terminal no-owner path clears all pending state so no unfulfillable
+request survives. Pending storage remains pointer-free; a newly allocated
+same-name netdev cannot inherit an invalidated generation.
+
 PCIe/SDIO callbacks aggregate prepare/reset/init/companion/bridge-restore
 results and publish `WIFI_STATUS_OK`/recovery-complete only on total success.
 Their firmware-init calls explicitly retain caller-owned `AddRemoveCardSem`, so
@@ -395,9 +418,12 @@ or persistent JSON rewriting are part of this driver change.
 1. Gate disabled: write returns `EOPNOTSUPP`; traffic remains on `mlan0`.
 2. Bridge disabled: write returns `ENODEV`; bridge remains disabled.
 3. Invalid/non-MOAL/non-STA target: rejected without traffic interruption.
-4. Disconnected `mlan1`: `ENOLINK`; `mlan0` forwarding continues.
-5. Same target: success no-op; counters and traffic continue.
-6. Connected `mlan0 -> mlan1`: write blocks until complete, then bidirectional
+4. With deferred disabled, disconnected `mlan1`: `ENOLINK`; `mlan0`
+   forwarding continues.
+5. Same target with no pending request: a healthy target/peer succeeds as a
+   no-op, while strict disconnected/reset/peer-down states retain their legacy
+   error; counters and traffic remain unchanged.
+6. Ready `mlan0 -> mlan1`: strict ready completion blocks until complete, then bidirectional
    traffic uses `mlan1`.
 7. Connected `mlan1 -> mlan0`: symmetric success.
 8. Concurrent writers: serialized; each successful return corresponds to its
@@ -419,19 +445,24 @@ or persistent JSON rewriting are part of this driver change.
 15. Deferred wait: active owner and all outcomes remain unchanged while
     `pending_iface=mlan1`; association then produces exactly one switch.
 16. Deferred cancel/replace: writing the active owner clears pending without an
-    outcome delta. With only two STA interfaces, replacement is concurrent-writer
-    evidence/manual extension, not an invented third target.
+    outcome delta. Replacement requires a third registered, present,
+    link-not-ready STA; with only two,
+    it is explicitly NOT RUN/UNSUPPORTED rather than inferred from concurrent
+    writers.
 17. Target unregister/name reuse: pending clears, a new same-name netdev cannot
-    complete the old request, and no warning is emitted.
+    complete the old request, and no warning is emitted; unrelated rename and
+    cross-netns events leave it intact.
+18. Destructive reset success invalidates old target identity before interface
+    recreation, while terminal reset failure leaves no pending request.
 
 ### 9.3 Success criteria
 
 - With `bridge_runtime_switch=0`, forwarding and runtime switch behavior are
   unchanged; only documented teardown-before-destruction safety and
   module-lifetime inactive diagnostics are additionally observable.
-- With the gate enabled and strict-mode completion, a successful sysfs write means
+- With the gate enabled and strict ready completion, a successful sysfs write means
   source-level terminal validation accepted the requested connected STA. Deferred
-  request acceptance is not completion; its active/pending getters and later worker
+  acceptance is not completion; its active/pending getters and later worker
   result are target-runtime evidence. Bidirectional forwarding remains separate
   data-plane evidence and is not established by static checks alone.
 - All validation failures before teardown leave the active bridge untouched.

@@ -13,11 +13,21 @@
 - `bridge_runtime_deferred=0` is the default and must preserve current `ENETDOWN`/`ENOLINK` behavior.
 - Applications write only `/sys/module/moal/parameters/bridge_iface`; `bridge_pending_iface` is read-only status.
 - A pending request retains the current active owner and has no timeout.
-- A new valid inactive target replaces pending; writing the active name cancels pending.
+- A new registered/present link-not-ready target replaces pending; a ready
+  target performs an immediate transaction, while writing the active name
+  cancels pending.
+- The early active-name path applies only when it cancels an actually existing
+  pending generation; otherwise the legacy target/peer readiness checks still
+  guard the strict same-target no-op.
 - Deferred mode relaxes only `netif_running`, `media_connected`, and carrier checks.
 - Registered/present MOAL STA identity, handle readiness, reset/reload/removal, active-owner, and peer lifetime checks remain fail-closed.
 - Pending state may not retain raw `moal_handle`, `moal_private`, or `net_device` pointers.
 - Netdev notifier context may only schedule/cancel state; it may not run bridge teardown/init.
+- Notifier cancellation is init_net-scoped: unrelated rename and cross-netns
+  same-name events cannot cancel pending. Destructive netdev recreation
+  synchronously invalidates matching identity while old names are pinned;
+  terminal reset failure clears all pending, while an identity-preserving reset
+  may retain it.
 - No periodic polling or delayed retry loop is allowed.
 - The mlan1 same-MAC/multi-BSSID return-path defect is not part of this change.
 - Preserve unrelated worktree modifications and stage only task-owned files.
@@ -407,7 +417,11 @@ Snapshot pending state under its spinlock in `stats_show()` before formatting bo
 iface=mlan1 peer=eth0 pending_iface=mlan0 pending_state=waiting
 ```
 
-Use `none` for no pending interface and state. Do not take a sleeping mutex inside the existing RCU read-side section.
+The parameter getter returns an **empty line** when no request is pending. Only
+stats use `pending_iface=none pending_state=none`. Do not take a sleeping mutex
+inside the existing RCU read-side section. Across this plan, **strict ready completion**
+means the switch is complete at write return, whereas **deferred acceptance**
+means only that the pointer-free request was recorded.
 
 - [ ] **Step 7: Drain pending work at teardown**
 
@@ -514,7 +528,14 @@ PENDING_PARAM="$PARAM_DIR/bridge_pending_iface"
 DEFERRED_TIMEOUT="${DEFERRED_TIMEOUT:-30}"
 ```
 
-Capture both values in every state artifact. Cleanup must cancel a surviving pending request by writing the current active interface before attempting binding restoration, then verify `bridge_pending_iface` is `none` or empty. Retain the existing fail-closed dmesg follower and one-shot fault disarm behavior.
+Capture both values in every state artifact. Cleanup must cancel a surviving
+pending request by writing the current active interface before attempting
+binding restoration, then require the pending getter's exact empty-line value
+and the stats `pending_iface=none pending_state=none` sentinel. After a restore
+write it must re-read and require exact initial owner, empty pending, and healthy
+binding before changing target admin state. Any failed proof is a cleanup
+failure, and the current owner must never be brought down. Retain the existing
+fail-closed dmesg follower and one-shot fault disarm behavior.
 
 - [ ] **Step 4: Implement the default-off and waiting cases**
 
@@ -539,9 +560,22 @@ run_prevalidation_reject "$TO_IF" 100
 
 - [ ] **Step 5: Implement cancellation and replacement evidence**
 
-`deferred-cancel` registers down `TO_IF`, writes current `FROM_IF`, and requires pending to clear with no owner/counter change. Where only two STA interfaces exist, document replacement as a concurrent-writer/manual extension rather than inventing a nonexistent third target.
+`deferred-cancel` registers down `TO_IF`, writes current `FROM_IF`, and requires
+pending to clear with no owner/counter change. A true replacement requires a
+third registered, present, link-not-ready STA distinct from active `FROM_IF` and pending `TO_IF`; a
+ready third target performs an immediate transaction instead. When
+only two STA interfaces exist, mark replacement `NOT RUN/UNSUPPORTED`; neither
+active-name cancellation nor concurrent writers prove replacement.
+Where a third STA exists, `QA_CASE=deferred-replace REPLACE_IF=<name>` must
+prove pending target replacement, old-target readiness cannot switch, and the
+replacement target completes exactly once.
 
-Add a runbook-only unregister/name-reuse case because target unregister may remove the module or require a board-specific bus command. Its pass criteria are: pending clears, no later switch occurs after a same-name netdev appears, current owner remains valid, and no kernel warning appears.
+Add runbook-only unregister/name-reuse, unrelated-rename, and cross-netns cases.
+Add `destructive-reset-success`/`destructive-reset-failure` QA dispatches that
+consume board-approved command variables. Their pass criteria distinguish
+matching init_net identity invalidation from unrelated events, prevent a
+same-name recreated netdev from inheriting an old generation, and require
+terminal no-owner failure to leave pending empty.
 
 - [ ] **Step 6: Update the design and parameter docs**
 

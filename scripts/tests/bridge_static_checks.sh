@@ -13,6 +13,7 @@ SHIM_C="$ROOT/mlinux/moal_shim.c"
 QA_SCRIPT="$ROOT/scripts/tests/bridge_runtime_switch_qa.sh"
 PARAM_DOC="$ROOT/docs/MOAL-Module-Parameters.md"
 QA_RUNBOOK="$ROOT/docs/driver-bridge.qa-runbook.md"
+DEFERRED_SPEC="$ROOT/docs/superpowers/specs/2026-08-14-runtime-bridge-deferred-switch-design.md"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -365,21 +366,33 @@ check_pending_switch_event_contract() {
     <<< "$flat"
 }
 
-check_active_cancel_before_resolve_contract() {
-  local request="$1"
+check_same_target_compat_contract() {
+  local request="$1" flat
 
   printf '%s\n' "$request" | awk '
-    /!strcmp\(br->wlan_dev->name, ifname\)/ { active=NR }
-    /moal_bridge_pending_clear_if\(pending_ifname/ && active && !clear { clear=NR }
+    /bool same_target = false/ { decl=NR }
+    /same_target = !strcmp\(br->wlan_dev->name, ifname\)/ { sample=NR }
+    /same_target && !expected_generation/ { cancel_guard=NR }
+    /pending_state != MOAL_BR_PENDING_NONE/ && cancel_guard && !pending { pending=NR }
+    /moal_bridge_pending_clear_if\(pending_ifname/ && cancel_guard && !clear { clear=NR }
     /ret = moal_bridge_find_target\(ifname, &target\)/ { resolve=NR }
+    /target.handle != bridge_owner/ { identity=NR }
+    /dev_hold\(old.peer_dev\)/ { peer=NR }
     /ret = moal_bridge_target_link_status\(&target\)/ { readiness=NR }
-    END { exit !(active && clear && resolve && readiness &&
-                 active < clear && clear < resolve && resolve < readiness) }
-  '
+    /if \(same_target\)/ && readiness { late_noop=NR }
+    END { exit !(decl && sample && cancel_guard && pending && clear && resolve &&
+                 identity && peer && readiness && late_noop && decl < sample &&
+                 sample <= cancel_guard && cancel_guard <= pending &&
+                 pending <= clear && clear < resolve && resolve < identity &&
+                 identity < peer && peer <= readiness && readiness < late_noop) }
+  ' || return 1
+  flat="$(printf '%s\n' "$request" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq     'if ((ret == -ENETDOWN || ret == -ENOLINK) && !same_target && allow_defer'     <<< "$flat"
 }
 
 check_pending_identity_invalidation_contract() {
-  local notifier="$1" scheduler="$2" request="$3"
+  local notifier="$1" scheduler="$2" request="$3" flat
 
   printf '%s\n' "$notifier" | awk '
     /moal_bridge_pending_schedule_event\(event, dev,/ { schedule=NR }
@@ -387,16 +400,30 @@ check_pending_identity_invalidation_contract() {
     END { exit !(schedule && filter && schedule < filter) }
   ' || return 1
   printf '%s\n' "$scheduler" | awk '
-    /event == NETDEV_CHANGENAME/ { rename=NR }
-    /event == NETDEV_UNREGISTER/ { unregister=NR }
-    /strcmp\(bridge_pending.ifname, dev->name\)/ && !identity { identity=NR }
-    /bridge_pending.state = MOAL_BR_PENDING_NONE/ { clear=NR }
-    /bridge_pending.generation\+\+/ { advance=NR }
-    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
-    END { exit !(rename && unregister && identity && clear && advance && unlock &&
-                 rename < clear && unregister < clear && identity < clear &&
-                 clear <= advance && advance < unlock) }
+    /!dev \|\| dev_net\(dev\) != &init_net/ { netns=NR }
+    /event == NETDEV_CHANGENAME \|\| event == NETDEV_UNREGISTER/ { events=NR }
+    /spin_lock_irqsave\(&bridge_pending_lock/ && !lock { lock=NR }
+    /strncpy\(cancelled_ifname, bridge_pending.ifname/ { name=NR }
+    /cancelled_generation = bridge_pending.generation/ { generation=NR }
+    /pending_state = bridge_pending.state/ { state=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ && state && !snapshot_unlock {
+      snapshot_unlock=NR
+    }
+    /event == NETDEV_UNREGISTER &&/ { unregister=NR }
+    /strcmp\(cancelled_ifname, dev->name\)/ { identity=NR }
+    /__dev_get_by_name\(&init_net, cancelled_ifname\)/ { lookup=NR }
+    /moal_bridge_pending_clear_if\(cancelled_ifname/ { clear=NR }
+    END { exit !(netns && events && lock && name && generation && state &&
+                 snapshot_unlock && unregister && identity && lookup && clear &&
+                 netns < events && events < lock && lock < name &&
+                 name <= generation && generation <= state &&
+                 state < snapshot_unlock && snapshot_unlock < lookup &&
+                 unregister < identity && identity <= lookup && lookup < clear) }
   ' || return 1
+  flat="$(printf '%s\n' "$scheduler" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq 'event == NETDEV_CHANGENAME && __dev_get_by_name(&init_net, cancelled_ifname)' \
+    <<< "$flat" || return 1
   printf '%s\n' "$request" | awk '
     /rtnl_lock\(\)/ && !rtnl { rtnl=NR }
     /moal_bridge_pending_matches\(ifname, expected_generation\)/ {
@@ -409,14 +436,177 @@ check_pending_identity_invalidation_contract() {
   '
 }
 
+check_pending_handle_invalidation_contract() {
+  local invalidate="$1" drv_mode="$2" post_reset="$3" pcie_flr="$4" sdio_flr="$5"
+
+  printf '%s\n' "$invalidate" | awk '
+    /mutex_lock\(&bridge_lifecycle_lock\)/ { lifecycle=NR }
+    /moal_bridge_pending_snapshot\(pending_ifname/ { snapshot=NR }
+    /rtnl_lock\(\)/ { rtnl=NR }
+    /handle->priv\[i\]->netdev->name/ { identity=NR }
+    /moal_bridge_pending_clear_if\(pending_ifname/ { clear=NR }
+    /rtnl_unlock\(\)/ { rtnl_unlock=NR }
+    /mutex_unlock\(&bridge_lifecycle_lock\)/ { lifecycle_unlock=NR }
+    END { exit !(lifecycle && snapshot && rtnl && identity && clear &&
+                 rtnl_unlock && lifecycle_unlock && lifecycle < snapshot &&
+                 snapshot < rtnl && rtnl < identity && identity < clear &&
+                 clear < rtnl_unlock && rtnl_unlock < lifecycle_unlock) }
+  ' || return 1
+  printf '%s\n' "$drv_mode" | awk '
+    /moal_bridge_pending_invalidate_handle\(handle\)/ { invalidate=NR }
+    /woal_remove_interface\(handle, i\)/ { remove=NR }
+    END { exit !(invalidate && remove && invalidate < remove) }
+  ' || return 1
+  printf '%s\n' "$post_reset" | awk '
+    /if \(!handle->wifi_hal_flag\)/ { destructive=NR }
+    /moal_bridge_pending_invalidate_handle\(handle\)/ { invalidate=NR }
+    /woal_remove_interface\(handle, intf_num\)/ { remove=NR }
+    END { exit !(destructive && invalidate && remove &&
+                 destructive < invalidate && invalidate < remove) }
+  ' || return 1
+  printf '%s\n' "$pcie_flr" | awk '
+    /moal_bridge_pending_invalidate_handle\(handle\)/ { invalidate=NR }
+    /woal_remove_virtual_interface\(handle\)/ { virtual=NR }
+    /woal_remove_interface\(handle, i\)/ { remove=NR }
+    END { exit !(invalidate && virtual && remove && invalidate < virtual &&
+                 virtual < remove) }
+  ' || return 1
+  printf '%s\n' "$sdio_flr" | awk '
+    /moal_bridge_pending_invalidate_handle\(handle\)/ { invalidate=NR }
+    /woal_remove_virtual_interface\(handle\)/ { virtual=NR }
+    /woal_remove_interface\(handle, i\)/ { remove=NR }
+    END { exit !(invalidate && virtual && remove && invalidate < virtual &&
+                 virtual < remove) }
+  '
+}
+
+check_pending_terminal_cancel_contract() {
+  local cancel="$1" request="$2" drv_mode="$3" reload="$4" forget="$5"
+  local discard="$6" resume="$7"
+
+  printf '%s\n' "$cancel" | awk '
+    /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
+    /bridge_pending.state != MOAL_BR_PENDING_NONE/ { pending=NR }
+    /bridge_pending.state = MOAL_BR_PENDING_NONE/ { clear=NR }
+    /bridge_pending.ifname\[0\]/ { name=NR }
+    /bridge_pending.generation\+\+/ { advance=NR }
+    /spin_unlock_irqrestore\(&bridge_pending_lock/ { unlock=NR }
+    END { exit !(lock && pending && clear && name && advance && unlock &&
+                 lock < pending && pending < clear && clear <= name &&
+                 name <= advance && advance < unlock) }
+  ' || return 1
+  printf '%s\n' "$request" | awk '
+    /bridge_owner = NULL/ { owner_null=NR }
+    /moal_bridge_pending_cancel_all\("runtime switch rollback failure"\)/ {
+      cancel=NR
+    }
+    END { exit !(owner_null && cancel && owner_null < cancel) }
+  ' || return 1
+  printf '%s\n' "$drv_mode" | awk '
+    /if \(destructive\)/ { destructive=NR }
+    /if \(bridge_suspended\)/ { suspended=NR }
+    /moal_bridge_discard_suspended_owner\(\)/ { discard=NR }
+    /WIFI_STATUS_FW_RECOVERY_FAIL/ { terminal=NR }
+    /moal_bridge_pending_cancel_all\("driver-mode terminal failure"\)/ {
+      unrelated_clear=NR
+    }
+    END { exit !(destructive && suspended && discard && terminal &&
+                 !unrelated_clear && suspended <= discard &&
+                 destructive < terminal) }
+  ' || return 1
+  printf '%s\n' "$reload" | awk '
+    /if \(destructive_started\)/ { destructive=NR }
+    /moal_bridge_pending_cancel_all\("firmware reload terminal failure"\)/ {
+      cancel=NR
+    }
+    /WIFI_STATUS_FW_RECOVERY_FAIL/ { terminal=NR }
+    END { exit !(destructive && cancel && terminal &&
+                 destructive < cancel && cancel < terminal) }
+  ' || return 1
+  printf '%s\n' "$forget" | awk '
+    /owner_will_be_lost/ { owner_lost=NR }
+    /moal_bridge_pending_cancel_all\("bridge owner removed"\)/ { cancel=NR }
+    END { exit !(owner_lost && cancel && owner_lost < cancel) }
+  ' || return 1
+  printf '%s\n' "$discard" | awk '
+    /if \(!bridge_suspended_owner.valid\)/ { valid=NR }
+    /return;/ && valid && !valid_return { valid_return=NR }
+    /moal_bridge_pending_cancel_all\("suspended owner discarded"\)/ { cancel=NR }
+    /memset\(&bridge_suspended_owner/ { discard=NR }
+    END { exit !(valid && valid_return && cancel && discard &&
+                 valid < valid_return && valid_return < cancel &&
+                 cancel < discard) }
+  ' || return 1
+  printf '%s\n' "$resume" | awk '
+    /if \(!ret\)/ { success=NR }
+    /bridge_owner = saved.handle/ { owner=NR }
+    /else/ && owner { failure=NR }
+    /moal_bridge_pending_cancel_all\("suspended owner resume failure"\)/ {
+      cancel=NR
+    }
+    END { exit !(success && owner && failure && cancel &&
+                 success < owner && owner < failure && failure < cancel) }
+  '
+}
+
+check_worker_rejection_log_contract() {
+  local logger="$1" request="$2"
+
+  printf '%s\n' "$logger" | awk '
+    /if \(expected_generation\)/ { guard=NR }
+    /return;/ && guard { quiet=NR }
+    /PRINTM\(MERROR/ { error=NR }
+    END { exit !(guard && quiet && error && guard < quiet && quiet < error) }
+  ' || return 1
+  ! grep -Eq 'PRINTM\(MERROR,[[:space:]]*"bridge: runtime switch (rejected|interrupted)'     <<< "$request" || return 1
+  [ "$(grep -Fc 'moal_bridge_log_request_rejection(' <<< "$request")" -ge 4 ]
+}
+
+check_bridge_bool_parser_contract() {
+  local helper="$1" parser="$2" flat
+
+  printf '%s\n' "$helper" | awk '
+    /key_len = strlen\(key\)/ { key_len=NR }
+    /line\[key_len\] != '\''='\''/ { delimiter=NR }
+    /line\[key_len \+ 1\] != '\''0'\''/ { zero=NR }
+    /line\[key_len \+ 1\] != '\''1'\''/ { one=NR }
+    /line\[key_len \+ 2\]/ { terminal=NR }
+    /\*out_data = line\[key_len \+ 1\] - '\''0'\''/ { store=NR }
+    END { exit !(key_len && delimiter && zero && one && terminal && store &&
+                 key_len < delimiter && delimiter <= zero && zero <= one &&
+                 one <= terminal && terminal < store) }
+  ' || return 1
+  flat="$(printf '%s\n' "$parser" | tr '\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g')"
+  grep -Fq 'strncmp(line, "bridge_runtime_switch=", strlen("bridge_runtime_switch=")) == 0'     <<< "$flat" || return 1
+  grep -Fq 'strncmp(line, "bridge_runtime_deferred=", strlen("bridge_runtime_deferred=")) == 0'     <<< "$flat" || return 1
+  [ "$(grep -Fo 'parse_line_read_bridge_bool(' <<< "$parser" | wc -l)" -eq 2 ]
+}
+
+check_bridge_bool_fixture_contract() {
+  local value
+
+  for value in 0 1; do
+    case "bridge_runtime_deferred=$value" in
+      bridge_runtime_deferred=0|bridge_runtime_deferred=1) ;;
+      *) return 1 ;;
+    esac
+  done
+  for value in 'bridge_runtime_deferred_extra=1'                'bridge_runtime_deferred='                'bridge_runtime_deferred=-'                'bridge_runtime_deferred=01'                'bridge_runtime_deferred=1x'; do
+    case "$value" in
+      bridge_runtime_deferred=0|bridge_runtime_deferred=1) return 1 ;;
+    esac
+  done
+}
+
 check_runtime_switch_conf_contract() {
   local parser="$1"
 
   printf '%s\n' "$parser" | awk '
     /int bridge_runtime_switch_cfg = 0/ { cfg_decl=NR }
     /int bridge_runtime_switch_present = 0/ { present_decl=NR }
-    /strncmp\(line, "bridge_runtime_switch"/ { key=NR }
-    /parse_line_read_int\(line, &out_data\)/ && key && !parse { parse=NR }
+    /strncmp\(line, "bridge_runtime_switch="/ { key=NR }
+    /parse_line_read_bridge_bool\(/ && key && !parse { parse=NR }
     /out_data != 0 && out_data != 1/ && key && !range { range=NR }
     /bridge_runtime_switch_cfg = out_data/ { save=NR }
     /bridge_runtime_switch_present = 1/ { mark=NR }
@@ -443,7 +633,7 @@ check_runtime_deferred_conf_contract() {
   printf '%s\n' "$parser" | awk '
     /int bridge_runtime_deferred_cfg = 0/ { cfg=NR }
     /int bridge_runtime_deferred_present = 0/ { present=NR }
-    /strncmp\(line, "bridge_runtime_deferred"/ { key=NR }
+    /strncmp\(line, "bridge_runtime_deferred="/ { key=NR }
     /out_data != 0 && out_data != 1/ && key { range=NR }
     /bridge_runtime_deferred_cfg = out_data/ { save=NR }
     /bridge_runtime_deferred_present = 1/ { mark=NR }
@@ -766,12 +956,12 @@ check_deferred_qa_contract() {
     grep -Fq "$token" <<< "$qa" || return 1
   done
 
-  off="$(extract_c_function '^run_deferred_off\(\)' "$QA_SCRIPT")" || return 1
-  waiting="$(extract_c_function '^run_deferred_wait\(\)' "$QA_SCRIPT")" || return 1
-  cancel="$(extract_c_function '^run_deferred_cancel\(\)' "$QA_SCRIPT")" || return 1
-  cleanup="$(extract_c_function '^cleanup\(\)' "$QA_SCRIPT")" || return 1
-  capture="$(extract_c_function '^capture_state\(\)' "$QA_SCRIPT")" || return 1
-  assertions="$(extract_c_function '^require_waiting_unchanged\(\)' "$QA_SCRIPT")" || return 1
+  off="$(extract_c_block "$qa" '^run_deferred_off\(\)')" || return 1
+  waiting="$(extract_c_block "$qa" '^run_deferred_wait\(\)')" || return 1
+  cancel="$(extract_c_block "$qa" '^run_deferred_cancel\(\)')" || return 1
+  cleanup="$(extract_c_block "$qa" '^cleanup\(\)')" || return 1
+  capture="$(extract_c_block "$qa" '^capture_state\(\)')" || return 1
+  assertions="$(extract_c_block "$qa" '^require_waiting_unchanged\(\)')" || return 1
 
   printf '%s\n' "$off" | awk '
     /require_gate 1/ { gate=NR }
@@ -819,15 +1009,19 @@ check_deferred_qa_contract() {
     /read_binding/ { binding=NR }
     /stats_value active/ { active=NR }
     /read_pending/ { pending=NR }
+    /stats_value pending_iface/ { pending_stats=NR }
+    /stats_value pending_state/ { state_stats=NR }
     /assert_all_outcomes_unchanged/ { counters=NR }
-    END { exit !(binding && active && pending && counters &&
-                 binding < active && active < pending && pending < counters) }
+    END { exit !(binding && active && pending && pending_stats && state_stats &&
+                 counters && binding < active && active < pending &&
+                 pending < pending_stats && pending_stats <= state_stats &&
+                 state_stats < counters) }
   ' || return 1
   printf '%s\n' "$cleanup" | awk '
-    /pending_is_empty/ && !pending_check { pending_check=NR }
-    /pending_binding=.*read_binding/ { pending_owner=NR }
+    /if ! pending_is_empty/ && !pending_check { pending_check=NR }
+    /pending_binding=.*read_binding/ && !pending_owner { pending_owner=NR }
     /> "\$IFACE_PARAM"/ && pending_owner && !cancel { cancel=NR }
-    /current_binding=/ { restore=NR }
+    /current_binding=.*read_binding/ && !restore { restore=NR }
     END { exit !(pending_check && pending_owner && cancel && restore &&
                  pending_check < pending_owner && pending_owner < cancel && cancel < restore) }
   '
@@ -842,39 +1036,235 @@ check_deferred_docs_contract() {
   done
   for token in 'one-write' 'no timeout' 'cancel' 'replace' 'worker' \
                'NETDEV_UP' 'NETDEV_CHANGE' 'NETDEV_UNREGISTER' \
-               'NETDEV_CHANGENAME' 'same-MAC' 'multi-BSSID' 'data-plane'; do
+               'NETDEV_CHANGENAME' 'same-MAC' 'multi-BSSID' 'data-plane' \
+               'identity-preserving reset' 'destructive netdev recreation' \
+               'terminal reset failure'; do
     grep -Fq "$token" "$ROOT/docs/runtime-bridge-interface-switch.design.md" || return 1
   done
   for token in 'QA_CASE=deferred-off' 'QA_CASE=deferred-wait' \
                'QA_CASE=deferred-cancel' 'link-ready' 'end-to-end' \
-               'name-reuse' 'unregister'; do
+               'name-reuse' 'unregister' 'unrelated rename' 'cross-netns' \
+               'destructive-reset-success' 'destructive-reset-failure' \
+               'third registered STA' 'NOT RUN/UNSUPPORTED'; do
     grep -Fq "$token" "$QA_RUNBOOK" || return 1
   done
 }
 
+check_deferred_pending_wire_contract() {
+  local qa="$1" empty stats
+
+  empty="$(extract_c_block "$qa" '^pending_is_empty\(\)')" || return 1
+  stats="$(extract_c_block "$qa" '^stats_pending_is_none\(\)')" || return 1
+  printf '%s\n' "$empty" | grep -Fq '[ -z "$pending" ]' || return 1
+  printf '%s\n' "$empty" | grep -Fq '"$pending" = none' && return 1
+  printf '%s\n' "$stats" | grep -Fq 'stats_value pending_iface' || return 1
+  printf '%s\n' "$stats" | grep -Fq 'stats_value pending_state' || return 1
+  printf '%s\n' "$stats" | grep -Fq '= none' || return 1
+  grep -Fq 'pending_is_empty && stats_pending_is_none' <<< "$qa"
+}
+
+check_pending_source_wire_contract() {
+  local getter="$1" stats="$2"
+
+  grep -Fq 'if (state == MOAL_BR_PENDING_NONE)' <<< "$getter" || return 1
+  grep -Fq 'return scnprintf(buf, len, "\n");' <<< "$getter" || return 1
+  ! grep -Fq 'return scnprintf(buf, len, "none\n");' <<< "$getter" || return 1
+  grep -Fq 'if (pending_state == MOAL_BR_PENDING_NONE)' <<< "$stats" || return 1
+  grep -Fq 'strncpy(pending_name, "none", sizeof(pending_name));' \
+    <<< "$stats" || return 1
+  grep -Fq 'pending_iface=%s pending_state=%s' <<< "$stats"
+}
+
+check_same_target_qa_contract() {
+  local qa="$1" same
+
+  same="$(extract_c_block "$qa" '^run_same_target\(\)')" || return 1
+  printf '%s\n' "$same" | awk '
+    /require_gate 1/ { gate=NR }
+    /require_deferred_gate 0/ { deferred=NR }
+    /pending_is_empty/ && !pending { pending=NR }
+    /stats_pending_is_none/ && !stats { stats=NR }
+    /bridge_binding_healthy "\$original"/ && !healthy { healthy=NR }
+    /snapshot_outcomes/ { snapshot=NR }
+    /switch_iface "\$original"/ { write=NR }
+    END { exit !(gate && deferred && pending && stats && healthy && snapshot &&
+                 write && gate < deferred && deferred < pending &&
+                 pending <= stats && stats < healthy && healthy < snapshot &&
+                 snapshot < write) }
+  '
+}
+
+check_deferred_replace_qa_contract() {
+  local qa="$1" replace
+
+  grep -Fq 'REPLACE_IF="${REPLACE_IF:-}"' <<< "$qa" || return 1
+  grep -Fq 'deferred-replace) run_deferred_replace ;;' <<< "$qa" || return 1
+  replace="$(extract_c_block "$qa" '^run_deferred_replace\(\)')" || return 1
+  printf '%s\n' "$replace" | awk '
+    /require_gate 1/ { gate=NR }
+    /require_deferred_gate 1/ { deferred=NR }
+    /"\$REPLACE_IF" != "\$FROM_IF"/ { from_distinct=NR }
+    /"\$REPLACE_IF" != "\$TO_IF"/ { to_distinct=NR }
+    /"\$REPLACE_IF" != "\$PEER_IF"/ { peer_distinct=NR }
+    /ip link set dev "\$TO_IF" down/ { to_down=NR }
+    /ip link set dev "\$REPLACE_IF" down/ { replace_down=NR }
+    /printf .*"\$TO_IF" > "\$IFACE_PARAM"/ { first_write=NR }
+    /require_waiting_unchanged "\$FROM_IF" "\$TO_IF"/ { first_wait=NR }
+    /printf .*"\$REPLACE_IF" > "\$IFACE_PARAM"/ { replace_write=NR }
+    /require_waiting_unchanged "\$FROM_IF" "\$REPLACE_IF"/ && !replaced { replaced=NR }
+    /wait_for_ready_without_switch "\$TO_IF" "\$FROM_IF" "\$REPLACE_IF"/ { old_ready=NR }
+    /wait_for_deferred_completion "\$REPLACE_IF"/ { complete=NR }
+    /SWITCH_OK_BEFORE \+ 1/ { once=NR }
+    END { exit !(gate && deferred && from_distinct && to_distinct && peer_distinct && to_down &&
+                 replace_down && first_write && first_wait && replace_write &&
+                 replaced && old_ready && complete && once && gate < deferred &&
+                 deferred < from_distinct && from_distinct <= to_distinct &&
+                 to_distinct < peer_distinct && peer_distinct < to_down && to_down < replace_down &&
+                 replace_down < first_write && first_write < first_wait &&
+                 first_wait < replace_write && replace_write < replaced &&
+                 replaced < old_ready && old_ready < complete && complete < once) }
+  '
+}
+
+check_deferred_reset_qa_contract() {
+  local qa="$1" success failure
+
+  grep -Fq 'destructive-reset-success) run_destructive_reset_success ;;' \
+    <<< "$qa" || return 1
+  grep -Fq 'destructive-reset-failure) run_destructive_reset_failure ;;' \
+    <<< "$qa" || return 1
+  success="$(extract_c_block "$qa" '^run_destructive_reset_success\(\)')" || return 1
+  failure="$(extract_c_block "$qa" '^run_destructive_reset_failure\(\)')" || return 1
+  printf '%s\n' "$success" | awk '
+    /require_deferred_gate 1/ { deferred=NR }
+    /ip link set dev "\$TO_IF" down/ { down=NR }
+    /printf .*"\$TO_IF" > "\$IFACE_PARAM"/ { request=NR }
+    /require_waiting_unchanged "\$FROM_IF" "\$TO_IF"/ { waiting=NR }
+    /bash -c "\$command_value"/ { command=NR }
+    /pending_is_empty/ { empty=NR }
+    /stats_pending_is_none/ { stats=NR }
+    /wait_for_ready_without_cleared_switch "\$TO_IF" "\$FROM_IF"/ { reuse=NR }
+    END { exit !(deferred && down && request && waiting && command && empty &&
+                 stats && reuse && deferred < down && down < request &&
+                 request < waiting && waiting < command && command < empty &&
+                 empty <= stats && stats < reuse) }
+  ' || return 1
+  printf '%s\n' "$failure" | awk '
+    /require_deferred_gate 1/ { deferred=NR }
+    /printf .*"\$TO_IF" > "\$IFACE_PARAM"/ { request=NR }
+    /require_waiting_unchanged "\$FROM_IF" "\$TO_IF"/ { waiting=NR }
+    /bash -c "\$command_value"/ { command=NR }
+    /read_binding.*none/ { owner=NR }
+    /pending_is_empty/ { empty=NR }
+    /stats_pending_is_none/ { stats=NR }
+    END { exit !(deferred && request && waiting && command && owner && empty &&
+                 stats && deferred < request && request < waiting &&
+                 waiting < command && command < owner && owner < empty &&
+                 empty <= stats) }
+  '
+}
+
+check_strict_disconnected_qa_contract() {
+  local qa="$1"
+
+  printf '%s\n' "$qa" | awk '
+    /target-disconnected\)/ { start=NR }
+    start && /require_gate 1/ { gate=NR }
+    start && /require_deferred_gate 0/ { deferred=NR }
+    start && /require_unassociated_admin_up "\$TO_IF"/ { disconnected=NR }
+    start && /run_prevalidation_reject "\$TO_IF" 67/ { reject=NR; exit }
+    END { exit !(start && gate && deferred && disconnected && reject &&
+                 start < gate && gate < deferred && deferred < disconnected &&
+                 disconnected < reject) }
+  ' || return 1
+  local peer
+  peer="$(extract_c_block "$qa" '^run_peer_cycle\(\)')" || return 1
+  printf '%s\n' "$peer" | awk '
+    /require_gate 1/ { gate=NR }
+    /require_deferred_gate 0/ { deferred=NR }
+    /ip link set dev "\$PEER_IF" down/ { down=NR }
+    /write_expect_errno "\$original" 100/ { same=NR }
+    END { exit !(gate && deferred && down && same && gate < deferred &&
+                 deferred < down && down < same) }
+  '
+}
+
 check_deferred_cleanup_restore_contract() {
   printf '%s\n' "$1" | awk '
-    /pending_is_empty/ && !pending_check { pending_check=NR }
-    /current_binding=/ { current=NR }
-    /bridge_binding_healthy "\$current_binding"/ { healthy=NR }
-    /binding_ready "\$INITIAL_BINDING"/ { initial_ready=NR }
-    /INITIAL_BINDING.*> "\$IFACE_PARAM"/ { restore=NR }
-    /if \[ "\$TO_TOUCHED"/ { target_admin_restore=NR }
-    END { exit !(pending_check && current && healthy && initial_ready && restore &&
-                 target_admin_restore && pending_check < current && current < healthy &&
-                 healthy < initial_ready && initial_ready < restore &&
-                 restore < target_admin_restore) }
+    /binding_restore_verified=0/ { init=NR }
+    /INITIAL_BINDING.*> "\$IFACE_PARAM"/ && !restore { restore=NR }
+    /restored_binding=.*read_binding/ && restore && !reread { reread=NR }
+    /"\$restored_binding" = "\$INITIAL_BINDING"/ && reread && !exact { exact=NR }
+    /pending_is_empty/ && exact && !pending { pending=NR }
+    /stats_pending_is_none/ && exact && !stats { stats=NR }
+    /bridge_binding_healthy "\$INITIAL_BINDING"/ && exact && !healthy { healthy=NR }
+    /binding_restore_verified=1/ && healthy && !verified { verified=NR }
+    /if \[ "\$binding_restore_verified" -eq 1 \]/ && verified && !admin_gate { admin_gate=NR }
+    /owner_before_target_restore=.*read_binding/ && admin_gate && !owner_read { owner_read=NR }
+    /"\$owner_before_target_restore" = "\$TO_IF"/ && owner_read && !owner_guard { owner_guard=NR }
+    /ip link set dev "\$TO_IF" down/ && owner_guard && !target_down { target_down=NR }
+    /owner_before_replace_restore=.*read_binding/ && target_down && !replace_read { replace_read=NR }
+    /"\$owner_before_replace_restore" = "\$REPLACE_IF"/ && replace_read && !replace_guard { replace_guard=NR }
+    /ip link set dev "\$REPLACE_IF" down/ && replace_guard && !replace_down { replace_down=NR }
+    END { exit !(init && restore && reread && exact && pending && stats && healthy &&
+                 verified && admin_gate && owner_read && owner_guard && target_down &&
+                 replace_read && replace_guard && replace_down &&
+                 init < restore && restore < reread && reread < exact &&
+                 exact <= pending && pending <= stats && stats <= healthy && healthy < verified &&
+                 verified < admin_gate && admin_gate < owner_read &&
+                 owner_read < owner_guard && owner_guard < target_down &&
+                 target_down < replace_read && replace_read < replace_guard &&
+                 replace_guard < replace_down) }
   '
 }
 
 check_deferred_docs_completion_contract() {
   local design="$ROOT/docs/runtime-bridge-interface-switch.design.md"
+  local plan="$ROOT/docs/superpowers/plans/2026-08-14-runtime-bridge-deferred-switch.md"
+  local doc
 
-  grep -Fq 'strict-mode completion' "$design" || return 1
-  grep -Fq 'deferred request acceptance' "$design" || return 1
-  grep -Fq 'bridge_iface` and `bridge_pending_iface' "$design" || return 1
-  ! grep -Fq 'When the write returns success, forwarding is active on the requested WLAN' "$design" || return 1
-  ! grep -Fq 'success: bridge is now active on mlan1' "$design" || return 1
+  for doc in "$PARAM_DOC" "$design" "$QA_RUNBOOK" "$plan" "$DEFERRED_SPEC"; do
+    check_deferred_doc_terms "$(cat "$doc")" || return 1
+  done
+  ! grep -Fq 'write는 비동기 요청을 예약하는 동작이 아니다' "$PARAM_DOC" || return 1
+  ! grep -Fq 'pending name or `none`' "$design" || return 1
+  ! grep -Fq 'pending target 이름(없으면 `none`)' "$PARAM_DOC" || return 1
+  ! grep -Fq '전환은 synchronous이지만' "$QA_RUNBOOK" || return 1
+  ! grep -Fq 'A request for a disconnected or administratively down target becomes' \
+    "$DEFERRED_SPEC" || return 1
+  check_deferred_spec_scope_contract "$(cat "$DEFERRED_SPEC")"
+}
+
+check_deferred_doc_terms() {
+  local doc="$1"
+
+  grep -Fq 'strict ready completion' <<< "$doc" || return 1
+  grep -Fq 'deferred acceptance' <<< "$doc" || return 1
+  grep -Fq 'empty line' <<< "$doc" || return 1
+  grep -Fq 'pending_iface=none' <<< "$doc"
+}
+
+check_terminal_failure_doc_contract() {
+  local doc="$1" section
+
+  section="$(printf '%s\n' "$doc" | awk '
+    /^\*\*destructive-reset-failure \(board-command case\)\*\*/ { capture=1 }
+    capture { print }
+    capture && /^```bash$/ { exit }
+  ')" || return 1
+  grep -Fq '`bridge_iface=none`' <<< "$section" || return 1
+  grep -Fq '`bridge_pending_iface` getter는 empty line' <<< "$section" || return 1
+  grep -Fq '`pending_iface=none pending_state=none`' <<< "$section"
+}
+
+check_deferred_spec_scope_contract() {
+  local spec="$1"
+
+  grep -Fq 'With `bridge_runtime_deferred=1`' <<< "$spec" || return 1
+  grep -Fq 'default-off mode retains rejection' <<< "$spec" || return 1
+  grep -Fq 'link-not-ready target replaces' <<< "$spec" || return 1
+  ! grep -Fq 'A request for a disconnected or administratively down target becomes' \
+    <<< "$spec"
 }
 
 # Fast-path excerpts are shared by the legacy packet/RCU checks below. Keep
@@ -894,6 +1284,7 @@ PENDING_PARAM_GETTER_BLOCK="$(extract_c_function '^static int bridge_pending_ifa
 # brace scanner intentionally does not parse C strings, so use the function's
 # column-zero closing brace as the boundary for this one large parser.
 CONF_PARSER_BLOCK="$(sed -n '/^static mlan_status parse_cfg_read_block/,/^}/p' "$INIT_C")"
+PARSE_BRIDGE_BOOL_BLOCK="$(extract_c_function '^static mlan_status parse_line_read_bridge_bool' "$INIT_C" || true)"
 INIT_MODULE_BLOCK="$(extract_c_function '^static int woal_init_module' "$MAIN_C")"
 CLEANUP_MODULE_BLOCK="$(extract_c_function '^static void woal_cleanup_module' "$MAIN_C")"
 REQUEST_RELOAD_BLOCK="$(extract_c_function '^int woal_request_fw_reload' "$MAIN_C")"
@@ -915,6 +1306,13 @@ PENDING_WORKER_BLOCK="$(extract_c_function '^static void moal_bridge_pending_wor
 PENDING_CLEAR_BLOCK="$(extract_c_function '^static bool moal_bridge_pending_clear_if' "$BRIDGE_C" || true)"
 PENDING_START_BLOCK="$(extract_c_function '^void moal_bridge_pending_start' "$BRIDGE_C" || true)"
 PENDING_CLEANUP_BLOCK="$(extract_c_function '^void moal_bridge_pending_cleanup' "$BRIDGE_C" || true)"
+PENDING_INVALIDATE_HANDLE_BLOCK="$(extract_c_function '^void moal_bridge_pending_invalidate_handle' "$BRIDGE_C" || true)"
+PENDING_CANCEL_ALL_BLOCK="$(extract_c_function '^void moal_bridge_pending_cancel_all' "$BRIDGE_C" || true)"
+PENDING_GETTER_BLOCK="$(extract_c_function '^int moal_bridge_get_pending_iface' "$BRIDGE_C" || true)"
+REQUEST_REJECTION_LOG_BLOCK="$(extract_c_function '^static void moal_bridge_log_request_rejection' "$BRIDGE_C" || true)"
+FORGET_HANDLE_BLOCK="$(extract_c_function '^void moal_bridge_forget_handle' "$BRIDGE_C" || true)"
+DISCARD_SUSPENDED_BLOCK="$(extract_c_function '^static void __moal_bridge_discard_suspended_owner' "$BRIDGE_C" || true)"
+RESUME_SUSPENDED_BLOCK="$(extract_c_function '^static int __moal_bridge_resume_owner' "$BRIDGE_C" || true)"
 VALIDATE_BLOCK="$(extract_c_function '^static int moal_bridge_validate_binding_locked' "$BRIDGE_C")"
 BRIDGE_INIT_BLOCK="$(extract_c_function '^static int __moal_bridge_init_locked' "$BRIDGE_C")"
 LIFECYCLE_DEINIT_BLOCK="$(extract_c_function '^static void __moal_bridge_deinit_locked' "$BRIDGE_C")"
@@ -1042,14 +1440,20 @@ if check_pending_switch_event_contract "$PENDING_BEGIN_BLOCK" \
 fi
 printf 'PASS: runtime-switch rollback notifier-replay mutation rejected\n'
 
-check_active_cancel_before_resolve_contract "$SWITCH_BLOCK" ||
-  fail "runtime-switch: current-owner cancellation occurs after structural checks"
-SWITCH_ACTIVE_CANCEL_LATE="$(printf '%s\n' "$SWITCH_BLOCK" |
-  sed '0,/br->wlan_dev->name/s//target.dev->name/')"
-if check_active_cancel_before_resolve_contract "$SWITCH_ACTIVE_CANCEL_LATE"; then
-  fail "runtime-switch: late active-name cancellation mutation accepted"
+check_same_target_compat_contract "$SWITCH_BLOCK" ||
+  fail "runtime-switch: strict same-target validation/cancellation split missing"
+SWITCH_SAME_TARGET_UNCONDITIONAL="$(printf '%s\n' "$SWITCH_BLOCK" |
+  sed 's/same_target && !expected_generation/same_target/')"
+if check_same_target_compat_contract "$SWITCH_SAME_TARGET_UNCONDITIONAL"; then
+  fail "runtime-switch: unconditional early same-target no-op mutation accepted"
 fi
-printf 'PASS: runtime-switch early active-name cancellation mutation rejected\n'
+printf 'PASS: runtime-switch strict same-target mutation rejected\n'
+SWITCH_SAME_TARGET_DEFERRED="$(printf '%s\n' "$SWITCH_BLOCK" |
+  sed 's/!same_target/true/')"
+if check_same_target_compat_contract "$SWITCH_SAME_TARGET_DEFERRED"; then
+  fail "runtime-switch: unhealthy active-name deferred mutation accepted"
+fi
+printf 'PASS: runtime-switch active-name defer mutation rejected\n'
 
 check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
   "$PENDING_SCHEDULER_BLOCK" "$SWITCH_BLOCK" ||
@@ -1075,6 +1479,160 @@ if check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
   fail "runtime-switch: name-reuse generation-recheck mutation accepted"
 fi
 printf 'PASS: runtime-switch name-reuse generation-recheck mutation rejected\n'
+PENDING_SCHEDULER_NO_NETNS="$(printf '%s\n' "$PENDING_SCHEDULER_BLOCK" |
+  sed 's/!dev || dev_net(dev) != &init_net/!dev/')"
+if check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
+    "$PENDING_SCHEDULER_NO_NETNS" "$SWITCH_BLOCK"; then
+  fail "runtime-switch: cross-netns pending cancellation mutation accepted"
+fi
+printf 'PASS: runtime-switch cross-netns event mutation rejected\n'
+PENDING_SCHEDULER_BLIND_RENAME="$(printf '%s\n' "$PENDING_SCHEDULER_BLOCK" |
+  sed 's/__dev_get_by_name(&init_net, cancelled_ifname)/false/')"
+if check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
+    "$PENDING_SCHEDULER_BLIND_RENAME" "$SWITCH_BLOCK"; then
+  fail "runtime-switch: unrelated rename cancellation mutation accepted"
+fi
+printf 'PASS: runtime-switch unrelated rename mutation rejected\n'
+PENDING_SCHEDULER_LOOKUP_UNDER_LOCK="$(printf '%s\n' "$PENDING_SCHEDULER_BLOCK" | awk '
+  /spin_unlock_irqrestore\(&bridge_pending_lock, flags\)/ {
+    unlocks++
+    if (unlocks == 2 && !saved) {
+      saved=$0
+      next
+    }
+  }
+  /__dev_get_by_name\(&init_net, cancelled_ifname\)/ && saved && !moved {
+    print
+    print saved
+    moved=1
+    next
+  }
+  { print }
+  END { exit !moved }
+')"
+if check_pending_identity_invalidation_contract "$NETDEV_EVENT_BLOCK" \
+    "$PENDING_SCHEDULER_LOOKUP_UNDER_LOCK" "$SWITCH_BLOCK"; then
+  fail "runtime-switch: pending-name lookup-under-spinlock mutation accepted"
+fi
+printf 'PASS: runtime-switch notifier lookup lock mutation rejected\n'
+
+check_pending_handle_invalidation_contract "$PENDING_INVALIDATE_HANDLE_BLOCK" \
+  "$DRV_MODE_BLOCK" "$POST_RESET_BLOCK" "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK" ||
+  fail "runtime-switch: destructive interface recreation does not invalidate pending identity"
+DRV_MODE_NO_PENDING_INVALIDATE="$(printf '%s\n' "$DRV_MODE_BLOCK" |
+  sed 's/moal_bridge_pending_invalidate_handle(handle);/\/\* missing pending identity invalidation *\//')"
+if check_pending_handle_invalidation_contract "$PENDING_INVALIDATE_HANDLE_BLOCK" \
+    "$DRV_MODE_NO_PENDING_INVALIDATE" "$POST_RESET_BLOCK" \
+    "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK"; then
+  fail "runtime-switch: driver-mode recreation invalidation mutation accepted"
+fi
+printf 'PASS: runtime-switch driver-mode identity mutation rejected\n'
+POST_RESET_NO_PENDING_INVALIDATE="$(printf '%s\n' "$POST_RESET_BLOCK" |
+  sed 's/moal_bridge_pending_invalidate_handle(handle);/\/\* missing pending identity invalidation *\//')"
+if check_pending_handle_invalidation_contract "$PENDING_INVALIDATE_HANDLE_BLOCK" \
+    "$DRV_MODE_BLOCK" "$POST_RESET_NO_PENDING_INVALIDATE" \
+    "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK"; then
+  fail "runtime-switch: post-reset recreation invalidation mutation accepted"
+fi
+printf 'PASS: runtime-switch post-reset identity mutation rejected\n'
+PCIE_FLR_NO_PENDING_INVALIDATE="$(printf '%s\n' "$PCIE_FLR_BLOCK" |
+  sed 's/moal_bridge_pending_invalidate_handle(handle);/\/\* missing pending identity invalidation *\//')"
+if check_pending_handle_invalidation_contract "$PENDING_INVALIDATE_HANDLE_BLOCK" \
+    "$DRV_MODE_BLOCK" "$POST_RESET_BLOCK" "$PCIE_FLR_NO_PENDING_INVALIDATE" \
+    "$SDIO_FLR_BLOCK"; then
+  fail "runtime-switch: PCIe FLR recreation invalidation mutation accepted"
+fi
+printf 'PASS: runtime-switch PCIe FLR identity mutation rejected\n'
+SDIO_FLR_NO_PENDING_INVALIDATE="$(printf '%s\n' "$SDIO_FLR_BLOCK" |
+  sed 's/moal_bridge_pending_invalidate_handle(handle);/\/\* missing pending identity invalidation *\//')"
+if check_pending_handle_invalidation_contract "$PENDING_INVALIDATE_HANDLE_BLOCK" \
+    "$DRV_MODE_BLOCK" "$POST_RESET_BLOCK" "$PCIE_FLR_BLOCK" \
+    "$SDIO_FLR_NO_PENDING_INVALIDATE"; then
+  fail "runtime-switch: SDIO FLR recreation invalidation mutation accepted"
+fi
+printf 'PASS: runtime-switch SDIO FLR identity mutation rejected\n'
+
+check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
+  "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \
+  "$DISCARD_SUSPENDED_BLOCK" "$RESUME_SUSPENDED_BLOCK" ||
+  fail "runtime-switch: terminal no-owner paths do not clear pending"
+SWITCH_NO_TERMINAL_PENDING_CLEAR="$(printf '%s\n' "$SWITCH_BLOCK" |
+  sed 's/moal_bridge_pending_cancel_all("runtime switch rollback failure");/\/\* stale pending *\//')"
+if check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" \
+    "$SWITCH_NO_TERMINAL_PENDING_CLEAR" "$DRV_MODE_BLOCK" \
+    "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" "$DISCARD_SUSPENDED_BLOCK" \
+    "$RESUME_SUSPENDED_BLOCK"; then
+  fail "runtime-switch: rollback-failure pending mutation accepted"
+fi
+printf 'PASS: runtime-switch rollback-failure pending mutation rejected\n'
+DRV_MODE_UNRELATED_TERMINAL_CLEAR="$(printf '%s\n' "$DRV_MODE_BLOCK" |
+  sed '/^[[:space:]]*if (destructive) {/a\
+\t\tmoal_bridge_pending_cancel_all("driver-mode terminal failure");')"
+if check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
+    "$DRV_MODE_UNRELATED_TERMINAL_CLEAR" "$REQUEST_RELOAD_BLOCK" \
+    "$FORGET_HANDLE_BLOCK" "$DISCARD_SUSPENDED_BLOCK" \
+    "$RESUME_SUSPENDED_BLOCK"; then
+  fail "runtime-switch: unrelated driver-mode pending-clear mutation accepted"
+fi
+printf 'PASS: runtime-switch unrelated driver-mode pending-clear mutation rejected\n'
+RELOAD_NO_TERMINAL_PENDING_CLEAR="$(printf '%s\n' "$REQUEST_RELOAD_BLOCK" |
+  sed 's/moal_bridge_pending_cancel_all("firmware reload terminal failure");/\/\* stale pending *\//')"
+if check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
+    "$DRV_MODE_BLOCK" "$RELOAD_NO_TERMINAL_PENDING_CLEAR" "$FORGET_HANDLE_BLOCK" \
+    "$DISCARD_SUSPENDED_BLOCK" "$RESUME_SUSPENDED_BLOCK"; then
+  fail "runtime-switch: reload terminal pending mutation accepted"
+fi
+printf 'PASS: runtime-switch reload terminal pending mutation rejected\n'
+DISCARD_NO_TERMINAL_PENDING_CLEAR="$(printf '%s\n' "$DISCARD_SUSPENDED_BLOCK" |
+  sed 's/moal_bridge_pending_cancel_all("suspended owner discarded");/\/\* stale pending *\//')"
+if check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
+    "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \
+    "$DISCARD_NO_TERMINAL_PENDING_CLEAR" "$RESUME_SUSPENDED_BLOCK"; then
+  fail "runtime-switch: suspended-owner terminal pending mutation accepted"
+fi
+printf 'PASS: runtime-switch suspended-owner terminal pending mutation rejected\n'
+DISCARD_WITHOUT_VALID_OWNER="$(printf '%s\n' "$DISCARD_SUSPENDED_BLOCK" |
+  sed 's/if (!bridge_suspended_owner.valid)/if (false)/')"
+if check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
+    "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \
+    "$DISCARD_WITHOUT_VALID_OWNER" "$RESUME_SUSPENDED_BLOCK"; then
+  fail "runtime-switch: suspended-owner validity-guard mutation accepted"
+fi
+printf 'PASS: runtime-switch suspended-owner validity mutation rejected\n'
+RESUME_NO_TERMINAL_PENDING_CLEAR="$(printf '%s\n' "$RESUME_SUSPENDED_BLOCK" |
+  sed 's/moal_bridge_pending_cancel_all("suspended owner resume failure");/\/\* stale pending *\//')"
+if check_pending_terminal_cancel_contract "$PENDING_CANCEL_ALL_BLOCK" "$SWITCH_BLOCK" \
+    "$DRV_MODE_BLOCK" "$REQUEST_RELOAD_BLOCK" "$FORGET_HANDLE_BLOCK" \
+    "$DISCARD_SUSPENDED_BLOCK" "$RESUME_NO_TERMINAL_PENDING_CLEAR"; then
+  fail "runtime-switch: suspended-owner resume-failure mutation accepted"
+fi
+printf 'PASS: runtime-switch suspended-owner resume-failure mutation rejected\n'
+
+check_worker_rejection_log_contract "$REQUEST_REJECTION_LOG_BLOCK" "$SWITCH_BLOCK" ||
+  fail "runtime-switch: generation-backed worker rejection logs at MERROR"
+WORKER_LOGGER_NO_GUARD="$(printf '%s\n' "$REQUEST_REJECTION_LOG_BLOCK" |
+  sed 's/if (expected_generation)/if (false)/')"
+if check_worker_rejection_log_contract "$WORKER_LOGGER_NO_GUARD" "$SWITCH_BLOCK"; then
+  fail "runtime-switch: worker transient MERROR mutation accepted"
+fi
+printf 'PASS: runtime-switch worker transient-log mutation rejected\n'
+
+check_bridge_bool_parser_contract "$PARSE_BRIDGE_BOOL_BLOCK" "$CONF_PARSER_BLOCK" ||
+  fail "runtime-switch: mod_para runtime boolean parser is not lexically strict"
+check_bridge_bool_fixture_contract ||
+  fail "runtime-switch: malformed deferred mod_para fixtures accepted"
+BRIDGE_BOOL_NO_TERMINAL="$(printf '%s\n' "$PARSE_BRIDGE_BOOL_BLOCK" |
+  sed 's/line\[key_len + 2\]/line[key_len + 1]/')"
+if check_bridge_bool_parser_contract "$BRIDGE_BOOL_NO_TERMINAL" "$CONF_PARSER_BLOCK"; then
+  fail "runtime-switch: malformed multi-character boolean mutation accepted"
+fi
+printf 'PASS: runtime-switch mod_para lexical mutation rejected\n'
+CONF_PARSER_PREFIX_KEY="$(printf '%s\n' "$CONF_PARSER_BLOCK" |
+  sed 's/bridge_runtime_deferred=/bridge_runtime_deferred/')"
+if check_bridge_bool_parser_contract "$PARSE_BRIDGE_BOOL_BLOCK" "$CONF_PARSER_PREFIX_KEY"; then
+  fail "runtime-switch: deferred prefix-key mutation accepted"
+fi
+printf 'PASS: runtime-switch deferred prefix-key mutation rejected\n'
 
 check_standard_artifact_fault_absence
 check_fault_hook_compile_guard "$SWITCH_BLOCK" ||
@@ -1487,14 +2045,29 @@ check_qa_cleanup_contract "$QA_CLEANUP_BLOCK" || \
   fail "runtime-switch: QA cleanup status/evidence/restore ordering invalid"
 check_deferred_qa_contract "$(cat "$QA_SCRIPT")" || \
   fail "runtime-switch: deferred QA case/setup/cleanup contract missing"
+check_deferred_pending_wire_contract "$(cat "$QA_SCRIPT")" || \
+  fail "runtime-switch: pending getter empty-line/stats-none QA distinction missing"
+check_pending_source_wire_contract "$PENDING_GETTER_BLOCK" "$STATS_SHOW_BLOCK" || \
+  fail "runtime-switch: pending getter/stats source wire distinction missing"
+check_strict_disconnected_qa_contract "$(cat "$QA_SCRIPT")" || \
+  fail "runtime-switch: strict disconnected/same-target QA gate missing"
+check_same_target_qa_contract "$(cat "$QA_SCRIPT")" || \
+  fail "runtime-switch: strict same-target QA preconditions missing"
+check_deferred_replace_qa_contract "$(cat "$QA_SCRIPT")" || \
+  fail "runtime-switch: third-STA deferred replacement QA contract missing"
+check_deferred_reset_qa_contract "$(cat "$QA_SCRIPT")" || \
+  fail "runtime-switch: destructive reset pending-identity QA contract missing"
 check_deferred_cleanup_restore_contract "$QA_CLEANUP_BLOCK" || \
-  fail "runtime-switch: deferred cleanup restores target admin state before initial binding"
+  fail "runtime-switch: deferred cleanup lacks fail-closed post-restore proof"
 check_deferred_docs_completion_contract || \
   fail "runtime-switch: deferred API documentation claims request acceptance is completion"
+check_terminal_failure_doc_contract "$(cat "$QA_RUNBOOK")" || \
+  fail "runtime-switch: terminal-failure active/pending getter documentation is swapped"
 check_deferred_docs_contract || \
   fail "runtime-switch: deferred operator documentation contract missing"
-for qa_case in stress same-target concurrent peer-cycle gate-off no-active malformed \
-               reject target-down target-disconnected fault-target fault-double \
+for qa_case in stress same-target concurrent peer-cycle deferred-replace \
+               destructive-reset-success destructive-reset-failure \
+               gate-off no-active malformed reject target-down target-disconnected fault-target fault-double \
                reset-interaction unload-interaction; do
   grep -Fq "$qa_case" "$QA_SCRIPT" || \
     fail "runtime-switch: QA case $qa_case missing"
@@ -1527,6 +2100,8 @@ done
 for evidence in 'QA_CASE=gate-off' 'QA_CASE=no-active' 'QA_CASE=malformed' \
                 'QA_CASE=concurrent' 'QA_CASE=peer-cycle' \
                 'QA_CASE=fault-target' 'QA_CASE=fault-double' \
+                'QA_CASE=destructive-reset-success' \
+                'QA_CASE=destructive-reset-failure' \
                 'QA_CASE=reset-interaction' 'QA_CASE=unload-interaction'; do
   grep -Fq "$evidence" "$QA_RUNBOOK" || \
     fail "runtime-switch: runbook matrix missing $evidence"
@@ -1544,6 +2119,143 @@ if check_qa_cleanup_contract "$QA_RESTORE_BEFORE_CAPTURE"; then
   fail "runtime-switch: QA restore-before-evidence mutation accepted"
 fi
 printf 'PASS: runtime-switch QA evidence ordering mutation rejected\n'
+QA_CLEANUP_NO_OWNER_PROOF="$(printf '%s\n' "$QA_CLEANUP_BLOCK" |
+  sed 's/\[ "$restored_binding" = "$INITIAL_BINDING" \]/true/')"
+if check_deferred_cleanup_restore_contract "$QA_CLEANUP_NO_OWNER_PROOF"; then
+  fail "runtime-switch: cleanup missing restored-owner proof mutation accepted"
+fi
+printf 'PASS: runtime-switch QA restored-owner mutation rejected\n'
+QA_CLEANUP_NO_HEALTH_PROOF="$(printf '%s\n' "$QA_CLEANUP_BLOCK" |
+  sed 's/bridge_binding_healthy "$INITIAL_BINDING"/true/')"
+if check_deferred_cleanup_restore_contract "$QA_CLEANUP_NO_HEALTH_PROOF"; then
+  fail "runtime-switch: cleanup missing restored-health proof mutation accepted"
+fi
+printf 'PASS: runtime-switch QA restored-health mutation rejected\n'
+QA_CLEANUP_TARGET_DOWN_EARLY="$(printf '%s\n' "$QA_CLEANUP_BLOCK" | awk '
+  /restored_binding=.*read_binding/ && !moved {
+    print "        ip link set dev \"$TO_IF\" down"
+    moved=1
+  }
+  /ip link set dev "\$TO_IF" down/ { next }
+  { print }
+  END { exit !moved }
+')"
+if check_deferred_cleanup_restore_contract "$QA_CLEANUP_TARGET_DOWN_EARLY"; then
+  fail "runtime-switch: cleanup target-down-before-verification mutation accepted"
+fi
+printf 'PASS: runtime-switch QA target-admin ordering mutation rejected\n'
+QA_CLEANUP_NO_REPLACE_OWNER_GUARD="$(printf '%s\n' "$QA_CLEANUP_BLOCK" |
+  sed 's/\[ "$owner_before_replace_restore" = "$REPLACE_IF" \]/false/')"
+if check_deferred_cleanup_restore_contract "$QA_CLEANUP_NO_REPLACE_OWNER_GUARD"; then
+  fail "runtime-switch: cleanup replacement-owner guard mutation accepted"
+fi
+printf 'PASS: runtime-switch QA replacement-owner guard mutation rejected\n'
+STRICT_DISCONNECTED_NO_GATE="$(sed '/target-disconnected)/,/run_prevalidation_reject "\$TO_IF" 67/ {
+  /require_deferred_gate 0/d
+}' "$QA_SCRIPT")"
+if check_strict_disconnected_qa_contract "$STRICT_DISCONNECTED_NO_GATE"; then
+  fail "runtime-switch: disconnected strict-policy mutation accepted"
+fi
+printf 'PASS: runtime-switch strict-disconnected QA mutation rejected\n'
+PENDING_EMPTY_ACCEPTS_NONE="$(sed '/^pending_is_empty()/,/^}/ {
+  s/\[ -z "\$pending" \]/[ -z "$pending" ] || [ "$pending" = none ]/
+}' "$QA_SCRIPT")"
+if check_deferred_pending_wire_contract "$PENDING_EMPTY_ACCEPTS_NONE"; then
+  fail "runtime-switch: pending getter literal-none mutation accepted"
+fi
+printf 'PASS: runtime-switch pending wire-format QA mutation rejected\n'
+PENDING_GETTER_LITERAL_NONE="$(printf '%s\n' "$PENDING_GETTER_BLOCK" |
+  sed 's/return scnprintf(buf, len, "\\n");/return scnprintf(buf, len, "none\\n");/')"
+if check_pending_source_wire_contract "$PENDING_GETTER_LITERAL_NONE" "$STATS_SHOW_BLOCK"; then
+  fail "runtime-switch: pending getter source literal-none mutation accepted"
+fi
+printf 'PASS: runtime-switch pending getter source mutation rejected\n'
+STATS_PENDING_EMPTY="$(printf '%s\n' "$STATS_SHOW_BLOCK" |
+  sed 's/strncpy(pending_name, "none", sizeof(pending_name));/pending_name[0] = '\''\\0'\'';/')"
+if check_pending_source_wire_contract "$PENDING_GETTER_BLOCK" "$STATS_PENDING_EMPTY"; then
+  fail "runtime-switch: pending stats source empty-sentinel mutation accepted"
+fi
+printf 'PASS: runtime-switch pending stats source mutation rejected\n'
+WAITING_NO_STATS="$(sed '/^require_waiting_unchanged()/,/^}/ {
+  /stats_value pending_iface/d
+  /stats_value pending_state/d
+}' "$QA_SCRIPT")"
+if check_deferred_qa_contract "$WAITING_NO_STATS"; then
+  fail "runtime-switch: waiting stats identity/state mutation accepted"
+fi
+printf 'PASS: runtime-switch waiting stats mutation rejected\n'
+SAME_TARGET_NO_DEFERRED_GATE="$(sed '/^run_same_target()/,/^}/ {
+  /require_deferred_gate 0/d
+}' "$QA_SCRIPT")"
+if check_same_target_qa_contract "$SAME_TARGET_NO_DEFERRED_GATE"; then
+  fail "runtime-switch: same-target non-strict QA mutation accepted"
+fi
+printf 'PASS: runtime-switch same-target strict-gate mutation rejected\n'
+SAME_TARGET_NO_PENDING_PROOF="$(sed '/^run_same_target()/,/^}/ {
+  /pending_is_empty/d
+  /stats_pending_is_none/d
+}' "$QA_SCRIPT")"
+if check_same_target_qa_contract "$SAME_TARGET_NO_PENDING_PROOF"; then
+  fail "runtime-switch: same-target pending-cancellation QA mutation accepted"
+fi
+printf 'PASS: runtime-switch same-target no-pending mutation rejected\n'
+DEFERRED_REPLACE_NO_DISTINCT="$(sed '/^run_deferred_replace()/,/^}/ {
+  /"\$REPLACE_IF" != "\$TO_IF"/d
+}' "$QA_SCRIPT")"
+if check_deferred_replace_qa_contract "$DEFERRED_REPLACE_NO_DISTINCT"; then
+  fail "runtime-switch: non-distinct replacement target mutation accepted"
+fi
+printf 'PASS: runtime-switch replacement distinct-target mutation rejected\n'
+DEFERRED_REPLACE_NO_STALE_PROOF="$(sed '/^run_deferred_replace()/,/^}/ {
+  /wait_for_ready_without_switch "\$TO_IF" "\$FROM_IF" "\$REPLACE_IF"/d
+}' "$QA_SCRIPT")"
+if check_deferred_replace_qa_contract "$DEFERRED_REPLACE_NO_STALE_PROOF"; then
+  fail "runtime-switch: replacement stale-target readiness mutation accepted"
+fi
+printf 'PASS: runtime-switch replacement stale-generation mutation rejected\n'
+RESET_SUCCESS_NO_REUSE_PROOF="$(sed '/^run_destructive_reset_success()/,/^}/ {
+  /wait_for_ready_without_cleared_switch "\$TO_IF" "\$FROM_IF"/d
+}' "$QA_SCRIPT")"
+if check_deferred_reset_qa_contract "$RESET_SUCCESS_NO_REUSE_PROOF"; then
+  fail "runtime-switch: destructive reset name-reuse QA mutation accepted"
+fi
+printf 'PASS: runtime-switch destructive-reset reuse mutation rejected\n'
+RESET_FAILURE_NO_PENDING_PROOF="$(sed '/^run_destructive_reset_failure()/,/^}/ {
+  /pending_is_empty/d
+  /stats_pending_is_none/d
+}' "$QA_SCRIPT")"
+if check_deferred_reset_qa_contract "$RESET_FAILURE_NO_PENDING_PROOF"; then
+  fail "runtime-switch: terminal reset pending QA mutation accepted"
+fi
+printf 'PASS: runtime-switch terminal-reset pending mutation rejected\n'
+QA_CLEANUP_NO_STATS_PROOF="$(printf '%s\n' "$QA_CLEANUP_BLOCK" |
+  sed 's/stats_pending_is_none/true/g')"
+if check_deferred_cleanup_restore_contract "$QA_CLEANUP_NO_STATS_PROOF"; then
+  fail "runtime-switch: cleanup missing restored pending-stats proof mutation accepted"
+fi
+printf 'PASS: runtime-switch QA restored pending-stats mutation rejected\n'
+DOC_NO_EMPTY_GETTER="$(sed 's/empty line/literal none/g' \
+  "$ROOT/docs/runtime-bridge-interface-switch.design.md")"
+if check_deferred_doc_terms "$DOC_NO_EMPTY_GETTER"; then
+  fail "runtime-switch: pending getter documentation mutation accepted"
+fi
+printf 'PASS: runtime-switch pending getter documentation mutation rejected\n'
+RUNBOOK_TERMINAL_GETTERS_SWAPPED="$(sed '
+  /^\*\*destructive-reset-failure (board-command case)\*\*/,/^```bash$/ {
+    s/`bridge_iface=none`이고,/`bridge_iface` getter는 empty line이고,/
+    s/`bridge_pending_iface` getter는 empty line/`bridge_pending_iface=none`/
+  }
+' "$QA_RUNBOOK")"
+if check_terminal_failure_doc_contract "$RUNBOOK_TERMINAL_GETTERS_SWAPPED"; then
+  fail "runtime-switch: terminal-failure getter-swap documentation mutation accepted"
+fi
+printf 'PASS: runtime-switch terminal-failure getter-swap mutation rejected\n'
+SPEC_UNSCOPED_DEFERRED="$(sed 's/With `bridge_runtime_deferred=1`/Without an explicit policy qualifier/' \
+  "$DEFERRED_SPEC")"
+if check_deferred_spec_scope_contract "$SPEC_UNSCOPED_DEFERRED"; then
+  fail "runtime-switch: unscoped deferred-spec mutation accepted"
+fi
+printf 'PASS: runtime-switch deferred spec scope mutation rejected\n'
 
 # Existing strict parser and shared-release contracts remain in force.
 check_bridge_iface_set_contract "$SETTER_BLOCK" || \

@@ -14300,7 +14300,9 @@ mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode)
 #endif
 #endif
 
-	/* Remove interface */
+	/* Remove interface.  The bridge notifier is suspended here, so cancel a
+	 * matching pointer-free pending identity while the old names are pinned. */
+	moal_bridge_pending_invalidate_handle(handle);
 	for (i = 0; i < MIN(MLAN_MAX_BSS_NUM, handle->priv_num); i++)
 		woal_remove_interface(handle, i);
 
@@ -14616,6 +14618,9 @@ static int woal_post_reset(moal_handle *handle)
 	woal_get_version(handle, str_buf, sizeof(str_buf) - 1);
 	PRINTM(MMSG, "wlan: version = %s\n", str_buf);
 	if (!handle->wifi_hal_flag) {
+		/* This variant recreates netdev identity while the bridge notifier is
+		 * suspended.  Invalidate the old target name before any unregister. */
+		moal_bridge_pending_invalidate_handle(handle);
 		/* woal_request_fw_reload() owns AddRemoveCardSem across both DBDC
 		 * handles.  Do not recursively acquire it here. */
 		PRINTM(MMSG, "wlan: post_reset remove/add interface\n");
@@ -15054,6 +15059,7 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 done:
 	if (ret) {
 		if (destructive_started) {
+			moal_bridge_pending_cancel_all("firmware reload terminal failure");
 			if (bridge_suspended)
 				moal_bridge_discard_suspended_owner();
 			moal_bridge_deinit(handle);

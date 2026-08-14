@@ -228,10 +228,13 @@ unload
 
 ## T-15 — DBDC 런타임 브릿지 인터페이스 전환
 
-이 절은 **실장비 전용**이다. `bridge_runtime_switch=1`로 로드된 활성 브릿지와, 서로 다른
-두 MOAL STA가 모두 operator에 의해 미리 association되어 있어야 한다. QA 스크립트는 링크를
-생성·UP·association하지 않으며 트래픽도 시작하지 않는다. 아래 절차와 양방향 트래픽을 실제로
-수행하기 전에는 target-board validation 또는 lossless switching을 통과했다고 기록하지 않는다.
+이 절은 **실장비 전용**이다. `bridge_runtime_switch=1`로 로드된 활성 브릿지가 필요하다.
+stress/strict ready completion case에서는 서로 다른 두 MOAL STA가 모두 operator에 의해 미리
+association되어 있어야 한다. deferred acceptance case의 target은 의도적으로 admin-DOWN에서
+시작하며, 요청 수락 증거를 얻은 뒤 operator 또는 기존 board network manager가 UP/association을
+완료한다. QA 스크립트는 association을 생성하지 않으며 트래픽도 시작하지 않는다. 아래 절차와
+양방향 트래픽을 실제로 수행하기 전에는 target-board validation 또는 lossless switching을
+통과했다고 기록하지 않는다.
 
 ```bash
 unload
@@ -241,8 +244,8 @@ unload
 load mod_para=cts/wifi_mod_para.conf
 test "$(cat /sys/module/moal/parameters/bridge_runtime_switch)" = 1
 
-# 기존 보드 절차(wpa_supplicant/제품 network manager)로 두 STA를 먼저 association한다.
-# 다음 두 출력 모두 "Connected to ..."여야 한다.
+# stress/strict case만 기존 보드 절차로 두 STA를 먼저 association한다.
+# 이 경우 다음 두 출력 모두 "Connected to ..."여야 한다.
 iw dev mlan0 link
 iw dev mlan1 link
 cat /sys/module/moal/parameters/bridge_iface
@@ -318,17 +321,21 @@ reference/leak 증거는 최소한 `/proc/modules`의 moal reference count, 두 
 성공 판정에는 스크립트 PASS, 최종 `bridge_iface=mlan0`(effective owner), 예상 `switch_ok` 증가,
 `switch_fail`/rollback counter 불변, 양방향 트래픽 결과, kernel warning 없음, thread/reference/leak
 전후 검토가 모두 필요하다. `active=0`은 peer suspend 중에도 owner가 남아 있을 수 있으므로
-`bridge_iface=none`과 동의어가 아니다. 전환은 synchronous이지만 teardown/init 사이에 짧은 패킷 중단 또는
-손실이 가능하므로 무손실을 성공 기준으로 가정하지 않는다.
+`bridge_iface=none`과 동의어가 아니다. strict/ready transaction은 synchronous completion이지만
+deferred acceptance는 worker의 후속 완료와 다르다. 어느 transaction도 teardown/init 사이에 짧은
+패킷 중단 또는 손실이 가능하므로 무손실을 성공 기준으로 가정하지 않는다.
 
 스크립트는 `dmesg --follow-new`를 시험 시작 전에 실행하여 긴 loop 중 ring rotation과 무관하게
 새 kernel message를 evidence 디렉터리에 스트리밍한다. 스트리머를 시작할 수 없으면 시험은
 fail-closed 한다. EXIT trap은 원래 종료 코드를 먼저 보존하고 `set +e`로 전환한 뒤, 실패 당시
 state/full dmesg를 복구보다 먼저 저장한다. 자동 warning 판정은 unrelated historical warning을
 오탐하지 않도록 follow-new stream만 사용하며 full snapshots는 수동 증거로 보존한다. 현재
-binding이 stats상 `active=1`, `peer_released=0`이고 현재/원래 STA가
-UP/associated인 경우에만 원래 binding을 best-effort 복구하고 복구 후 state를 다시 저장한다.
-cleanup 실패는 성공을 실패로 승격하지만 원래 실패/시그널 종료 코드는 가리지 않는다.
+cleanup은 먼저 살아 있는 pending을 현재 active-name write로 cancel하고 getter의 **empty line**과
+stats의 `pending_iface=none pending_state=none`을 각각 확인한다. 원래 owner와 다르면 restore write
+후 `bridge_iface == INITIAL_BINDING`, pending empty, restored bridge healthy를 모두 재검증한 뒤에만
+TO interface의 원래 admin state를 복구한다. 검증 실패는 fail-closed이며 현재 owner는 절대로
+admin-DOWN하지 않는다. cleanup 실패는 성공을 실패로 승격하지만 원래 실패/시그널 종료 코드는
+가리지 않는다.
 `SWITCH_LOOPS`는 leading zero 없는 canonical decimal `1..100000`만 허용한다.
 
 ### T-15a — 파라미터화된 negative/concurrency/reset matrix
@@ -346,9 +353,9 @@ non-STA를 구분할 수 있다.
 | nonexistent | `QA_CASE=reject REJECT_TARGET=does-not-exist EXPECTED_ERRNO=19` |
 | non-MOAL | `QA_CASE=reject REJECT_TARGET=eth0 EXPECTED_ERRNO=19` |
 | MOAL non-STA | `QA_CASE=reject REJECT_TARGET=uap0 EXPECTED_ERRNO=22` (실제 non-STA 이름 사용) |
-| target down | target를 admin-down으로 준비; `QA_CASE=target-down TO_IF=mlan1` (`ENETDOWN`) |
-| disconnected | target는 UP이나 association 없음; `QA_CASE=target-disconnected TO_IF=mlan1` (`ENOLINK`) |
-| same target | active target 준비; `QA_CASE=same-target`; `switch_ok` 불변 확인 |
+| target down | deferred=0, target를 admin-down으로 준비; `QA_CASE=target-down TO_IF=mlan1` (`ENETDOWN`) |
+| disconnected | deferred=0, target는 UP이나 association 없음; `QA_CASE=target-disconnected TO_IF=mlan1` (`ENOLINK`) |
+| same target | deferred=0, healthy active target의 `QA_CASE=same-target`는 no-op/counter 불변; `QA_CASE=peer-cycle`은 peer DOWN 상태의 same-name write가 legacy `ENETDOWN`을 유지함을 확인 |
 | concurrent writers | 두 STA associated; `QA_CASE=concurrent SWITCH_LOOPS=1000`; real start barrier, release 직후 양 writer liveness, iteration evidence 및 terminal binding 확인. kernel-level syscall overlap은 trace로만 확정 가능. |
 | peer down/up | active bridge; `QA_CASE=peer-cycle PEER_IF=eth0`; `active=0 -> 1`, old peer DOWN write의 `ENETDOWN`, `switch_ok` 불변 확인 |
 | reset interaction | board-approved reset command를 `RESET_CMD`에 넣고 `QA_CASE=reset-interaction`; syscall-attempt marker 직후 writer liveness와 exact old owner/`active=1`/2 threads/module-loaded terminal state 확인 |
@@ -382,7 +389,10 @@ marker는 shell에서 가능한 syscall-attempt 직전 경계일 뿐 실제 in-k
 
 이 절도 **실장비 전용**이다. 아래 case를 시작하기 전에 두 getter와 stats를 매번 보존한다.
 `bridge_iface`는 active owner이고 `bridge_pending_iface`는 pending request이므로 서로 같은
-값일 필요가 없다. deferred gate 기본값 0은 기존 strict synchronous compatibility를 보장한다.
+값일 필요가 없다. no-pending getter wire value는 newline만 있는 **empty line**이고, stats의
+no-pending 표현은 `pending_iface=none pending_state=none`이다. deferred gate 기본값 0은 기존
+strict synchronous compatibility를 보장한다. 이 문서에서 **strict ready completion**은 write
+return 시점의 완료이고 **deferred acceptance**는 pending 등록만 뜻한다.
 
 ```bash
 cat /sys/module/moal/parameters/bridge_runtime_switch
@@ -395,8 +405,9 @@ cat /sys/kernel/moal_bridge/stats
 | 케이스 | 준비/실행 | pass criteria |
 |---|---|---|
 | deferred off | gate=1, deferred=0, mlan1 admin-DOWN; `QA_CASE=deferred-off` | write가 `ENETDOWN`; active `bridge_iface=mlan0`, `active=1`, four outcome counters 불변 |
-| deferred wait | gate=1/deferred=1, mlan0 healthy/associated, mlan1 initially admin-DOWN; `QA_CASE=deferred-wait DEFERRED_TIMEOUT=30` | first one-write는 pending `mlan1`을 수락하고 owner/counters를 보존; mlan1 UP/association 후 pending clear 및 `switch_ok +1` exactly once |
+| deferred wait | gate=1/deferred=1, mlan0 healthy/associated, mlan1 initially admin-DOWN; `QA_CASE=deferred-wait DEFERRED_TIMEOUT=30` | first one-write는 pending `mlan1`을 수락하고 owner/counters를 보존; 그 뒤 operator/network manager가 mlan1을 UP/associate하면 pending clear 및 `switch_ok +1` exactly once |
 | deferred cancel | 동일한 wait 준비; `QA_CASE=deferred-cancel` | current `mlan0` one-write가 pending을 clear; owner/active/four counters 불변 |
+| deferred replace | third registered/present STA `mlan2` 준비; mlan1/mlan2는 처음 admin-DOWN; `QA_CASE=deferred-replace REPLACE_IF=mlan2` | pending mlan1→mlan2 replacement, old mlan1 readiness로 switch 없음, mlan2 readiness 뒤 `switch_ok +1` exactly once |
 
 ```bash
 FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-off \
@@ -408,6 +419,9 @@ FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-wait DEFERRED_TIMEOUT=30 \
 FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-cancel \
   QA_EVIDENCE_DIR=/tmp/bridge-qa.deferred-cancel \
   ./scripts/tests/bridge_runtime_switch_qa.sh
+FROM_IF=mlan0 TO_IF=mlan1 REPLACE_IF=mlan2 QA_CASE=deferred-replace \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.deferred-replace \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
 ```
 
 `deferred-wait`의 link-ready/association 및 active owner 전환은 driver target-ready evidence다.
@@ -415,15 +429,55 @@ FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=deferred-cancel \
 로그는 별도로 보존하고, same-MAC/multi-BSSID mlan1 data-plane 이상은 deferred runtime bridge
 결과와 분리하여 조사한다.
 
-보드는 STA가 둘뿐일 수 있으므로 replacement는 가짜 세 번째 target을 만들지 않는다. 두 writer가
-각기 다른 valid target을 쓰는 concurrent-writer/manual extension으로 기록하고, 마지막 accepted
-pending request와 generation만 평가한다.
+true replacement는 active FROM_IF와 pending TO_IF 양쪽과 다른 **third registered STA**
+`REPLACE_IF`가 필요하며 registered/present이되 link-not-ready여야 한다. ready third target은
+replacement가 아니라 immediate transaction을 수행한다. 세 번째 STA를 admin-DOWN으로 준비한 뒤 pending TO_IF를 만들고
+`echo "$REPLACE_IF" > bridge_iface`로 replace한다. TO_IF가 먼저 ready가 되어도 owner/counters가
+변하지 않아야 하며, REPLACE_IF가 ready가 된 뒤에만 exactly one switch가 완료되어야 한다.
+STA가 둘뿐인 보드에서는 replacement를 concurrent-writer로 추정하지 말고 명시적으로
+**NOT RUN/UNSUPPORTED**로 기록한다. active-name cancellation은 replacement 증거가 아니다.
 
 **unregister/name-reuse (runbook-only)**: pending mlan1을 만든 뒤 board-approved bus unregister
 또는 module/remove command를 실행한다. target unregister가 모듈 제거를 유발하거나 board-specific
 bus command를 요구할 수 있으므로 이 case는 script에 강제하지 않는다. 이후 같은 이름의 netdev가
 나타나도 old request가 실행되지 않는지 확인한다. pass criteria는 pending clear, no later switch,
 valid current owner, 그리고 follow-new dmesg에 kernel warning 없음이다.
+
+**unrelated rename / cross-netns (runbook-only)**: pending mlan1을 유지한 상태에서 init_net의
+unrelated veth/VLAN을 rename하고, 별도 network namespace의 같은 이름 `mlan1` 장치를 rename 또는
+unregister한다. 두 경우 모두 pending name/generation, active owner, four outcome counters가
+그대로여야 한다. 이어 실제 init_net pending target을 rename하면 old name이 사라지는 시점에
+pending이 clear되고, 그 이름을 재사용한 새 netdev가 old request를 완료하면 실패다.
+
+**destructive-reset-success (board-command case)**: pending target을 만든 뒤 old netdev를 제거/재생성하는
+board-approved reset을 수행한다. 제거 전에 pending identity가 clear되어야 하며, 재생성된 same-name
+target이 old generation으로 switch되면 실패다. 반대로 netdev identity를 보존하는 reset은 pending을
+유지할 수 있고 이후 정상 readiness event로 한 번 완료되어야 한다.
+
+```bash
+FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=destructive-reset-success \
+  RESET_CMD='<board-approved destructive reset command>' \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.destructive-reset-success \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+```
+
+**destructive-reset-failure (board-command case)**: 동일 준비 뒤 terminal failure를 의도적으로 만드는
+board-approved fault 절차를 수행한다. terminal owner가 없어진 경우 `bridge_iface=none`이고,
+`bridge_pending_iface` getter는 empty line, stats는 `pending_iface=none pending_state=none`이어야 하며
+이후 재생성된 same-name target으로 자동 전환되면
+실패다. 보드가 안전한 reset/failure injection을 제공하지 않으면 두 destructive-reset case 모두
+**NOT RUN/UNSUPPORTED**로 기록한다.
+
+```bash
+FROM_IF=mlan0 TO_IF=mlan1 QA_CASE=destructive-reset-failure \
+  RESET_FAIL_CMD='<board-approved terminal reset-failure command>' \
+  QA_EVIDENCE_DIR=/tmp/bridge-qa.destructive-reset-failure \
+  ./scripts/tests/bridge_runtime_switch_qa.sh
+```
+
+terminal failure case는 원 owner를 복구할 수 없으므로 case assertion evidence가 맞아도 cleanup이
+fail-closed 하여 expected nonzero로 끝난다. 모듈 reload와 initial owner health 검증 전에는 PASS로
+기록하지 않는다.
 
 ### T-15b — QA-only target/rollback fault injection
 
@@ -446,7 +500,10 @@ QA-only root-writable `bridge_switch_fault_mask`는 validation/same-target 검�
 `ENOMEM`을 합성한다. `fault-target`은 원 owner 복구, `switch_fail+1`, `rollback_ok+1`, 다음 정상
 전환 성공을 확인한다. `fault-double`은 `EIO`, effective owner `none`, inactive stats의
 `rollback_fail+1`을 확인한다. double failure 뒤에는 active owner가 없어 runtime write로 복구할
-수 없으므로 module reload로 configured policy를 다시 적용한다.
+수 없으므로 module reload로 configured policy를 다시 적용한다. fail-closed cleanup은 원래 owner를
+복구할 수 없으므로 `fault-double` command를 **expected nonzero**로 끝낸다. case body의 EIO/inactive/
+empty-pending 증거가 모두 충족되었는지는 evidence를 검토하되, reload와 원 owner health 검증 전에는
+PASS로 승격하지 않는다.
 
 ---
 

@@ -13,6 +13,7 @@ STATS=/sys/kernel/moal_bridge/stats
 QA_CASE="${QA_CASE:-stress}"
 FROM_IF="${FROM_IF:-mlan0}"
 TO_IF="${TO_IF:-mlan1}"
+REPLACE_IF="${REPLACE_IF:-}"
 PEER_IF="${PEER_IF:-eth0}"
 REJECT_TARGET="${REJECT_TARGET:-does-not-exist}"
 EXPECTED_ERRNO="${EXPECTED_ERRNO:-19}"
@@ -28,6 +29,8 @@ PEER_TOUCHED=0
 PEER_WAS_UP=0
 TO_TOUCHED=0
 TO_WAS_ADMIN_UP=0
+REPLACE_TOUCHED=0
+REPLACE_WAS_ADMIN_UP=0
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -54,7 +57,7 @@ pending_is_empty() {
   local pending
 
   pending="$(read_pending)"
-  [ -z "$pending" ] || [ "$pending" = none ]
+  [ -z "$pending" ]
 }
 
 capture_state() {
@@ -70,7 +73,8 @@ capture_state() {
     printf 'pending_iface=%s\n' "$(read_pending)"
     [ -r "$FAULT_PARAM" ] && printf 'fault_mask=%s\n' "$(tr -d '\r\n' < "$FAULT_PARAM")"
     [ -r "$STATS" ] && cat "$STATS"
-    for iface in "$FROM_IF" "$TO_IF" "$PEER_IF"; do
+    for iface in "$FROM_IF" "$TO_IF" "$REPLACE_IF" "$PEER_IF"; do
+      [ -n "$iface" ] || continue
       ip -details -s link show "$iface" 2>&1 || true
       iw dev "$iface" link 2>&1 || true
     done
@@ -156,12 +160,25 @@ bridge_binding_healthy() {
   ip link show dev "$PEER_IF" 2>/dev/null | grep -q 'state UP'
 }
 
+wait_for_bridge_binding_healthy() {
+  local iface="$1" attempt
+
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    bridge_binding_healthy "$iface" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 cleanup() {
   original_status=$?
   trap - EXIT
   set +e
   final_status=$original_status
   cleanup_failed=0
+  binding_restore_verified=0
+  restored_binding=
+  owner_before_target_restore=
 
   capture_state "final-before-restore"
   dmesg > "$QA_EVIDENCE_DIR/dmesg.final-before-restore.log" 2>&1 || cleanup_failed=1
@@ -173,60 +190,163 @@ cleanup() {
   fi
 
   # A failed QA run may exit after arming the one-shot hook but before the
-  # switch write consumes it.  Disarm before any best-effort binding restore.
+  # switch write consumes it.  Disarm before any binding restoration.
   if [ -w "$FAULT_PARAM" ]; then
     printf '0\n' > "$FAULT_PARAM" 2>> "$QA_EVIDENCE_DIR/restore.log" ||
       cleanup_failed=1
   fi
 
-  # A surviving deferred request must not complete while cleanup restores the
-  # original owner. Writing the current owner is the documented cancellation
-  # API; a vanished module has no surviving request to cancel.
-  if [ -r "$PENDING_PARAM" ] && ! pending_is_empty; then
-    pending_binding="$(read_binding)"
-    if [ -n "$pending_binding" ] && [ "$pending_binding" != none ] &&
-       [ "$pending_binding" != unavailable ] && [ -w "$IFACE_PARAM" ]; then
-      printf '%s\n' "$pending_binding" > "$IFACE_PARAM" \
-        2>> "$QA_EVIDENCE_DIR/restore.log" || cleanup_failed=1
-    else
-      printf 'cannot cancel pending request: active owner unavailable\n' \
+  # Restore a peer that this test took down before judging bridge health.
+  # Target-interface admin state remains untouched until owner restoration is
+  # proved below.
+  if [ "$PEER_TOUCHED" -eq 1 ] && [ "$PEER_WAS_UP" -eq 1 ]; then
+    ip link set dev "$PEER_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 ||
+      cleanup_failed=1
+  fi
+
+  # Cancel a surviving request through the public active-name API, then require
+  # the getter's exact empty-line wire value and the separate stats sentinel.
+  if [ -r "$PENDING_PARAM" ]; then
+    if ! pending_is_empty; then
+      pending_binding="$(read_binding)"
+      if [ -n "$pending_binding" ] && [ "$pending_binding" != none ] &&
+         [ "$pending_binding" != unavailable ] && [ -w "$IFACE_PARAM" ]; then
+        printf '%s\n' "$pending_binding" > "$IFACE_PARAM" \
+          2>> "$QA_EVIDENCE_DIR/restore.log" || cleanup_failed=1
+      else
+        printf 'cannot cancel pending request: active owner unavailable\n' \
+          >> "$QA_EVIDENCE_DIR/restore.log"
+        cleanup_failed=1
+      fi
+    fi
+    if ! pending_is_empty || ! stats_pending_is_none; then
+      printf 'pending request remained after cleanup cancellation: getter=%s stats_iface=%s stats_state=%s\n' \
+        "$(read_pending)" "$(stats_value pending_iface 2>/dev/null)" \
+        "$(stats_value pending_state 2>/dev/null)" \
         >> "$QA_EVIDENCE_DIR/restore.log"
       cleanup_failed=1
     fi
-  fi
-  if [ -r "$PENDING_PARAM" ] && ! pending_is_empty; then
-    printf 'pending request remained after cleanup cancellation: %s\n' \
-      "$(read_pending)" >> "$QA_EVIDENCE_DIR/restore.log"
+  elif [ "$QA_CASE" != unload-interaction ]; then
+    printf 'pending getter unavailable during cleanup\n' \
+      >> "$QA_EVIDENCE_DIR/restore.log"
     cleanup_failed=1
   fi
 
-  # Restore the original bridge while a completed deferred target is still
-  # usable. In particular, do not down TO_IF first: that would make a successful
-  # deferred TO_IF owner fail the health gate and strand the test on TO_IF.
   current_binding="$(read_binding)"
-  if [ -n "$INITIAL_BINDING" ] && [ "$INITIAL_BINDING" != none ] &&
-     [ "$INITIAL_BINDING" != unavailable ] &&
-     [ "$current_binding" != none ] && [ "$current_binding" != unavailable ] &&
-     [ "$current_binding" != "$INITIAL_BINDING" ] &&
-     [ -w "$IFACE_PARAM" ] && bridge_binding_healthy "$current_binding" &&
-     binding_ready "$INITIAL_BINDING"; then
-    printf '%s\n' "$INITIAL_BINDING" > "$IFACE_PARAM" 2>> "$QA_EVIDENCE_DIR/restore.log" ||
+  if [ "$QA_CASE" = unload-interaction ] &&
+     [ "$current_binding" = unavailable ] && [ ! -e "$IFACE_PARAM" ]; then
+    # Successful unload deliberately removes the binding API; there is no live
+    # owner or target admin state for cleanup to modify.
+    binding_restore_verified=1
+  elif [ -z "$INITIAL_BINDING" ] || [ "$INITIAL_BINDING" = unavailable ]; then
+    printf 'cannot restore original binding: initial owner unavailable\n' \
+      >> "$QA_EVIDENCE_DIR/restore.log"
+    cleanup_failed=1
+  elif [ "$INITIAL_BINDING" = none ]; then
+    restored_binding="$(read_binding)"
+    if [ "$restored_binding" = none ] && pending_is_empty &&
+       stats_pending_is_none; then
+      binding_restore_verified=1
+    else
+      printf 'inactive initial binding was not restored: current=%s pending=%s\n' \
+        "$restored_binding" "$(read_pending)" \
+        >> "$QA_EVIDENCE_DIR/restore.log"
       cleanup_failed=1
+    fi
+  else
+    if [ "$current_binding" != "$INITIAL_BINDING" ]; then
+      if [ -n "$current_binding" ] && [ "$current_binding" != none ] &&
+         [ "$current_binding" != unavailable ] && [ -w "$IFACE_PARAM" ] &&
+         wait_for_bridge_binding_healthy "$current_binding" &&
+         binding_ready "$INITIAL_BINDING"; then
+        printf '%s\n' "$INITIAL_BINDING" > "$IFACE_PARAM" \
+          2>> "$QA_EVIDENCE_DIR/restore.log" || cleanup_failed=1
+      else
+        printf 'cannot restore original binding: current=%s initial=%s prerequisites unavailable\n' \
+          "$current_binding" "$INITIAL_BINDING" \
+          >> "$QA_EVIDENCE_DIR/restore.log"
+        cleanup_failed=1
+      fi
+    fi
+
+    # A deferred restore write is only acceptance.  Prove exact owner, empty
+    # pending getter/stats, and healthy forwarding before any TO_IF admin edit.
+    restored_binding="$(read_binding)"
+    if [ "$restored_binding" = "$INITIAL_BINDING" ] && pending_is_empty &&
+       stats_pending_is_none &&
+       wait_for_bridge_binding_healthy "$INITIAL_BINDING" &&
+       bridge_binding_healthy "$INITIAL_BINDING"; then
+      binding_restore_verified=1
+    else
+      printf 'original binding restore verification failed: expected=%s current=%s pending=%s\n' \
+        "$INITIAL_BINDING" "$restored_binding" "$(read_pending)" \
+        >> "$QA_EVIDENCE_DIR/restore.log"
+      cleanup_failed=1
+      # If the restore write was merely deferred, cancel that new request with
+      # the still-current owner.  Never make the current owner administratively
+      # DOWN on this failure path.
+      if [ -r "$PENDING_PARAM" ] && ! pending_is_empty; then
+        pending_binding="$(read_binding)"
+        if [ -n "$pending_binding" ] && [ "$pending_binding" != none ] &&
+           [ "$pending_binding" != unavailable ] && [ -w "$IFACE_PARAM" ]; then
+          printf '%s\n' "$pending_binding" > "$IFACE_PARAM" \
+            2>> "$QA_EVIDENCE_DIR/restore.log" || cleanup_failed=1
+        else
+          cleanup_failed=1
+        fi
+        pending_is_empty && stats_pending_is_none || cleanup_failed=1
+      fi
+    fi
   fi
 
-  if [ "$PEER_TOUCHED" -eq 1 ] && [ "$PEER_WAS_UP" -eq 1 ]; then
-    ip link set dev "$PEER_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
-  fi
-  if [ "$TO_TOUCHED" -eq 1 ]; then
-    if [ "$TO_WAS_ADMIN_UP" -eq 1 ]; then
-      ip link set dev "$TO_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
-    else
-      ip link set dev "$TO_IF" down >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 || cleanup_failed=1
+  if [ "$binding_restore_verified" -eq 1 ]; then
+    if [ "$TO_TOUCHED" -eq 1 ]; then
+      if [ "$TO_WAS_ADMIN_UP" -eq 1 ]; then
+        ip link set dev "$TO_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 ||
+          cleanup_failed=1
+      else
+        owner_before_target_restore="$(read_binding)"
+        if [ "$owner_before_target_restore" = "$TO_IF" ]; then
+          printf 'refusing to down current owner %s after restore failure\n' \
+            "$TO_IF" >> "$QA_EVIDENCE_DIR/restore.log"
+          cleanup_failed=1
+        else
+          ip link set dev "$TO_IF" down >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 ||
+            cleanup_failed=1
+        fi
+      fi
     fi
+    if [ "$REPLACE_TOUCHED" -eq 1 ]; then
+      if [ "$REPLACE_WAS_ADMIN_UP" -eq 1 ]; then
+        ip link set dev "$REPLACE_IF" up >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 ||
+          cleanup_failed=1
+      else
+        owner_before_replace_restore="$(read_binding)"
+        if [ "$owner_before_replace_restore" = "$REPLACE_IF" ]; then
+          printf 'refusing to down current owner %s after restore failure\n' \
+            "$REPLACE_IF" >> "$QA_EVIDENCE_DIR/restore.log"
+          cleanup_failed=1
+        else
+          ip link set dev "$REPLACE_IF" down >> "$QA_EVIDENCE_DIR/restore.log" 2>&1 ||
+            cleanup_failed=1
+        fi
+      fi
+    fi
+  else
+    printf 'skipping target admin-state restore because owner restore is unverified\n' \
+      >> "$QA_EVIDENCE_DIR/restore.log"
   fi
 
   capture_state "final-after-restore"
   dmesg > "$QA_EVIDENCE_DIR/dmesg.final-after-restore.log" 2>&1 || cleanup_failed=1
+
+  if [ "$binding_restore_verified" -eq 1 ] &&
+     [ "$QA_CASE" != unload-interaction ] &&
+     [ "$INITIAL_BINDING" != none ]; then
+    [ "$(read_binding)" = "$INITIAL_BINDING" ] && pending_is_empty &&
+      stats_pending_is_none && bridge_binding_healthy "$INITIAL_BINDING" ||
+      cleanup_failed=1
+  fi
 
   if [ -n "$DMESG_STREAM_PID" ]; then
     kill "$DMESG_STREAM_PID" 2>/dev/null || true
@@ -237,13 +357,13 @@ cleanup() {
   # warnings and therefore are not a valid pass/fail delta.
   if [ -f "$DMESG_STREAM" ] &&
        grep -Ei 'BUG:|WARNING:|use-after-free|KASAN:|lockdep|Oops:|panic|general protection|UBSAN:|KFENCE:|refcount|hung task' \
-		     "$DMESG_STREAM" \
-	       > "$QA_EVIDENCE_DIR/kernel-warning.matches"; then
+             "$DMESG_STREAM" \
+         > "$QA_EVIDENCE_DIR/kernel-warning.matches"; then
     printf 'FAIL: kernel warning detected in follow-new kernel log\n' >&2
     cleanup_failed=1
   fi
   if [ "$final_status" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then
-	printf 'FAIL: QA cleanup/evidence/restore failed\n' >&2
+    printf 'FAIL: QA cleanup/evidence/restore failed\n' >&2
     final_status=1
   fi
   if [ "$final_status" -eq 0 ]; then
@@ -267,6 +387,14 @@ stats_value() {
     }
     END { exit !found }
   ' "$STATS"
+}
+
+stats_pending_is_none() {
+  local pending_iface pending_state
+
+  pending_iface="$(stats_value pending_iface)" || return 1
+  pending_state="$(stats_value pending_state)" || return 1
+  [ "$pending_iface" = none ] && [ "$pending_state" = none ]
 }
 
 stats_counter() {
@@ -374,6 +502,7 @@ assert_all_outcomes_unchanged() {
 
 require_waiting_unchanged() {
   local expected_owner="$1" expected_pending="$2" owner active pending
+  local pending_iface pending_state
 
   owner="$(read_binding)"
   [ "$owner" = "$expected_owner" ] ||
@@ -383,7 +512,48 @@ require_waiting_unchanged() {
   pending="$(read_pending)"
   [ "$pending" = "$expected_pending" ] ||
     fail "pending target mismatch: expected=$expected_pending actual=$pending"
+  pending_iface="$(stats_value pending_iface)" || fail "pending_iface stats missing"
+  pending_state="$(stats_value pending_state)" || fail "pending_state stats missing"
+  [ "$pending_iface" = "$expected_pending" ] ||
+    fail "pending stats target mismatch: expected=$expected_pending actual=$pending_iface"
+  [ "$pending_state" = waiting ] ||
+    fail "pending stats state mismatch: expected=waiting actual=$pending_state"
   assert_all_outcomes_unchanged
+}
+
+wait_for_ready_without_switch() {
+  local ready_iface="$1" expected_owner="$2" expected_pending="$3"
+  local attempt limit
+
+  case "$DEFERRED_TIMEOUT" in
+    ''|*[!0-9]*) fail "DEFERRED_TIMEOUT must be a non-negative integer" ;;
+  esac
+  limit=$((10#$DEFERRED_TIMEOUT * 10))
+  for ((attempt = 0; attempt <= limit; attempt++)); do
+    require_waiting_unchanged "$expected_owner" "$expected_pending"
+    binding_ready "$ready_iface" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_ready_without_cleared_switch() {
+  local ready_iface="$1" expected_owner="$2" attempt limit
+
+  case "$DEFERRED_TIMEOUT" in
+    ''|*[!0-9]*) fail "DEFERRED_TIMEOUT must be a non-negative integer" ;;
+  esac
+  limit=$((10#$DEFERRED_TIMEOUT * 10))
+  for ((attempt = 0; attempt <= limit; attempt++)); do
+    [ "$(read_binding)" = "$expected_owner" ] ||
+      fail "invalidated request changed owner before name-reuse check"
+    pending_is_empty || fail "invalidated request reappeared in pending getter"
+    stats_pending_is_none || fail "invalidated request reappeared in pending stats"
+    assert_all_outcomes_unchanged
+    binding_ready "$ready_iface" && return 0
+    sleep 0.1
+  done
+  return 1
 }
 
 wait_for_deferred_completion() {
@@ -395,7 +565,8 @@ wait_for_deferred_completion() {
   limit=$((10#$DEFERRED_TIMEOUT * 10))
   for ((attempt = 0; attempt <= limit; attempt++)); do
     if binding_ready "$wanted" && [ "$(read_binding)" = "$wanted" ] &&
-       [ "$(stats_value active)" = 1 ] && pending_is_empty; then
+       [ "$(stats_value active)" = 1 ] &&
+       pending_is_empty && stats_pending_is_none; then
       return 0
     fi
     sleep 0.1
@@ -480,10 +651,144 @@ run_deferred_cancel() {
   require_waiting_unchanged "$FROM_IF" "$TO_IF"
   printf '%s\n' "$FROM_IF" > "$IFACE_PARAM" || fail "deferred cancellation write failed"
   pending_is_empty || fail "deferred cancellation did not clear pending target"
+  stats_pending_is_none || fail "deferred cancellation stats did not return none"
   [ "$(read_binding)" = "$FROM_IF" ] || fail "cancellation changed active owner"
   [ "$(stats_value active)" = 1 ] || fail "cancellation changed active state"
   assert_all_outcomes_unchanged
   capture_state deferred-cancelled
+}
+
+run_deferred_replace() {
+  require_gate 1
+  require_deferred_gate 1
+  [ -n "$REPLACE_IF" ] || fail "REPLACE_IF must name a third registered STA"
+  [ "$REPLACE_IF" != "$FROM_IF" ] || fail "REPLACE_IF must differ from FROM_IF"
+  [ "$REPLACE_IF" != "$TO_IF" ] || fail "REPLACE_IF must differ from TO_IF"
+  [ "$REPLACE_IF" != "$PEER_IF" ] || fail "REPLACE_IF must be a third STA, not PEER_IF"
+  [ "$(read_binding)" = "$FROM_IF" ] ||
+    fail "deferred-replace must start bound to $FROM_IF"
+  bridge_binding_healthy "$FROM_IF" ||
+    fail "deferred-replace requires a healthy current bridge"
+  require_associated "$FROM_IF"
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "pending target $TO_IF is missing"
+  ip link show dev "$REPLACE_IF" >/dev/null 2>&1 ||
+    fail "replacement target $REPLACE_IF is missing"
+  admin_up "$TO_IF" && TO_WAS_ADMIN_UP=1
+  admin_up "$REPLACE_IF" && REPLACE_WAS_ADMIN_UP=1
+  TO_TOUCHED=1
+  REPLACE_TOUCHED=1
+  ip link set dev "$TO_IF" down
+  ip link set dev "$REPLACE_IF" down
+  require_admin_down "$TO_IF"
+  require_admin_down "$REPLACE_IF"
+  snapshot_outcomes
+
+  printf '%s\n' "$TO_IF" > "$IFACE_PARAM" ||
+    fail "initial deferred request to $TO_IF failed"
+  require_waiting_unchanged "$FROM_IF" "$TO_IF"
+  printf '%s\n' "$REPLACE_IF" > "$IFACE_PARAM" ||
+    fail "replacement deferred request to $REPLACE_IF failed"
+  require_waiting_unchanged "$FROM_IF" "$REPLACE_IF"
+  capture_state deferred-replaced
+
+  # The old target becoming ready must not apply its stale generation.
+  ip link set dev "$TO_IF" up
+  wait_for_ready_without_switch "$TO_IF" "$FROM_IF" "$REPLACE_IF" ||
+    fail "$TO_IF did not become ready without consuming replacement request"
+  require_waiting_unchanged "$FROM_IF" "$REPLACE_IF"
+
+  ip link set dev "$REPLACE_IF" up
+  wait_for_deferred_completion "$REPLACE_IF" ||
+    fail "replacement did not complete within ${DEFERRED_TIMEOUT}s"
+  [ "$(stats_counter switch_ok)" -eq $((SWITCH_OK_BEFORE + 1)) ] ||
+    fail "replacement completion did not increment switch_ok exactly once"
+  assert_no_failure_outcome
+}
+
+run_destructive_reset_success() {
+  local command_value command_rc
+
+  require_gate 1
+  require_deferred_gate 1
+  command_value="${RESET_CMD:-}"
+  [ -n "$command_value" ] || fail "RESET_CMD must contain a board-approved destructive reset"
+  [ "$(read_binding)" = "$FROM_IF" ] ||
+    fail "destructive-reset-success must start bound to $FROM_IF"
+  bridge_binding_healthy "$FROM_IF" ||
+    fail "destructive-reset-success requires a healthy current bridge"
+  require_associated "$FROM_IF"
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "reset target $TO_IF is missing"
+  admin_up "$TO_IF" && TO_WAS_ADMIN_UP=1
+  TO_TOUCHED=1
+  ip link set dev "$TO_IF" down
+  require_admin_down "$TO_IF"
+  snapshot_outcomes
+  printf '%s\n' "$TO_IF" > "$IFACE_PARAM" || fail "reset pending request failed"
+  require_waiting_unchanged "$FROM_IF" "$TO_IF"
+  capture_state destructive-reset-pending
+
+  set +e
+  timeout "$INTERACTION_TIMEOUT" bash -c "$command_value" \
+    > "$QA_EVIDENCE_DIR/destructive-reset-success.command.log" 2>&1
+  command_rc=$?
+  set -e
+  [ "$command_rc" -ne 124 ] || fail "RESET_CMD timed out"
+  [ "$command_rc" -eq 0 ] || fail "RESET_CMD failed (rc=$command_rc)"
+  [ -r "$STATS" ] && [ -r "$PENDING_PARAM" ] ||
+    fail "successful destructive reset removed bridge observability"
+  [ "$(read_binding)" = "$FROM_IF" ] || fail "reset did not restore original owner"
+  wait_for_bridge_binding_healthy "$FROM_IF" || fail "reset restored unhealthy owner"
+  pending_is_empty || fail "destructive recreation retained old pending getter"
+  stats_pending_is_none || fail "destructive recreation retained old pending stats"
+  assert_all_outcomes_unchanged
+
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "reset did not recreate $TO_IF"
+  ip link set dev "$TO_IF" up
+  wait_for_ready_without_cleared_switch "$TO_IF" "$FROM_IF" ||
+    fail "recreated $TO_IF did not become ready without inheriting old request"
+  capture_state destructive-reset-success
+}
+
+run_destructive_reset_failure() {
+  local command_value command_rc
+
+  require_gate 1
+  require_deferred_gate 1
+  command_value="${RESET_FAIL_CMD:-}"
+  [ -n "$command_value" ] ||
+    fail "RESET_FAIL_CMD must contain a board-approved terminal reset fault"
+  [ "$(read_binding)" = "$FROM_IF" ] ||
+    fail "destructive-reset-failure must start bound to $FROM_IF"
+  bridge_binding_healthy "$FROM_IF" ||
+    fail "destructive-reset-failure requires a healthy current bridge"
+  require_associated "$FROM_IF"
+  ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "reset target $TO_IF is missing"
+  admin_up "$TO_IF" && TO_WAS_ADMIN_UP=1
+  TO_TOUCHED=1
+  ip link set dev "$TO_IF" down
+  require_admin_down "$TO_IF"
+  snapshot_outcomes
+  printf '%s\n' "$TO_IF" > "$IFACE_PARAM" || fail "reset-failure pending request failed"
+  require_waiting_unchanged "$FROM_IF" "$TO_IF"
+  capture_state destructive-reset-failure-pending
+
+  set +e
+  timeout "$INTERACTION_TIMEOUT" bash -c "$command_value" \
+    > "$QA_EVIDENCE_DIR/destructive-reset-failure.command.log" 2>&1
+  command_rc=$?
+  set -e
+  [ "$command_rc" -ne 124 ] || fail "RESET_FAIL_CMD timed out"
+  [ "$command_rc" -ne 0 ] || fail "RESET_FAIL_CMD unexpectedly succeeded"
+  [ -r "$STATS" ] && [ -r "$PENDING_PARAM" ] ||
+    fail "terminal reset failure removed required inactive observability"
+  [ "$(read_binding)" = none ] || fail "terminal reset failure retained an owner"
+  pending_is_empty || fail "terminal reset failure left pending getter state"
+  stats_pending_is_none || fail "terminal reset failure left pending stats state"
+  [ "$(bridge_thread_count)" -eq 0 ] || fail "terminal reset failure left bridge threads"
+  assert_all_outcomes_unchanged
+  capture_state destructive-reset-failure
+  printf 'expected terminal no-owner state; cleanup remains fail-closed until operator reload\n' \
+    > "$QA_EVIDENCE_DIR/destructive-reset-failure-terminal.log"
 }
 
 run_stress() {
@@ -506,11 +811,21 @@ run_stress() {
 }
 
 run_same_target() {
+  local original
+
   require_gate 1
-  grep -q 'active=1' "$STATS" || fail "same-target requires an active bridge"
+  require_deferred_gate 0
+  original="$(read_binding)"
+  [ -n "$original" ] && [ "$original" != none ] && [ "$original" != unavailable ] ||
+    fail "same-target requires an effective owner"
+  pending_is_empty || fail "same-target must start without a pending request"
+  stats_pending_is_none || fail "same-target stats must start without pending"
+  bridge_binding_healthy "$original" || fail "same-target requires a healthy binding"
   snapshot_outcomes
-  switch_iface "$(read_binding)"
-  grep -q 'active=1' "$STATS" || fail "same-target changed active state"
+  switch_iface "$original"
+  [ "$(read_binding)" = "$original" ] || fail "same-target changed owner"
+  pending_is_empty && stats_pending_is_none || fail "same-target created pending state"
+  bridge_binding_healthy "$original" || fail "same-target changed bridge health"
   assert_all_outcomes_unchanged
 }
 
@@ -593,6 +908,7 @@ run_peer_cycle() {
   local original
 
   require_gate 1
+  require_deferred_gate 0
   require_associated "$FROM_IF"
   require_associated "$TO_IF"
   original="$(read_binding)"
@@ -666,8 +982,12 @@ run_fault_double() {
   [ "$(stats_counter rollback_fail)" -eq $((ROLLBACK_FAIL_BEFORE + 1)) ] || fail "rollback_fail delta"
   [ "$(tr -d '\r\n' < "$FAULT_PARAM")" = 0 ] || fail "fault mask was not consumed"
   grep -q '^bridge: inactive$' "$STATS" || fail "double failure stats are not inactive"
+  pending_is_empty || fail "double failure left an unfulfillable pending request"
+  stats_pending_is_none || fail "double failure stats retained pending state"
   [ "$(ps -eLo comm= | grep -Ec '^moal_br_(w2p|p2w)$' || true)" -eq 0 ] ||
     fail "double failure left bridge threads"
+  printf 'fault-double reached expected terminal no-owner state; cleanup must fail closed until operator reload\n' \
+    > "$QA_EVIDENCE_DIR/fault-double-terminal.log"
 }
 
 run_interaction() {
@@ -806,6 +1126,9 @@ case "$QA_CASE" in
   deferred-off) run_deferred_off ;;
   deferred-wait) run_deferred_wait ;;
   deferred-cancel) run_deferred_cancel ;;
+  deferred-replace) run_deferred_replace ;;
+  destructive-reset-success) run_destructive_reset_success ;;
+  destructive-reset-failure) run_destructive_reset_failure ;;
   gate-off)
     require_gate 0
     run_prevalidation_reject "$TO_IF" 95
@@ -827,6 +1150,7 @@ case "$QA_CASE" in
     ;;
   target-down)
     require_gate 1
+    require_deferred_gate 0
     [ "$(read_binding)" = "$FROM_IF" ] || fail "target-down must start bound to $FROM_IF"
     bridge_binding_healthy "$FROM_IF" || fail "target-down requires a healthy current bridge"
     ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "target-down target is missing"
@@ -839,6 +1163,7 @@ case "$QA_CASE" in
     ;;
   target-disconnected)
     require_gate 1
+    require_deferred_gate 0
     [ "$(read_binding)" = "$FROM_IF" ] || fail "target-disconnected must start bound to $FROM_IF"
     bridge_binding_healthy "$FROM_IF" || fail "target-disconnected requires a healthy current bridge"
     ip link show dev "$TO_IF" >/dev/null 2>&1 || fail "target-disconnected target is missing"

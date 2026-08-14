@@ -485,6 +485,10 @@ static mlan_status __woal_do_flr(moal_handle *handle, bool prepare,
 #endif
 #endif
 
+	/* FLR recreates every netdev identity while the bridge notifier is
+	 * suspended.  Invalidate the old-name request before virtual or physical
+	 * unregister can permit reuse. */
+	moal_bridge_pending_invalidate_handle(handle);
 #ifdef WIFI_DIRECT_SUPPORT
 #if defined(STA_CFG80211) && defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= WIFI_DIRECT_KERNEL_VERSION

@@ -577,6 +577,30 @@ out:
 }
 
 /**
+ *  @brief Read an exact 0/1 runtime bridge policy from mod_para
+ *
+ *  parse_cfg_get_line() has already removed spaces and tabs.  Keep this
+ *  feature-specific parser narrow so legacy integer keys retain their syntax.
+ */
+static mlan_status parse_line_read_bridge_bool(t_u8 *line, const char *key,
+					       int *out_data)
+{
+	size_t key_len;
+
+	if (!line || !key || !out_data)
+		return MLAN_STATUS_FAILURE;
+	key_len = strlen(key);
+	if (strncmp(line, key, key_len) || line[key_len] != '=' ||
+	    (line[key_len + 1] != '0' && line[key_len + 1] != '1') ||
+	    line[key_len + 2] != '\0') {
+		*out_data = 0;
+		return MLAN_STATUS_FAILURE;
+	}
+	*out_data = line[key_len + 1] - '0';
+	return MLAN_STATUS_SUCCESS;
+}
+
+/**
  *  @brief This function read a string in module parameter file
  *
  *  @param line     A pointer to a line
@@ -918,9 +942,10 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->mgmt_hex_dump = out_data;
 			PRINTM(MMSG, "mgmt_hex_dump = %d\n",
 			       params->mgmt_hex_dump);
-		} else if (strncmp(line, "bridge_runtime_switch",
-				   strlen("bridge_runtime_switch")) == 0) {
-			if (parse_line_read_int(line, &out_data) !=
+		} else if (strncmp(line, "bridge_runtime_switch=",
+				   strlen("bridge_runtime_switch=")) == 0) {
+			if (parse_line_read_bridge_bool(
+				    line, "bridge_runtime_switch", &out_data) !=
 			    MLAN_STATUS_SUCCESS)
 				goto err;
 			if (out_data != 0 && out_data != 1) {
@@ -930,9 +955,10 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			}
 			bridge_runtime_switch_cfg = out_data;
 			bridge_runtime_switch_present = 1;
-		} else if (strncmp(line, "bridge_runtime_deferred",
-				   strlen("bridge_runtime_deferred")) == 0) {
-			if (parse_line_read_int(line, &out_data) !=
+		} else if (strncmp(line, "bridge_runtime_deferred=",
+				   strlen("bridge_runtime_deferred=")) == 0) {
+			if (parse_line_read_bridge_bool(
+				    line, "bridge_runtime_deferred", &out_data) !=
 			    MLAN_STATUS_SUCCESS)
 				goto err;
 			if (out_data != 0 && out_data != 1) {
