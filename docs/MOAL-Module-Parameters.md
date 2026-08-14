@@ -219,6 +219,7 @@ perm `0644`일 때만 sysfs 런타임 변경 가능하며, `bridge_iface`는 전
 |---|---|---|---|---|---|---|
 | ✅ `bridge_mode` | int | 0 | 0(off) | ✗ | ✓ | 35ec541 |
 | ✅ `bridge_runtime_switch` | int | 0444 | 0(off) | ✗(로드 시에만) | ✓(전역 enable-only) | runtime-switch |
+| ✅ `bridge_runtime_deferred` | int | 0444 | 0(off) | ✗(로드 시에만) | ✓(전역 enable-only) | runtime-bridge-deferred-switch |
 | ✅ `bridge_iface` | custom string | 0644 | `none`(비활성) | ✓(활성 브릿지만) | ✗ | runtime-switch |
 | ✅ `bridge_peer` | charp | 0 | eth0 | ✗ | ✓ | 35ec541 |
 | ✅ `bridge_wlan_idx` | int | 0 | 0 | ✗ | ✓ | 35ec541 |
@@ -358,6 +359,23 @@ mask 변수, `xchg()` 및 target/rollback injected branch가 모두
 host에 있는 standard `.ko`는 symbol 부재를 별도 검사하지만, fresh build provenance 없이는 그
 artifact를 final-source build 증거로 승격하지 않는다. 자세한 matrix는
 `docs/driver-bridge.qa-runbook.md` T-15a/T-15b를 따른다.
+
+### 11.10 `bridge_runtime_deferred` — int, 기본 0(off), perm 0444
+
+등록된 MOAL STA가 operational 상태가 될 때까지 runtime bridge 요청을 보류하는 전역 정책이다.
+이 정책은 runtime 전환 허용 여부를 켜지 않으므로 `bridge_runtime_switch=1`이 여전히 필요하다.
+두 값을 함께 지정하는 예시는 다음과 같다.
+
+```ini
+bridge_runtime_switch=1
+bridge_runtime_deferred=1
+```
+
+`insmod ... bridge_runtime_switch=1 bridge_runtime_deferred=1` 또는 선택된 `wifi_mod_para.conf`
+블록에서 각각 활성화할 수 있다. `mod_para`는 DBDC 블록마다 파싱되지만 두 값 모두 모듈 전역
+enable-only 정책으로 합쳐진다. 따라서 다른 선택된 DBDC 블록이나 명시적인 insmod 인자에서
+이미 `1`로 활성화된 값을, 어떤 블록의 `bridge_runtime_deferred=0`도 되돌릴 수 없다. 모든
+입력이 0일 때만 최종값이 0이며, 0/1 이외의 값은 해당 블록을 거부한다.
 
 ---
 

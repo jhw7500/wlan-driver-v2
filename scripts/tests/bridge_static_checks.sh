@@ -173,7 +173,7 @@ check_runtime_switch_conf_contract() {
     /int bridge_runtime_switch_present = 0/ { present_decl=NR }
     /strncmp\(line, "bridge_runtime_switch"/ { key=NR }
     /parse_line_read_int\(line, &out_data\)/ && key && !parse { parse=NR }
-    /out_data != 0 && out_data != 1/ { range=NR }
+    /out_data != 0 && out_data != 1/ && key && !range { range=NR }
     /bridge_runtime_switch_cfg = out_data/ { save=NR }
     /bridge_runtime_switch_present = 1/ { mark=NR }
     /^[[:space:]]*if \(end\)[[:space:]]*\{/ { commit=NR }
@@ -192,6 +192,26 @@ check_runtime_switch_conf_contract() {
   ' || return 1
 
   ! grep -Eq 'WRITE_ONCE\(bridge_runtime_switch,[[:space:]]*(0|out_data|bridge_runtime_switch_cfg)\)' <<< "$parser"
+}
+
+check_runtime_deferred_conf_contract() {
+  local parser="$1"
+  printf '%s\n' "$parser" | awk '
+    /int bridge_runtime_deferred_cfg = 0/ { cfg=NR }
+    /int bridge_runtime_deferred_present = 0/ { present=NR }
+    /strncmp\(line, "bridge_runtime_deferred"/ { key=NR }
+    /out_data != 0 && out_data != 1/ && key { range=NR }
+    /bridge_runtime_deferred_cfg = out_data/ { save=NR }
+    /bridge_runtime_deferred_present = 1/ { mark=NR }
+    /^[[:space:]]*if \(end\)[[:space:]]*\{/ { commit=NR }
+    /WRITE_ONCE\(bridge_runtime_deferred, 1\)/ { enable=NR }
+    /bridge_runtime_deferred = %d \(conf=%d\)/ { log_line=NR }
+    END { exit !(cfg && present && key && range && save && mark && commit &&
+                 enable && log_line && cfg < key && present < key && key < range &&
+                 range < save && save <= mark && mark < commit && commit < enable &&
+                 enable < log_line) }
+  ' || return 1
+  grep -q 'module_param(bridge_runtime_deferred, int, 0444)' "$INIT_C"
 }
 
 check_cleanup_transaction() {
@@ -478,6 +498,23 @@ if check_runtime_switch_conf_contract "$CONF_PARSER_NO_RANGE"; then
   fail "runtime-switch: invalid conf range-check mutation accepted"
 fi
 printf 'PASS: runtime-switch conf range-check mutation rejected\n'
+
+check_runtime_deferred_conf_contract "$CONF_PARSER_BLOCK" ||
+  fail "runtime-switch: deferred conf contract missing"
+
+CONF_PARSER_DEFERRED_NO_ENABLE="$(printf '%s\n' "$CONF_PARSER_BLOCK" |
+  sed 's|WRITE_ONCE(bridge_runtime_deferred, 1);|/* missing deferred global gate enable */|')"
+if check_runtime_deferred_conf_contract "$CONF_PARSER_DEFERRED_NO_ENABLE"; then
+  fail "runtime-switch: missing deferred conf gate-enable mutation accepted"
+fi
+printf 'PASS: runtime-switch deferred conf gate-enable mutation rejected\n'
+
+CONF_PARSER_DEFERRED_NO_RANGE="$(printf '%s\n' "$CONF_PARSER_BLOCK" |
+  sed 's/out_data != 0 && out_data != 1/out_data < 0/')"
+if check_runtime_deferred_conf_contract "$CONF_PARSER_DEFERRED_NO_RANGE"; then
+  fail "runtime-switch: deferred conf range-check mutation accepted"
+fi
+printf 'PASS: runtime-switch deferred conf range-check mutation rejected\n'
 
 grep -Fq '✓(전역 enable-only)' "$PARAM_DOC" ||
   fail "runtime-switch: parameter docs missing conf enable-only contract"

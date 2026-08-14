@@ -95,6 +95,7 @@ int bridge_mode;
 char *bridge_peer = "eth0";
 int bridge_wlan_idx;
 int bridge_runtime_switch;
+int bridge_runtime_deferred;
 /* Runtime-only bridge control is unavailable while module parameters are
  * parsed and while teardown is in progress.  The module init/exit path owns
  * publication after AddRemoveCardSem and the global handle table are valid. */
@@ -686,6 +687,8 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 	int out_data = 0, end = 0;
 	int bridge_runtime_switch_cfg = 0;
 	int bridge_runtime_switch_present = 0;
+	int bridge_runtime_deferred_cfg = 0;
+	int bridge_runtime_deferred_present = 0;
 	char *out_str = NULL;
 	t_u8 line[MAX_LINE_LEN];
 	moal_mod_para *params = &handle->params;
@@ -927,6 +930,18 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			}
 			bridge_runtime_switch_cfg = out_data;
 			bridge_runtime_switch_present = 1;
+		} else if (strncmp(line, "bridge_runtime_deferred",
+				   strlen("bridge_runtime_deferred")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			if (out_data != 0 && out_data != 1) {
+				PRINTM(MERROR,
+				       "bridge_runtime_deferred must be 0 or 1\n");
+				goto err;
+			}
+			bridge_runtime_deferred_cfg = out_data;
+			bridge_runtime_deferred_present = 1;
 		} else if (strncmp(line, "bridge_mode",
 				   strlen("bridge_mode")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1760,11 +1775,17 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 		 * earlier block containing 1 or an explicit insmod argument. */
 		if (bridge_runtime_switch_cfg)
 			WRITE_ONCE(bridge_runtime_switch, 1);
+		if (bridge_runtime_deferred_cfg)
+			WRITE_ONCE(bridge_runtime_deferred, 1);
 		if (bridge_runtime_switch_present)
 			PRINTM(MMSG,
 			       "bridge_runtime_switch = %d (conf=%d)\n",
 			       READ_ONCE(bridge_runtime_switch),
 			       bridge_runtime_switch_cfg);
+		if (bridge_runtime_deferred_present)
+			PRINTM(MMSG, "bridge_runtime_deferred = %d (conf=%d)\n",
+			       READ_ONCE(bridge_runtime_deferred),
+			       bridge_runtime_deferred_cfg);
 		return ret;
 	}
 err:
@@ -3276,6 +3297,10 @@ module_param(bridge_runtime_switch, int, 0444);
 MODULE_PARM_DESC(
 	bridge_runtime_switch,
 	"Allow synchronous runtime switching of an active L2 bridge: 0=off(default), 1=on; a matched mod_para block may also enable it");
+module_param(bridge_runtime_deferred, int, 0444);
+MODULE_PARM_DESC(
+	bridge_runtime_deferred,
+	"Defer a runtime bridge request until a registered MOAL STA becomes operational: 0=off(default), 1=on; a matched mod_para block may also enable it");
 module_param_cb(bridge_iface, &bridge_iface_ops, NULL, 0644);
 MODULE_PARM_DESC(
 	bridge_iface,
