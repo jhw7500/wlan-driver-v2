@@ -93,7 +93,7 @@ require_admin_up() {
 }
 
 require_admin_down() {
-  admin_up "$1" && fail "$1 must be administratively DOWN"
+  ! admin_up "$1" || fail "$1 must be administratively DOWN"
 }
 
 bridge_thread_count() {
@@ -622,7 +622,7 @@ run_deferred_wait() {
   TO_TOUCHED=1
   ip link set dev "$TO_IF" down
   require_admin_down "$TO_IF"
-  binding_ready "$TO_IF" && fail "$TO_IF unexpectedly ready after admin-down"
+  ! binding_ready "$TO_IF" || fail "$TO_IF unexpectedly ready after admin-down"
   snapshot_outcomes
   printf '%s\n' "$TO_IF" > "$IFACE_PARAM" || fail "deferred request to $TO_IF failed"
   require_waiting_unchanged "$FROM_IF" "$TO_IF"
