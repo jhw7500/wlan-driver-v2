@@ -25511,7 +25511,7 @@ static int get_user_htstream(t_u32 *out)
 	t_u8 *buffer = NULL;
 	struct eth_priv_cmd *cmd = NULL;
 	struct ifreq ifr;
-	int data[4] = {0};
+	t_u32 data[4] = {0};
 	int ret = -1;
 
 	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
@@ -25542,7 +25542,7 @@ static int get_user_htstream(t_u32 *out)
 	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr) == 0 &&
 	    cmd->used_len == (int)(sizeof(int) * 4)) {
 		memcpy(data, buffer, sizeof(data));
-		*out = (t_u32)data[2];
+		*out = data[2];
 		ret = 0;
 	}
 

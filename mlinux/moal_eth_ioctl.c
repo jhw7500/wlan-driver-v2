@@ -14048,6 +14048,10 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 			ret = sizeof(int) * 4;
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
 					sizeof(data), respbuflen);
+			/* moal_memcpy_ext() caps the copy at respbuflen, so
+			 * report no more than what actually landed. */
+			if ((t_u32)ret > respbuflen)
+				ret = (int)respbuflen;
 		} else {
 			data[0] = (int)radio->param.ant_cfg_1x1.antenna;
 			data[1] = (int)radio->param.ant_cfg_1x1.evaluate_time;
@@ -14060,6 +14064,8 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
 					sizeof(int) * 3, respbuflen);
 			ret = sizeof(int) * 3;
+			if ((t_u32)ret > respbuflen)
+				ret = (int)respbuflen;
 		}
 	}
 done:
