@@ -1456,11 +1456,12 @@ typedef struct _mlan_ds_ant_cfg {
 	t_u32 tx_antenna;
 	/** Rx antenna mode */
 	t_u32 rx_antenna;
-	/** Host side NSS intent (user_htstream). Surfaced to userspace on
-	 *  GET only; the response handler always populates it.
-	 *  tx/rx_antenna report what the firmware currently drives, which
-	 *  can differ from what the host asked for; this field exposes the
-	 *  value the association IEs are actually built from. */
+	/** Host side NSS intent (user_htstream): the stream count the
+	 *  association IEs are built from, which can differ from the
+	 *  antenna mode the firmware currently drives as reported by
+	 *  tx/rx_antenna.
+	 *  The response handler fills this on every RF_ANTENNA response;
+	 *  MOAL copies it out to userspace on the GET path only. */
 	t_u32 user_htstream;
 } mlan_ds_ant_cfg, *pmlan_ds_ant_cfg;
 /** Type definition of mlan_ds_mimo_switch for MLAN_OID_MIMO_SWITCH */

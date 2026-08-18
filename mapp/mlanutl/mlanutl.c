@@ -21031,9 +21031,10 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 		goto done;
 	}
 	if (argc == 3) {
-		/* Reply layouts, told apart by length:
+		/* Reply layouts, told apart by length. The driver only ever
+		 * emits 4, 8, 12 or 16 bytes, so these ranges cannot overlap:
 		 *   16B = 2x2 with NSS intent (tx, rx, user_htstream, rsvd)
-		 *    8B = 2x2 from an older driver (tx, rx)
+		 *  <12B = 2x2 from an older driver (tx [, rx])
 		 *   12B = 1x1 (antenna, evaluate_time, current_antenna)
 		 */
 		if (cmd->used_len == (int)(sizeof(int) * 4)) {
@@ -25648,7 +25649,7 @@ static int set_ht_stream_mode(int mode)
 static int print_mcstiercfg(void)
 {
 	struct eth_priv_vhtcfg vhtcfg;
-	mlan_ds_11ax_he_cfg hecfg_2g;
+	mlan_ds_11ax_he_cfg hecfg;
 	t_u16 he_rx_mcs, he_tx_mcs;
 	int ht_mode;
 	t_u32 uh = 0;
@@ -25698,21 +25699,21 @@ static int print_mcstiercfg(void)
 				  FALSE, nss_rx_5g);
 	}
 
-	if (get_he_cfg(&hecfg_2g) == MLAN_STATUS_SUCCESS) {
+	if (get_he_cfg(&hecfg) == MLAN_STATUS_SUCCESS) {
 		t_u8 he_nss_rx = 0, he_nss_tx = 0;
 
-		he_rx_mcs = (t_u16)(hecfg_2g.he_cap.he_txrx_mcs_support[0] |
-					 (hecfg_2g.he_cap.he_txrx_mcs_support[1] << 8));
-		he_tx_mcs = (t_u16)(hecfg_2g.he_cap.he_txrx_mcs_support[2] |
-					 (hecfg_2g.he_cap.he_txrx_mcs_support[3] << 8));
+		he_rx_mcs = (t_u16)(hecfg.he_cap.he_txrx_mcs_support[0] |
+					 (hecfg.he_cap.he_txrx_mcs_support[1] << 8));
+		he_tx_mcs = (t_u16)(hecfg.he_cap.he_txrx_mcs_support[2] |
+					 (hecfg.he_cap.he_txrx_mcs_support[3] << 8));
 		if (have_nss) {
-			int is_5g = (hecfg_2g.band & (1 << 1)) ? 1 : 0;
+			int is_5g = (hecfg.band & (1 << 1)) ? 1 : 0;
 
 			he_nss_rx = is_5g ? NSS_5G_RX(uh) : NSS_2G_RX(uh);
 			he_nss_tx = is_5g ? NSS_5G_TX(uh) : NSS_2G_TX(uh);
 		}
 		printf("  HE Band: %s (0x%02X)\n",
-		       he_band_to_string(hecfg_2g.band), hecfg_2g.band);
+		       he_band_to_string(hecfg.band), hecfg.band);
 		print_nss_tier_map("HE Tx", he_tx_mcs, TRUE, he_nss_tx);
 		print_nss_tier_map("HE Rx", he_rx_mcs, TRUE, he_nss_rx);
 	}
