@@ -25534,7 +25534,8 @@ static int get_user_htstream(t_u32 *out)
 	cmd->total_len = BUFFER_LENGTH;
 
 	memset(&ifr, 0, sizeof(struct ifreq));
-	strncpy(ifr.ifr_ifrn.ifrn_name, dev_name, strlen(dev_name));
+	strncpy(ifr.ifr_ifrn.ifrn_name, dev_name,
+		sizeof(ifr.ifr_ifrn.ifrn_name) - 1);
 	ifr.ifr_ifru.ifru_data = (void *)cmd;
 
 	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr) == 0 &&

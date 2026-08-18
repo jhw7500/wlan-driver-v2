@@ -14039,10 +14039,13 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 			 */
 			data[2] = radio->param.ant_cfg.user_htstream;
 			data[3] = 0;
-			if (data[0] && data[1])
-				ret = sizeof(int) * 4;
-			else
-				ret = sizeof(int) * 1;
+			/* Always return all four words. data[2]/data[3] are
+			 * valid whatever the antenna mode is, and a zero
+			 * antenna - which shows up while the firmware is
+			 * still coming up - would otherwise hide the NSS
+			 * limit from userspace.
+			 */
+			ret = sizeof(int) * 4;
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
 					sizeof(data), respbuflen);
 		} else {

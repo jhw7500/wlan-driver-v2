@@ -7828,7 +7828,8 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
 	defined(USBIW624) || defined(SD9097)
 	mlan_adapter *pmadapter = pmpriv->adapter;
-	t_u8 ant_set_resp = MFALSE;
+	t_u8 ant_tx_set = MFALSE;
+	t_u8 ant_rx_set = MFALSE;
 #endif
 	typedef struct _HostCmd_DS_802_11_RF_ANTENNA_1X1 {
 		/** Action */
@@ -7878,31 +7879,30 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 			 * of the configured NSS, since the assoc IEs are built
 			 * from user_htstream.
 			 */
-			ant_set_resp =
-				(wlan_le16_to_cpu(pantenna->action_tx) ==
-				 HostCmd_ACT_SET_TX) ||
-				(wlan_le16_to_cpu(pantenna->action_rx) ==
-				 HostCmd_ACT_SET_RX);
+			ant_tx_set = (wlan_le16_to_cpu(pantenna->action_tx) ==
+				      HostCmd_ACT_SET_TX);
+			ant_rx_set = (wlan_le16_to_cpu(pantenna->action_rx) ==
+				      HostCmd_ACT_SET_RX);
 			/** 2G antcfg TX */
-			if (ant_set_resp && (tx_ant_mode & 0x00FF)) {
+			if (ant_tx_set && (tx_ant_mode & 0x00FF)) {
 				pmadapter->user_htstream &= ~0xF0;
 				pmadapter->user_htstream |=
 					(bitcount(tx_ant_mode & 0x00FF) << 4);
 			}
 			/* 5G antcfg tx */
-			if (ant_set_resp && (tx_ant_mode & 0xFF00)) {
+			if (ant_tx_set && (tx_ant_mode & 0xFF00)) {
 				pmadapter->user_htstream &= ~0xF000;
 				pmadapter->user_htstream |=
 					(bitcount(tx_ant_mode & 0xFF00) << 12);
 			}
 			/* 2G antcfg RX */
-			if (ant_set_resp && (rx_ant_mode & 0x00FF)) {
+			if (ant_rx_set && (rx_ant_mode & 0x00FF)) {
 				pmadapter->user_htstream &= ~0xF;
 				pmadapter->user_htstream |=
 					bitcount(rx_ant_mode & 0x00FF);
 			}
 			/* 5G antcfg RX */
-			if (ant_set_resp && (rx_ant_mode & 0xFF00)) {
+			if (ant_rx_set && (rx_ant_mode & 0xFF00)) {
 				pmadapter->user_htstream &= ~0xF00;
 				pmadapter->user_htstream |=
 					(bitcount(rx_ant_mode & 0xFF00) << 8);

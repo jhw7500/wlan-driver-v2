@@ -307,7 +307,8 @@ static mlan_status wlan_11ac_ioctl_vhtcfg(pmlan_adapter pmadapter,
 			 *
 			 * The clamp still runs where it matters - on the assoc
 			 * IEs built by wlan_fill_vht_cap_tlv() and
-			 * wlan_cmd_append_11ac_tlv() - so what we advertise is
+			 * wlan_cmd_append_11ac_tlv(), both in this file, so
+			 * what we advertise is
 			 * unchanged; only the stored value round-trips now.
 			 *
 			 * rx_nss/tx_nss stay 0, disabling the clamp below.
