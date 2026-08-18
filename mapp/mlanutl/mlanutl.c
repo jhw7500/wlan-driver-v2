@@ -158,6 +158,8 @@ static int process_txratecfg(int argc, char *argv[]);
 static int process_ratebitmapcfg(int argc, char *argv[]);
 static int process_ratemaxcfg(int argc, char *argv[]);
 static int process_mcstiercfg(int argc, char *argv[]);
+/* Prints the antcfg derived NSS limit (user_htstream) in one line. */
+static void print_nss_intent(const char *indent, t_u32 uh);
 static int process_httxcfg(int argc, char *argv[]);
 static int process_htcapinfo(int argc, char *argv[]);
 static int process_addbapara(int argc, char *argv[]);
@@ -663,7 +665,8 @@ static char *usage[] = {
 	"         getsignalextv2",
 #endif
 	"         vhtcfg", "         dyn_bw", "         11axcfg",
-	"         11axcmd", "         txratecfg", "         mcstiercfg",
+	"         11axcmd", "         txratecfg", "         ratebitmapcfg",
+	"         ratemaxcfg", "         mcstiercfg",
 	"         httxcfg",
 	"         htcapinfo", "         aggrpriotbl", "         addbapara",
 	"         addbareject", "         hssetpara", "         mefcfg",
@@ -20977,7 +20980,7 @@ done:
 static int process_set_get_tx_rx_ant(int argc, char *argv[])
 {
 	int ret = 0;
-	int data[3] = {0};
+	int data[4] = {0};
 	t_u8 *buffer = NULL;
 	struct eth_priv_cmd *cmd = NULL;
 	struct ifreq ifr;
@@ -21028,16 +21031,27 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 		goto done;
 	}
 	if (argc == 3) {
-		if (cmd->used_len < (int)sizeof(data)) {
+		/* Reply layouts, told apart by length. The driver only ever
+		 * emits 4, 8, 12 or 16 bytes, so these ranges cannot overlap:
+		 *   16B = 2x2 with NSS intent (tx, rx, user_htstream, rsvd)
+		 *  <12B = 2x2 from an older driver (tx [, rx])
+		 *   12B = 1x1 (antenna, evaluate_time, current_antenna)
+		 */
+		if (cmd->used_len == (int)(sizeof(int) * 4)) {
+			memcpy(data, buffer, sizeof(data));
+			printf("Mode of Tx path is 0x%x\n", data[0]);
+			printf("Mode of Rx path is 0x%x\n", data[1]);
+			print_nss_intent("", (t_u32)data[2]);
+		} else if (cmd->used_len < (int)(sizeof(int) * 3)) {
 			if (cmd->used_len > 0) {
 				memcpy(data, buffer, cmd->used_len);
 				printf("Mode of Tx path is 0x%x\n", data[0]);
-				if (cmd->used_len >= (sizeof(int) * 2))
+				if (cmd->used_len >= (int)(sizeof(int) * 2))
 					printf("Mode of Rx path is 0x%x\n",
 					       data[1]);
 			}
 		} else {
-			memcpy(data, buffer, sizeof(data));
+			memcpy(data, buffer, sizeof(int) * 3);
 			printf("Mode of Tx/Rx path is 0x%x\n", data[0]);
 			/* Evaluate time is valid only when SAD is enabled */
 			if (data[0] == 0xffff) {
@@ -25208,19 +25222,40 @@ static t_u16 update_supported_nss_map(t_u16 current_map, t_u16 tier_value)
 	return updated_map;
 }
 
-static void print_nss_tier_map(const char *label, t_u16 mcs_map, t_u8 is_he_map)
+/* nss_limit is the antcfg derived stream limit for this band/direction, or 0
+ * when it is unknown. Streams above it are dropped when the driver builds the
+ * association IEs, so show both the stored value and what actually goes out.
+ */
+static void print_nss_tier_map(const char *label, t_u16 mcs_map, t_u8 is_he_map,
+			       t_u8 nss_limit)
 {
 	int nss;
+	t_u16 adv = mcs_map;
 
-	printf("  %s: 0x%04X\n", label, mcs_map);
+	if (nss_limit)
+		for (nss = nss_limit + 1; nss <= 8; nss++)
+			adv |= (t_u16)(MCS_TIER_NOT_SUPPORTED
+				       << (2 * (nss - 1)));
+
+	if (adv != mcs_map)
+		printf("  %s: 0x%04X  ->  advertised 0x%04X (NSS limit %u)\n",
+		       label, mcs_map, adv, nss_limit);
+	else
+		printf("  %s: 0x%04X\n", label, mcs_map);
+
 	for (nss = 1; nss <= 8; nss++) {
 		int tier = (mcs_map >> (2 * (nss - 1))) & 0x3;
 		int max_mcs = is_he_map ? he_tier_to_max(tier) :
 					  vht_tier_to_max(tier);
+		const char *note = "";
+
+		if (nss_limit && nss > nss_limit &&
+		    tier != MCS_TIER_NOT_SUPPORTED)
+			note = "   [NSS limit: not advertised]";
 		if (tier == MCS_TIER_NOT_SUPPORTED)
 			printf("    NSS%d: not supported\n", nss);
 		else if (max_mcs >= 0)
-			printf("    NSS%d: MCS 0~%d\n", nss, max_mcs);
+			printf("    NSS%d: MCS 0~%d%s\n", nss, max_mcs, note);
 		else
 			printf("    NSS%d: unknown tier %d\n", nss, tier);
 	}
@@ -25464,6 +25499,72 @@ done:
 	return ret;
 }
 
+/* Reads the host side NSS intent (user_htstream) the driver reports next to
+ * the firmware antenna mode. The antenna mode alone is not enough: the
+ * firmware can drive 2x2 while the host deliberately advertises fewer
+ * streams, and the association IEs follow the host value.
+ * Returns 0 on success. Drivers that only report tx/rx are treated as
+ * "not available" so callers can degrade quietly.
+ */
+static int get_user_htstream(t_u32 *out)
+{
+	t_u8 *buffer = NULL;
+	struct eth_priv_cmd *cmd = NULL;
+	struct ifreq ifr;
+	t_u32 data[4] = {0};
+	int ret = -1;
+
+	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
+	if (!buffer)
+		return -1;
+
+	prepare_buffer(buffer, "antcfg", 0, NULL);
+	cmd = (struct eth_priv_cmd *)malloc(sizeof(struct eth_priv_cmd));
+	if (!cmd) {
+		free(buffer);
+		return -1;
+	}
+
+#ifdef USERSPACE_32BIT_OVER_KERNEL_64BIT
+	memset(cmd, 0, sizeof(struct eth_priv_cmd));
+	memcpy(&cmd->buf, &buffer, sizeof(buffer));
+#else
+	cmd->buf = buffer;
+#endif
+	cmd->used_len = 0;
+	cmd->total_len = BUFFER_LENGTH;
+
+	memset(&ifr, 0, sizeof(struct ifreq));
+	strncpy(ifr.ifr_ifrn.ifrn_name, dev_name,
+		sizeof(ifr.ifr_ifrn.ifrn_name) - 1);
+	ifr.ifr_ifru.ifru_data = (void *)cmd;
+
+	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr) == 0 &&
+	    cmd->used_len == (int)(sizeof(int) * 4)) {
+		memcpy(data, buffer, sizeof(data));
+		*out = data[2];
+		ret = 0;
+	}
+
+	free(cmd);
+	free(buffer);
+	return ret;
+}
+
+/* user_htstream packs one nibble per band/direction. */
+#define NSS_2G_RX(v) ((t_u8)((v) & 0xF))
+#define NSS_2G_TX(v) ((t_u8)(((v) >> 4) & 0xF))
+#define NSS_5G_RX(v) ((t_u8)(((v) >> 8) & 0xF))
+#define NSS_5G_TX(v) ((t_u8)(((v) >> 12) & 0xF))
+
+static void print_nss_intent(const char *indent, t_u32 uh)
+{
+	printf("%sNSS limit (antcfg): 2G rx=%u tx=%u, 5G rx=%u tx=%u"
+	       "  [user_htstream=0x%04X]\n",
+	       indent, NSS_2G_RX(uh), NSS_2G_TX(uh), NSS_5G_RX(uh),
+	       NSS_5G_TX(uh), uh);
+}
+
 static int get_ht_stream_mode(void)
 {
 	t_u8 *buffer = NULL;
@@ -25548,36 +25649,73 @@ static int set_ht_stream_mode(int mode)
 static int print_mcstiercfg(void)
 {
 	struct eth_priv_vhtcfg vhtcfg;
-	mlan_ds_11ax_he_cfg hecfg_2g;
+	mlan_ds_11ax_he_cfg hecfg;
 	t_u16 he_rx_mcs, he_tx_mcs;
 	int ht_mode;
+	t_u32 uh = 0;
+	int have_nss;
+	t_u8 nss_rx_5g = 0, nss_tx_5g = 0;
 
 	printf("MCS Tier Capability Configuration (association)\n");
+
+	/* The stored tiers below are only half the story: antcfg imposes a
+	 * stream limit that the driver applies when it builds the association
+	 * IEs. Show it so this one command reflects what really goes out. */
+	have_nss = (get_user_htstream(&uh) == 0);
+	if (have_nss) {
+		print_nss_intent("  ", uh);
+		nss_rx_5g = NSS_5G_RX(uh);
+		nss_tx_5g = NSS_5G_TX(uh);
+	}
 
 	ht_mode = get_ht_stream_mode();
 	if (ht_mode == HT_STREAM_MODE_1X1)
 		printf("  HT  (11n)  : 1x1 (MCS 0~7)\n");
-	else if (ht_mode == HT_STREAM_MODE_2X2)
-		printf("  HT  (11n)  : 2x2 (MCS 0~15)\n");
+	else if (ht_mode == HT_STREAM_MODE_2X2) {
+		printf("  HT  (11n)  : 2x2 (MCS 0~15)");
+		/* HT runs on both bands, so report whichever side is
+		 * limited. Only the Rx map is carried in the HT capability
+		 * (wlan_fill_ht_cap_tlv() clamps supported_mcs_set from the
+		 * Rx nibble), so a Tx limit does not change what we
+		 * advertise here and is deliberately not shown. */
+		if (have_nss) {
+			t_u8 rx2 = NSS_2G_RX(uh);
+			t_u8 rx5 = NSS_5G_RX(uh);
+
+			if (rx2 && rx2 < 2)
+				printf("  ->  advertised 1x1 on 2G");
+			if (rx5 && rx5 < 2)
+				printf("  ->  advertised 1x1 on 5G");
+		}
+		printf("\n");
+	}
 	else
 		printf("  HT  (11n)  : unknown (0x%02x)\n", ht_mode);
 
 	if (get_sta_vht_assoc_cfg(&vhtcfg) == MLAN_STATUS_SUCCESS) {
 		print_nss_tier_map("VHT Tx", (t_u16)(vhtcfg.vht_tx_mcs & 0xFFFF),
-				  FALSE);
+				  FALSE, nss_tx_5g);
 		print_nss_tier_map("VHT Rx", (t_u16)(vhtcfg.vht_rx_mcs & 0xFFFF),
-				  FALSE);
+				  FALSE, nss_rx_5g);
 	}
 
-	if (get_he_cfg(&hecfg_2g) == MLAN_STATUS_SUCCESS) {
-		he_rx_mcs = (t_u16)(hecfg_2g.he_cap.he_txrx_mcs_support[0] |
-					 (hecfg_2g.he_cap.he_txrx_mcs_support[1] << 8));
-		he_tx_mcs = (t_u16)(hecfg_2g.he_cap.he_txrx_mcs_support[2] |
-					 (hecfg_2g.he_cap.he_txrx_mcs_support[3] << 8));
+	if (get_he_cfg(&hecfg) == MLAN_STATUS_SUCCESS) {
+		t_u8 he_nss_rx = 0, he_nss_tx = 0;
+
+		he_rx_mcs = (t_u16)(hecfg.he_cap.he_txrx_mcs_support[0] |
+					 (hecfg.he_cap.he_txrx_mcs_support[1] << 8));
+		he_tx_mcs = (t_u16)(hecfg.he_cap.he_txrx_mcs_support[2] |
+					 (hecfg.he_cap.he_txrx_mcs_support[3] << 8));
+		if (have_nss) {
+			int is_5g = (hecfg.band & (1 << 1)) ? 1 : 0;
+
+			he_nss_rx = is_5g ? NSS_5G_RX(uh) : NSS_2G_RX(uh);
+			he_nss_tx = is_5g ? NSS_5G_TX(uh) : NSS_2G_TX(uh);
+		}
 		printf("  HE Band: %s (0x%02X)\n",
-		       he_band_to_string(hecfg_2g.band), hecfg_2g.band);
-		print_nss_tier_map("HE Tx", he_tx_mcs, TRUE);
-		print_nss_tier_map("HE Rx", he_rx_mcs, TRUE);
+		       he_band_to_string(hecfg.band), hecfg.band);
+		print_nss_tier_map("HE Tx", he_tx_mcs, TRUE, he_nss_tx);
+		print_nss_tier_map("HE Rx", he_rx_mcs, TRUE, he_nss_rx);
 	}
 
 	return MLAN_STATUS_SUCCESS;
@@ -25596,6 +25734,8 @@ static int process_mcstiercfg(int argc, char *argv[])
 	int set_vht = FALSE;
 	int set_he = FALSE;
 	int i;
+	t_u32 uh = 0;
+	int have_uh = FALSE;
 
 	if (argc == 3)
 		return print_mcstiercfg();
@@ -25667,6 +25807,11 @@ static int process_mcstiercfg(int argc, char *argv[])
 		       (mode == HT_STREAM_MODE_1X1) ? "1x1" : "2x2", ht_max);
 	}
 
+	/* The NSS limit does not change while we apply the tiers, so read it
+	 * once for both blocks below. */
+	if (set_vht || set_he)
+		have_uh = (get_user_htstream(&uh) == 0);
+
 	if (set_vht) {
 		if (get_sta_vht_assoc_cfg(&vhtcfg) != MLAN_STATUS_SUCCESS)
 			return MLAN_STATUS_FAILURE;
@@ -25681,10 +25826,20 @@ static int process_mcstiercfg(int argc, char *argv[])
 		if (set_sta_vht_assoc_cfg(&vhtcfg) != MLAN_STATUS_SUCCESS)
 			return MLAN_STATUS_FAILURE;
 		printf("Applied VHT association tier: MCS 0~%d\n", vht_max);
-		print_nss_tier_map("VHT Tx", (t_u16)(vhtcfg.vht_tx_mcs & 0xFFFF),
-				  FALSE);
-		print_nss_tier_map("VHT Rx", (t_u16)(vhtcfg.vht_rx_mcs & 0xFFFF),
-				  FALSE);
+		{
+			t_u8 lr = 0, lt = 0;
+
+			if (have_uh) {
+				lr = NSS_5G_RX(uh);
+				lt = NSS_5G_TX(uh);
+			}
+			print_nss_tier_map("VHT Tx",
+					  (t_u16)(vhtcfg.vht_tx_mcs & 0xFFFF),
+					  FALSE, lt);
+			print_nss_tier_map("VHT Rx",
+					  (t_u16)(vhtcfg.vht_rx_mcs & 0xFFFF),
+					  FALSE, lr);
+		}
 	}
 
 	if (set_he) {
@@ -25707,8 +25862,18 @@ static int process_mcstiercfg(int argc, char *argv[])
 			return MLAN_STATUS_FAILURE;
 		printf("Applied HE association tier (%s): MCS 0~%d\n",
 		       he_band_to_string(hecfg.band), he_max);
-		print_nss_tier_map("HE Tx", he_tx_mcs, TRUE);
-		print_nss_tier_map("HE Rx", he_rx_mcs, TRUE);
+		{
+			t_u8 lr = 0, lt = 0;
+
+			if (have_uh) {
+				int is_5g = (hecfg.band & (1 << 1)) ? 1 : 0;
+
+				lr = is_5g ? NSS_5G_RX(uh) : NSS_2G_RX(uh);
+				lt = is_5g ? NSS_5G_TX(uh) : NSS_2G_TX(uh);
+			}
+			print_nss_tier_map("HE Tx", he_tx_mcs, TRUE, lt);
+			print_nss_tier_map("HE Rx", he_rx_mcs, TRUE, lr);
+		}
 	}
 
 	printf("Reconnect/reassociate to apply the new advertised capability.\n");

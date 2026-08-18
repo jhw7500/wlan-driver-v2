@@ -7828,6 +7828,8 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
 	defined(USBIW624) || defined(SD9097)
 	mlan_adapter *pmadapter = pmpriv->adapter;
+	t_u8 ant_tx_set = MFALSE;
+	t_u8 ant_rx_set = MFALSE;
 #endif
 	typedef struct _HostCmd_DS_802_11_RF_ANTENNA_1X1 {
 		/** Action */
@@ -7870,26 +7872,37 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 			   IS_CARD9097(pmadapter->card_type)) {
 			tx_ant_mode &= 0x0303;
 			rx_ant_mode &= 0x0303;
+			/* Only a SET response carries host intent. A GET just
+			 * reports firmware state, which can revert on its own;
+			 * letting it write back turns any read (e.g. the
+			 * nl80211 one at supplicant start) into a silent reset
+			 * of the configured NSS, since the assoc IEs are built
+			 * from user_htstream.
+			 */
+			ant_tx_set = (wlan_le16_to_cpu(pantenna->action_tx) ==
+				      HostCmd_ACT_SET_TX);
+			ant_rx_set = (wlan_le16_to_cpu(pantenna->action_rx) ==
+				      HostCmd_ACT_SET_RX);
 			/** 2G antcfg TX */
-			if (tx_ant_mode & 0x00FF) {
+			if (ant_tx_set && (tx_ant_mode & 0x00FF)) {
 				pmadapter->user_htstream &= ~0xF0;
 				pmadapter->user_htstream |=
 					(bitcount(tx_ant_mode & 0x00FF) << 4);
 			}
 			/* 5G antcfg tx */
-			if (tx_ant_mode & 0xFF00) {
+			if (ant_tx_set && (tx_ant_mode & 0xFF00)) {
 				pmadapter->user_htstream &= ~0xF000;
 				pmadapter->user_htstream |=
 					(bitcount(tx_ant_mode & 0xFF00) << 12);
 			}
 			/* 2G antcfg RX */
-			if (rx_ant_mode & 0x00FF) {
+			if (ant_rx_set && (rx_ant_mode & 0x00FF)) {
 				pmadapter->user_htstream &= ~0xF;
 				pmadapter->user_htstream |=
 					bitcount(rx_ant_mode & 0x00FF);
 			}
 			/* 5G antcfg RX */
-			if (rx_ant_mode & 0xFF00) {
+			if (ant_rx_set && (rx_ant_mode & 0xFF00)) {
 				pmadapter->user_htstream &= ~0xF00;
 				pmadapter->user_htstream |=
 					(bitcount(rx_ant_mode & 0xFF00) << 8);
@@ -7911,6 +7924,8 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 		if (IS_STREAM_2X2(pmpriv->adapter->feature_control)) {
 			radio->param.ant_cfg.tx_antenna = tx_ant_mode;
 			radio->param.ant_cfg.rx_antenna = rx_ant_mode;
+			radio->param.ant_cfg.user_htstream =
+				pmpriv->adapter->user_htstream;
 		} else {
 			radio->param.ant_cfg_1x1.antenna = ant_mode;
 			radio->param.ant_cfg_1x1.evaluate_time = evaluate_time;

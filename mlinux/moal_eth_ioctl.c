@@ -13953,7 +13953,7 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 	int user_data_len = 0, header_len = 0;
 	mlan_ds_radio_cfg *radio = NULL;
 	mlan_ioctl_req *req = NULL;
-	int data[3] = {0};
+	int data[4] = {0};
 	mlan_status status = MLAN_STATUS_SUCCESS;
 
 	ENTER();
@@ -14031,19 +14031,41 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 		if (priv->phandle->feature_control & FEATURE_CTRL_STREAM_2X2) {
 			data[0] = radio->param.ant_cfg.tx_antenna;
 			data[1] = radio->param.ant_cfg.rx_antenna;
-			if (data[0] && data[1])
-				ret = sizeof(int) * 2;
-			else
-				ret = sizeof(int) * 1;
+			/* data[2] carries the host side NSS intent
+			 * (user_htstream). data[3] is a reserved word kept
+			 * so the 2x2 reply length (16) never collides with
+			 * the 1x1 reply (12), which parsers use to tell the
+			 * two layouts apart.
+			 */
+			data[2] = radio->param.ant_cfg.user_htstream;
+			data[3] = 0;
+			/* Always return all four words. data[2]/data[3] are
+			 * valid whatever the antenna mode is, and a zero
+			 * antenna - which shows up while the firmware is
+			 * still coming up - would otherwise hide the NSS
+			 * limit from userspace.
+			 */
+			ret = sizeof(int) * 4;
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
 					sizeof(data), respbuflen);
+			/* moal_memcpy_ext() caps the copy at respbuflen, so
+			 * report no more than what actually landed. */
+			if ((t_u32)ret > respbuflen)
+				ret = (int)respbuflen;
 		} else {
 			data[0] = (int)radio->param.ant_cfg_1x1.antenna;
 			data[1] = (int)radio->param.ant_cfg_1x1.evaluate_time;
 			data[2] = (int)radio->param.ant_cfg_1x1.current_antenna;
+			/* Keep the 1x1 reply at three words. The parser tells
+			 * the layouts apart by length, and the 2x2 reply now
+			 * carries a fourth (reserved) word - sizeof(data)
+			 * would silently make this one look like a 2x2 reply.
+			 */
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
-					sizeof(data), respbuflen);
-			ret = sizeof(data);
+					sizeof(int) * 3, respbuflen);
+			ret = sizeof(int) * 3;
+			if ((t_u32)ret > respbuflen)
+				ret = (int)respbuflen;
 		}
 	}
 done:
