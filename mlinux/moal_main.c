@@ -9544,7 +9544,10 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 		}
 	}
 
-	/* Get BSS info */
+	/* Get BSS info.  The memset matters on the gated path below: when
+	 * woal_get_bss_info() fails there we fall through with bss_info still
+	 * zeroed, so is_hs_configured reads as 0 and the host-sleep cancel is
+	 * correctly skipped.  Do not drop or move this memset. */
 	memset(&bss_info, 0, sizeof(bss_info));
 	if (MLAN_STATUS_SUCCESS !=
 	    woal_get_bss_info(priv, wait_option, &bss_info)) {

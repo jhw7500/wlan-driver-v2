@@ -1059,12 +1059,14 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 			    MLAN_STATUS_SUCCESS)
 				PRINTM(MERROR, "Could not set RF test mode\n");
 	}
-	if (!strncmp(databuf, "tx_antenna", strlen("tx_antenna"))) {
+	if (!strncmp(databuf, "tx_antenna", strlen("tx_antenna")) &&
+	    count > strlen("tx_antenna")) {
 		line += strlen("tx_antenna") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_TX_ANT;
 	}
-	if (!strncmp(databuf, "rx_antenna", strlen("rx_antenna"))) {
+	if (!strncmp(databuf, "rx_antenna", strlen("rx_antenna")) &&
+	    count > strlen("rx_antenna")) {
 		line += strlen("rx_antenna") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RX_ANT;
@@ -1075,17 +1077,20 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RADIO_MODE_CFG;
 	}
-	if (!strncmp(databuf, "channel", strlen("channel"))) {
+	if (!strncmp(databuf, "channel", strlen("channel")) &&
+	    count > strlen("channel")) {
 		line += strlen("channel") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_CHAN;
 	}
-	if (!strncmp(databuf, "band", strlen("band"))) {
+	if (!strncmp(databuf, "band", strlen("band")) &&
+	    count > strlen("band")) {
 		line += strlen("band") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_BAND_AG;
 	}
-	if (!strncmp(databuf, "bw", strlen("bw"))) {
+	if (!strncmp(databuf, "bw", strlen("bw")) &&
+	    count > strlen("bw")) {
 		line += strlen("bw") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_CHANNELBW;
