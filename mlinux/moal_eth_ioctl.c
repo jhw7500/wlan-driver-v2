@@ -13953,7 +13953,7 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 	int user_data_len = 0, header_len = 0;
 	mlan_ds_radio_cfg *radio = NULL;
 	mlan_ioctl_req *req = NULL;
-	int data[3] = {0};
+	int data[4] = {0};
 	mlan_status status = MLAN_STATUS_SUCCESS;
 
 	ENTER();
@@ -14031,8 +14031,16 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 		if (priv->phandle->feature_control & FEATURE_CTRL_STREAM_2X2) {
 			data[0] = radio->param.ant_cfg.tx_antenna;
 			data[1] = radio->param.ant_cfg.rx_antenna;
+			/* data[2] carries the host side NSS intent
+			 * (user_htstream). data[3] is a reserved word kept
+			 * so the 2x2 reply length (16) never collides with
+			 * the 1x1 reply (12), which parsers use to tell the
+			 * two layouts apart.
+			 */
+			data[2] = radio->param.ant_cfg.user_htstream;
+			data[3] = 0;
 			if (data[0] && data[1])
-				ret = sizeof(int) * 2;
+				ret = sizeof(int) * 4;
 			else
 				ret = sizeof(int) * 1;
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,

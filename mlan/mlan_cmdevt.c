@@ -7924,6 +7924,8 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 		if (IS_STREAM_2X2(pmpriv->adapter->feature_control)) {
 			radio->param.ant_cfg.tx_antenna = tx_ant_mode;
 			radio->param.ant_cfg.rx_antenna = rx_ant_mode;
+			radio->param.ant_cfg.user_htstream =
+				pmpriv->adapter->user_htstream;
 		} else {
 			radio->param.ant_cfg_1x1.antenna = ant_mode;
 			radio->param.ant_cfg_1x1.evaluate_time = evaluate_time;
