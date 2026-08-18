@@ -9481,6 +9481,7 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 	int intf_num;
 	moal_handle *handle = NULL;
 	mlan_bss_info bss_info;
+	BOOLEAN gated = MFALSE;
 
 	ENTER();
 
@@ -9489,6 +9490,15 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 		return MLAN_STATUS_FAILURE;
 	}
 	handle = priv->phandle;
+	/* While the device is gated, moal_ioctl.c refuses every command below
+	 * without ever reaching the FW (all sub-commands but GET_DEBUG_INFO and
+	 * MISC_WARM_RESET are rejected on surprise_removed || driver_status).
+	 * Those failures carry no information about the device, and aborting on
+	 * them skips the timer cancellations at the tail of this function --
+	 * woal_init_sw() would then re-run timer_setup() on timers still linked
+	 * in the kernel timer wheel.  Record the failure for the healthy-path
+	 * callers, but keep going so the teardown completes. */
+	gated = handle->surprise_removed || handle->driver_status;
 
 #if defined(STA_CFG80211) && defined(UAP_CFG80211)
 	/* Unregister and detach connected radiotap net device */
@@ -9500,7 +9510,8 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 			PRINTM(MERROR, "%s: stop net monitor failed \n",
 			       __func__);
 			ret = MLAN_STATUS_FAILURE;
-			goto done;
+			if (!gated)
+				goto done;
 		}
 #endif
 		netif_device_detach(handle->mon_if->mon_ndev);
@@ -9517,7 +9528,8 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 	if (MLAN_STATUS_SUCCESS != woal_cancel_scan(priv, wait_option)) {
 		PRINTM(MERROR, "%s: cancel scan failed \n", __func__);
 		ret = MLAN_STATUS_FAILURE;
-		goto done;
+		if (!gated)
+			goto done;
 	}
 #endif
 
@@ -9532,20 +9544,25 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 		}
 	}
 
-	/* Get BSS info */
+	/* Get BSS info.  The memset matters on the gated path below: when
+	 * woal_get_bss_info() fails there we fall through with bss_info still
+	 * zeroed, so is_hs_configured reads as 0 and the host-sleep cancel is
+	 * correctly skipped.  Do not drop or move this memset. */
 	memset(&bss_info, 0, sizeof(bss_info));
 	if (MLAN_STATUS_SUCCESS !=
 	    woal_get_bss_info(priv, wait_option, &bss_info)) {
 		PRINTM(MERROR, "%s: get bss info failed \n", __func__);
 		ret = MLAN_STATUS_FAILURE;
-		goto done;
+		if (!gated)
+			goto done;
 	}
 
 	/* Cancel host sleep */
 	if (bss_info.is_hs_configured) {
 		if (MLAN_STATUS_SUCCESS != woal_cancel_hs(priv, wait_option)) {
 			ret = -EFAULT;
-			goto done;
+			if (!gated)
+				goto done;
 		}
 	}
 
@@ -9563,7 +9580,8 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 				PRINTM(MERROR, "%s: woal_disconnect failed \n",
 				       __func__);
 				ret = MLAN_STATUS_FAILURE;
-				goto done;
+				if (!gated)
+					goto done;
 			}
 			priv->media_connected = MFALSE;
 		}
@@ -9584,7 +9602,8 @@ mlan_status woal_reset_intf(moal_private *priv, t_u8 wait_option, int all_intf)
 					       "%s: woal_disconnect failed \n",
 					       __func__);
 					ret = MLAN_STATUS_FAILURE;
-					goto done;
+					if (!gated)
+						goto done;
 				}
 				handle->priv[intf_num]->media_connected =
 					MFALSE;
@@ -14418,6 +14437,20 @@ exit_sem_err:
  *  @param handle   A pointer to moal_handle structure
  *  @param mode     FW_RELOAD_SDIO_INBAND_RESET or FW_RELOAD_SDIO_HW_RESET
  *
+ *  WARNING: FW_RELOAD_SDIO_HW_RESET (mode 5) is QA/diagnostic only, and on a
+ *  multi-function card it fails every time.  DBDC parts such as SD9098 bind
+ *  both func1 and func2, so sdio_funcs_probed > 1 and mmc_sdio_hw_reset()
+ *  does not reset the card in place: it marks the card removed, schedules an
+ *  async rescan and returns 1.  woal_sdio_reset_hw() is void and drops that,
+ *  so the download below always runs against a card that has already left the
+ *  bus, fails, and is reported to userspace as -EFAULT.  The device comes
+ *  back only because the MMC rescan re-probes it as a brand new driver
+ *  instance; every such cycle also leaks mlan memory, so a "mlan has memory
+ *  leak: malloc_count=N" line following a mode 5 reload is expected noise
+ *  rather than a signal.  Prefer FW_RELOAD_SDIO_INBAND_RESET (mode 5's
+ *  alternative, and what this driver's own auto-recovery uses): it never
+ *  calls mmc_hw_reset(), it does not block, and its return code is truthful.
+ *
  *  @return        0--success, otherwise failure
  */
 static int woal_reset_and_reload_fw(moal_handle *handle, t_u8 mode)
@@ -14604,6 +14637,15 @@ static int woal_post_reset(moal_handle *handle)
 #endif
 
 	handle->fw_dump_status = MFALSE;
+	/* Vendor ordering (a8d5496): clear the gate here, before the rebuild
+	 * below issues IOCTLs and re-creates the interfaces.  woal_pre_reset()
+	 * set driver_status, and on this path nothing else clears it, so leaving
+	 * it set makes woal_init_sta_dev() bail out before it assigns
+	 * dev->netdev_ops -- register_netdev() would then publish a STA netdev
+	 * with NULL ops.  The terminal override in the done: tail still wins for
+	 * a genuine rebuild failure. */
+	handle->driver_status = MFALSE;
+	handle->hardware_status = HardwareStatusReady;
 	handle->remain_on_channel = MFALSE;
 #ifdef STA_CFG80211
 	handle->scan_timeout = SCAN_TIMEOUT_25S;
