@@ -1456,7 +1456,8 @@ typedef struct _mlan_ds_ant_cfg {
 	t_u32 tx_antenna;
 	/** Rx antenna mode */
 	t_u32 rx_antenna;
-	/** Host side NSS intent (user_htstream). Filled on GET only.
+	/** Host side NSS intent (user_htstream). Surfaced to userspace on
+	 *  GET only; the response handler always populates it.
 	 *  tx/rx_antenna report what the firmware currently drives, which
 	 *  can differ from what the host asked for; this field exposes the
 	 *  value the association IEs are actually built from. */

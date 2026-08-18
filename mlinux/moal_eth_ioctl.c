@@ -14049,9 +14049,14 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 			data[0] = (int)radio->param.ant_cfg_1x1.antenna;
 			data[1] = (int)radio->param.ant_cfg_1x1.evaluate_time;
 			data[2] = (int)radio->param.ant_cfg_1x1.current_antenna;
+			/* Keep the 1x1 reply at three words. The parser tells
+			 * the layouts apart by length, and the 2x2 reply now
+			 * carries a fourth (reserved) word - sizeof(data)
+			 * would silently make this one look like a 2x2 reply.
+			 */
 			moal_memcpy_ext(priv->phandle, respbuf, (t_u8 *)data,
-					sizeof(data), respbuflen);
-			ret = sizeof(data);
+					sizeof(int) * 3, respbuflen);
+			ret = sizeof(int) * 3;
 		}
 	}
 done:

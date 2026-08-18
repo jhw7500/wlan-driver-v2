@@ -25718,6 +25718,8 @@ static int process_mcstiercfg(int argc, char *argv[])
 	int set_vht = FALSE;
 	int set_he = FALSE;
 	int i;
+	t_u32 uh = 0;
+	int have_uh = FALSE;
 
 	if (argc == 3)
 		return print_mcstiercfg();
@@ -25789,6 +25791,11 @@ static int process_mcstiercfg(int argc, char *argv[])
 		       (mode == HT_STREAM_MODE_1X1) ? "1x1" : "2x2", ht_max);
 	}
 
+	/* The NSS limit does not change while we apply the tiers, so read it
+	 * once for both blocks below. */
+	if (set_vht || set_he)
+		have_uh = (get_user_htstream(&uh) == 0);
+
 	if (set_vht) {
 		if (get_sta_vht_assoc_cfg(&vhtcfg) != MLAN_STATUS_SUCCESS)
 			return MLAN_STATUS_FAILURE;
@@ -25804,10 +25811,9 @@ static int process_mcstiercfg(int argc, char *argv[])
 			return MLAN_STATUS_FAILURE;
 		printf("Applied VHT association tier: MCS 0~%d\n", vht_max);
 		{
-			t_u32 uh = 0;
 			t_u8 lr = 0, lt = 0;
 
-			if (get_user_htstream(&uh) == 0) {
+			if (have_uh) {
 				lr = NSS_5G_RX(uh);
 				lt = NSS_5G_TX(uh);
 			}
@@ -25841,10 +25847,9 @@ static int process_mcstiercfg(int argc, char *argv[])
 		printf("Applied HE association tier (%s): MCS 0~%d\n",
 		       he_band_to_string(hecfg.band), he_max);
 		{
-			t_u32 uh = 0;
 			t_u8 lr = 0, lt = 0;
 
-			if (get_user_htstream(&uh) == 0) {
+			if (have_uh) {
 				int is_5g = (hecfg.band & (1 << 1)) ? 1 : 0;
 
 				lr = is_5g ? NSS_5G_RX(uh) : NSS_2G_RX(uh);
