@@ -299,32 +299,19 @@ static mlan_status wlan_11ac_ioctl_vhtcfg(pmlan_adapter pmadapter,
 
 		/** update the RX MCS map */
 		if (cfg->param.vht_cfg.txrx & MLAN_RADIO_RX) {
-#if defined(PCIE9098) || defined(SD9098) || defined(USB9098) ||                \
-	defined(PCIE9097) || defined(USB9097) || defined(SDIW624) ||           \
-	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
-	defined(USBIW624) || defined(SD9097)
-			if (IS_CARD9098(pmadapter->card_type) ||
-			    IS_CARDIW624(pmadapter->card_type) ||
-			    IS_CARD9097(pmadapter->card_type) ||
-			    IS_CARDAW693(pmadapter->card_type)) {
-				if (cfg->param.vht_cfg.band == BAND_SELECT_A) {
-					rx_nss = GET_RXMCSSUPP(
-						pmadapter->user_htstream >> 8);
-					tx_nss =
-						GET_TXMCSSUPP(
-							pmadapter->user_htstream >>
-							8) &
-						0x0f;
-				} else {
-					rx_nss = GET_RXMCSSUPP(
-						pmadapter->user_htstream);
-					tx_nss =
-						GET_TXMCSSUPP(
-							pmadapter->user_htstream) &
-						0x0f;
-				}
-			}
-#endif
+			/* Stock code clamped the stored vht_rx_mcs/vht_tx_mcs
+			 * here from user_htstream (antenna count via antcfg).
+			 * A later vhtcfg GET then differs from what was SET, so
+			 * a SET/GET verify loop never converges once antcfg is
+			 * in use and the caller sees a failed apply.
+			 *
+			 * The clamp still runs where it matters - on the assoc
+			 * IEs built by wlan_fill_vht_cap_tlv() and
+			 * wlan_cmd_append_11ac_tlv() - so what we advertise is
+			 * unchanged; only the stored value round-trips now.
+			 *
+			 * rx_nss/tx_nss stay 0, disabling the clamp below.
+			 */
 			/* use the previous user value */
 			if (cfg->param.vht_cfg.vht_rx_mcs == 0xffffffff)
 				cfg->param.vht_cfg.vht_rx_mcs = GET_VHTMCS(
