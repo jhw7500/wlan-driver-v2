@@ -65,7 +65,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: jhw7500/automation/.github/workflows/gemini-review.yml@d3b102e2c1f62f6abf5a9a5a37da810e6ba3e7f5
+    uses: jhw7500/automation/.github/workflows/gemini-review.yml@c90e3396225cae6e2851690b8991797ea3238f21
     with:
       pr_number: ${{ inputs.pr_number }}
       issue_title: ${{ needs.prepare.outputs.pr_title }}
