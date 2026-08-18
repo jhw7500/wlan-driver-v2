@@ -25670,10 +25670,24 @@ static int print_mcstiercfg(void)
 	ht_mode = get_ht_stream_mode();
 	if (ht_mode == HT_STREAM_MODE_1X1)
 		printf("  HT  (11n)  : 1x1 (MCS 0~7)\n");
-	else if (ht_mode == HT_STREAM_MODE_2X2)
-		printf("  HT  (11n)  : 2x2 (MCS 0~15)%s\n",
-		       (nss_rx_5g == 1) ?
-			       "  ->  advertised 1x1 on 5G" : "");
+	else if (ht_mode == HT_STREAM_MODE_2X2) {
+		printf("  HT  (11n)  : 2x2 (MCS 0~15)");
+		/* HT runs on both bands, so report whichever side is
+		 * limited. Only the Rx map is carried in the HT capability
+		 * (wlan_fill_ht_cap_tlv() clamps supported_mcs_set from the
+		 * Rx nibble), so a Tx limit does not change what we
+		 * advertise here and is deliberately not shown. */
+		if (have_nss) {
+			t_u8 rx2 = NSS_2G_RX(uh);
+			t_u8 rx5 = NSS_5G_RX(uh);
+
+			if (rx2 && rx2 < 2)
+				printf("  ->  advertised 1x1 on 2G");
+			if (rx5 && rx5 < 2)
+				printf("  ->  advertised 1x1 on 5G");
+		}
+		printf("\n");
+	}
 	else
 		printf("  HT  (11n)  : unknown (0x%02x)\n", ht_mode);
 
