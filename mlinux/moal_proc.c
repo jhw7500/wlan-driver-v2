@@ -93,7 +93,7 @@ void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...)
 		struct tm tm;
 		time64_to_tm(ts.tv_sec, 0, &tm);
 		prefix_len = snprintf(line, sizeof(line),
-				      "[%04ld-%02d-%02d %02d:%02d:%02d.%03ld] ",
+				      "%04ld-%02d-%02d %02d:%02d:%02d.%03ld ",
 				      tm.tm_year + 1900, tm.tm_mon + 1,
 				      tm.tm_mday, tm.tm_hour, tm.tm_min,
 				      tm.tm_sec, ts.tv_nsec / 1000000);
