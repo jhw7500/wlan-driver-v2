@@ -3420,7 +3420,8 @@ mlan_status wlan_process_802dot11_mgmt_pkt(mlan_private *priv, t_u8 *payload,
 #endif
 
 	ENTER();
-	if (payload_len > (MAX_EVENT_SIZE - sizeof(mlan_event))) {
+	if (payload_len > (MAX_EVENT_SIZE - sizeof(mlan_event) -
+			   MLAN_MGMT_EVENT_PAYLOAD_OFFSET)) {
 		PRINTM(MERROR, "Dropping large mgmt frame,len =%d\n",
 		       payload_len);
 		LEAVE();

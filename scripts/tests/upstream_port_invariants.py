@@ -137,6 +137,16 @@ for name, decl in (("MLAN", mlan_decl), ("MOAL mirror", moal_decl)):
 require("mlan_mgmt_event_metadata" in mlan_misc_c and
         "MLAN_MGMT_EVENT_PAYLOAD_OFFSET" in mlan_misc_c,
         "management-event producer still relies on implicit event_id sizing")
+mgmt_producer = c_function(
+    mlan_misc_c, "mlan_status wlan_process_802dot11_mgmt_pkt")
+mgmt_payload_bound = re.search(
+    r"payload_len\s*>\s*\(\s*MAX_EVENT_SIZE\s*-\s*"
+    r"sizeof\(mlan_event\)\s*-\s*MLAN_MGMT_EVENT_PAYLOAD_OFFSET\s*\)",
+    mgmt_producer,
+)
+require(mgmt_payload_bound is not None and
+        mgmt_payload_bound.start() < mgmt_producer.find("moal_malloc("),
+        "management-event producer does not reserve prefix bytes at its upper boundary")
 mgmt_case = shim_c[shim_c.find("case MLAN_EVENT_ID_DRV_MGMT_FRAME:") :]
 mgmt_case = mgmt_case[: mgmt_case.find("\n\tcase ", 1)]
 require(ordered(mgmt_case, "event_len < MLAN_MGMT_EVENT_PAYLOAD_OFFSET",
@@ -148,6 +158,30 @@ antcfg = c_function(eth_ioctl_c, "static int woal_priv_set_get_tx_rx_ant")
 require(ordered(antcfg, "user_data_len != 1", "user_data_len != 2",
                 "user_data_len != 4", "FEATURE_CTRL_STREAM_2X2"),
         "kernel antcfg parser does not reject the invalid three-word form")
+non_2x2_four_word_reject = re.search(
+    r"if\s*\(\s*user_data_len\s*==\s*4\s*&&\s*"
+    r"!\(priv->phandle->feature_control\s*&\s*FEATURE_CTRL_STREAM_2X2\)\s*\)"
+    r"\s*\{.*?ret\s*=\s*-EOPNOTSUPP\s*;.*?goto\s+done\s*;",
+    antcfg,
+    re.DOTALL,
+)
+require(non_2x2_four_word_reject is not None and
+        non_2x2_four_word_reject.start() <
+        antcfg.find("radio->param.ant_cfg_1x1.antenna = data[0]"),
+        "non-2x2 antcfg does not reject the unsupported four-word layout")
+require(ordered(
+            antcfg,
+            "if (priv->phandle->feature_control & FEATURE_CTRL_STREAM_2X2)",
+            "radio->param.ant_cfg.tx_antenna = data[0]",
+            "if (user_data_len == 2)",
+            "radio->param.ant_cfg.rx_antenna = data[1]",
+            "if (user_data_len == 4)",
+            "radio->param.ant_cfg.tx_antenna_6g = data[2]",
+            "radio->param.ant_cfg.rx_antenna_6g = data[3]",
+            "radio->param.ant_cfg_1x1.antenna = data[0]",
+            "if (user_data_len == 2)",
+            "radio->param.ant_cfg_1x1.evaluate_time"),
+        "antcfg layout paths no longer preserve 2x2 one/two/four and 1x1 one/two forms")
 require(ordered(antcfg_nss, "FEATURE_CTRL_STREAM_2X2", "-EOPNOTSUPP",
                 "woal_request_ioctl("),
         "antcfgnss does not reject unsupported non-2x2 response layouts")

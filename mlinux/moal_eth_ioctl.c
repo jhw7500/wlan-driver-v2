@@ -15376,6 +15376,14 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 			ret = -EINVAL;
 			goto done;
 		}
+		if (user_data_len == 4 &&
+		    !(priv->phandle->feature_control &
+		      FEATURE_CTRL_STREAM_2X2)) {
+			PRINTM(MERROR,
+			       "Four-word antcfg requires a 2x2 antenna layout\n");
+			ret = -EOPNOTSUPP;
+			goto done;
+		}
 		if (priv->phandle->feature_control & FEATURE_CTRL_STREAM_2X2) {
 			radio->param.ant_cfg.tx_antenna = data[0];
 			if (data[0] == RF_ANTENNA_AUTO) {
