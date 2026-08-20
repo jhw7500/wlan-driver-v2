@@ -24,7 +24,7 @@ config WLAN_VENDOR_NXP
 
 config NXP_WLAN_DRIVER
 	tristate "NXP WLAN Driver"
-	depends on CFG80211 && (MMC || PCI || USB)
+	depends on CFG80211 && PROC_FS && (MMC || PCI || USB)
 	select LIB80211
 	select FW_LOADER
 	help

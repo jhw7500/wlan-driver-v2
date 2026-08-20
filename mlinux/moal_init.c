@@ -116,7 +116,7 @@ int bridge_keepalive_ms = 1;
 /** bridge_keepalive_idle_ms: adaptive keepalive idle cutoff (ms).
  *  0 = legacy free-running timer (default), >0 = self-stop after idle. */
 int bridge_keepalive_idle_ms;
-/* [DBG-RXDROP] Toggle: 1 = link-local frame을 driver에서 consume(kfree+return 1).
+/* Toggle: 1 = link-local frame을 driver에서 consume(kfree+return 1).
  * 0 (default) = 기존 동작 (return 0, kernel stack으로 deliver → ptype handler 부재 시
  * dev->rx_nohandler 자동 증가하여 sysfs rx_dropped 에 합산). */
 int bridge_consume_link_local;
@@ -3982,7 +3982,7 @@ MODULE_PARM_DESC(bridge_keepalive_ms, "Bridge keepalive timer interval ms: 0=off
 module_param(bridge_keepalive_idle_ms, int, 0444);
 MODULE_PARM_DESC(bridge_keepalive_idle_ms, "Bridge keepalive idle cutoff ms (applied at load; reload to change): 0=free-running(default), >0=adaptive (timer armed by traffic, self-stops after this idle → zero wakeups when idle).");
 module_param(bridge_consume_link_local, int, 0644);
-MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
+MODULE_PARM_DESC(bridge_consume_link_local, "0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(bridge_local_hairpin, int, 0644);
 MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable). Fleet precondition: apply wlan iface arp_ignore=1 seal (wlan-package) or weak-host ARP opens on air — driver warns once via dmesg if unsealed");
 module_param(wifi_reset_config, int, 0);

@@ -727,8 +727,9 @@ static inline struct sk_buff *moal_bridge_ensure_headroom(struct sk_buff *skb)
 
 /**
  * moal_bridge_dev_ready - egress netdev is usable for forwarding
- * Combines admin-up (netif_running), link-up (netif_carrier_ok), and
- * still-registered (reg_state == NETREG_REGISTERED) checks into one gate.
+ * Combines device-present, admin-up (netif_running), link-up
+ * (netif_carrier_ok), and still-registered (reg_state == NETREG_REGISTERED)
+ * checks into one gate.
  * Used at enqueue and again before dev_queue_xmit to avoid xmit'ing into
  * a device that went down between queue and drain.
  */
@@ -736,7 +737,8 @@ static inline bool moal_bridge_dev_ready(const struct net_device *dev)
 {
 	/* reg_state is an enum; READ_ONCE's __native_word check rejects it.
 	 * Lifecycle changes are RTNL-serialized, so a plain read is fine. */
-	if (!dev || !netif_running(dev) || !netif_carrier_ok(dev))
+	if (!dev || !netif_device_present(dev) || !netif_running(dev) ||
+	    !netif_carrier_ok(dev))
 		return false;
 	return dev->reg_state == NETREG_REGISTERED;
 }
@@ -853,11 +855,6 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */
 	if (moal_bridge_is_link_local(eth->h_dest)) {
 		atomic_long_inc(&br->wlan_to_peer.dropped);
-		/* [DBG-RXDROP] dst MAC + proto + len + consume toggle 상태 dump.
-		 * ratelimited (default ~10 msg/5s) — LLDP 30s 주기는 모두 잡힘. */
-		pr_info_ratelimited("[DBG-RXDROP] w2p link-local dst=%pM proto=0x%04x len=%u consume=%d\n",
-				    eth->h_dest, ntohs(proto), skb->len,
-				    bridge_consume_link_local);
 		BR_DBG("w2p link-local drop dst=" MACSTR "\n",
 		       MAC2STR(eth->h_dest));
 		if (bridge_consume_link_local) {
@@ -1133,10 +1130,6 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 	/* IEEE 802.1D bridge group (link-local): never forward — STP/LACP/LLDP */
 	if (moal_bridge_is_link_local(eth->h_dest)) {
 		atomic_long_inc(&br->peer_to_wlan.dropped);
-		/* [DBG-RXDROP] dst MAC + proto + len dump (p2w 방향). */
-		pr_info_ratelimited("[DBG-RXDROP] p2w link-local dst=%pM proto=0x%04x len=%u\n",
-				    eth->h_dest, ntohs(skb->protocol),
-				    skb->len);
 		BR_DBG("p2w link-local drop dst=" MACSTR "\n",
 		       MAC2STR(eth->h_dest));
 		return RX_HANDLER_PASS;

@@ -122,6 +122,10 @@ endif
 bridge-fault-guard-check:
 	@bash scripts/tests/bridge_static_checks.sh
 
+.PHONY: upstream-port-check
+upstream-port-check:
+	@bash scripts/tests/upstream_port_final_checks.sh
+
 #32bit app over 64bit kernel support
 CONFIG_USERSPACE_32BIT_OVER_KERNEL_64BIT=n
 

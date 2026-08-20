@@ -219,7 +219,9 @@ runtime result는 아직 없다.
 reconciled한 부분은 `mapp/mlanutl/Makefile`의 standalone
 `STA_SUPPORT`/`UAP_SUPPORT` default와 `mapp/mlanutl/mlanutl.c`의 `antcfgnss`,
 6 GHz `antcfg`, `ratebitmapcfg`, HE power decoding이다. utility build evidence는
-아래 표에 한정한다.
+아래 표에 한정한다. 그 밖의 `mapp/` product tool, config, 문서 overlay는 이
+검토에서 code-level upstream reconciliation을 받지 않았으며, tree에 존재하거나
+bundled build에 포함된다는 사실을 해당 도구의 동작 검증으로 해석하지 않는다.
 
 ## 검증 증거 (두 선행 report의 정확한 재현 명령)
 

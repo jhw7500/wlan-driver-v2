@@ -427,10 +427,14 @@ static mlan_status woal_usb_submit_rx_urb(urb_context *ctx, int size)
 	struct usb_card_rec *cardp = (struct usb_card_rec *)handle->card;
 	mlan_status ret = MLAN_STATUS_FAILURE;
 	t_u8 *data = NULL;
+	unsigned long flags;
+	int submit_ret;
 
 	ENTER();
 
-	if (handle->surprise_removed || handle->is_suspended) {
+	if (READ_ONCE(cardp->urb_stopping) ||
+	    READ_ONCE(handle->surprise_removed) ||
+	    READ_ONCE(handle->is_suspended)) {
 		if ((cardp->rx_cmd_ep == ctx->ep) && ctx->pmbuf) {
 			woal_free_mlan_buffer(handle, ctx->pmbuf);
 			ctx->pmbuf = NULL;
@@ -467,19 +471,34 @@ static mlan_status woal_usb_submit_rx_urb(urb_context *ctx, int size)
 				  usb_rcvbulkpipe(cardp->udev, ctx->ep), data,
 				  size - ctx->pmbuf->data_offset,
 				  woal_usb_receive, (void *)ctx);
+	/* The first flag check is only a fast path.  This lock is the authority:
+	 * teardown closes the gate under the same lock before its kill barrier, so
+	 * a submit either finishes first and is drained or is rejected here. */
+	spin_lock_irqsave(&cardp->urb_submit_lock, flags);
+	if (cardp->urb_stopping || READ_ONCE(handle->surprise_removed) ||
+	    READ_ONCE(handle->is_suspended)) {
+		spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
+		woal_free_mlan_buffer(handle, ctx->pmbuf);
+		ctx->pmbuf = NULL;
+		goto rx_ret;
+	}
 	if (cardp->rx_cmd_ep == ctx->ep)
 		atomic_inc(&cardp->rx_cmd_urb_pending);
 	else
 		atomic_inc(&cardp->rx_data_urb_pending);
-	if (usb_submit_urb(ctx->urb, GFP_ATOMIC)) {
+	submit_ret = usb_submit_urb(ctx->urb, GFP_ATOMIC);
+	if (submit_ret) {
 		/* Submit URB failure */
-		PRINTM(MERROR, "Submit EP %d Rx URB failed: %d\n", ctx->ep,
-		       ret);
-		woal_free_mlan_buffer(handle, ctx->pmbuf);
 		if (cardp->rx_cmd_ep == ctx->ep)
 			atomic_dec(&cardp->rx_cmd_urb_pending);
 		else
 			atomic_dec(&cardp->rx_data_urb_pending);
+	}
+	spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
+	if (submit_ret) {
+		PRINTM(MERROR, "Submit EP %d Rx URB failed: %d\n", ctx->ep,
+		       submit_ret);
+		woal_free_mlan_buffer(handle, ctx->pmbuf);
 		ctx->pmbuf = NULL;
 		ret = MLAN_STATUS_FAILURE;
 	} else {
@@ -611,10 +630,18 @@ cleanup:
 static void woal_usb_unlink_urb(void *card_desc)
 {
 	struct usb_card_rec *cardp = (struct usb_card_rec *)card_desc;
+	unsigned long flags;
 	int i;
 
 	ENTER();
 	if (cardp) {
+		/* Close the producer gate before the completion barrier.  Submitters
+		 * use this same lock for their final check and usb_submit_urb(). */
+		spin_lock_irqsave(&cardp->urb_submit_lock, flags);
+		WRITE_ONCE(cardp->urb_stopping, true);
+		if (cardp->phandle)
+			WRITE_ONCE(cardp->phandle->is_suspended, MTRUE);
+		spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
 		/* usb_kill_urb() is also the completion barrier.  Do not use pending
 		 * counters as a shortcut: callbacks decrement them before their final
 		 * MLAN access/queue_work, so zero does not prove callback completion. */
@@ -893,6 +920,7 @@ static int woal_usb_probe(struct usb_interface *intf,
 		LEAVE();
 		return -ENOMEM;
 	}
+	spin_lock_init(&usb_cardp->urb_submit_lock);
 
 	if (woal_usb_table_ext != NULL) {
 		PRINTM(MINFO, "Use usb table with customer vid pid\n");
@@ -1228,7 +1256,6 @@ static void woal_usb_disconnect(struct usb_interface *intf)
 void woal_kill_urbs(moal_handle *handle)
 {
 	ENTER();
-	handle->is_suspended = MTRUE;
 	woal_usb_unlink_urb(handle->card);
 	LEAVE();
 }
@@ -1245,9 +1272,21 @@ mlan_status woal_resubmit_urbs(moal_handle *handle)
 {
 	struct usb_card_rec *cardp = handle->card;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+	unsigned long flags;
 
 	ENTER();
-	handle->is_suspended = MFALSE;
+	/* Reopen the producer gate only for a live device.  A concurrent removal
+	 * either publishes surprise_removed before this lock or closes the gate
+	 * under this lock and drains anything submitted first. */
+	spin_lock_irqsave(&cardp->urb_submit_lock, flags);
+	if (READ_ONCE(handle->surprise_removed)) {
+		spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
+		LEAVE();
+		return MLAN_STATUS_FAILURE;
+	}
+	WRITE_ONCE(handle->is_suspended, MFALSE);
+	WRITE_ONCE(cardp->urb_stopping, false);
+	spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
 
 	if (!atomic_read(&cardp->rx_data_urb_pending)) {
 		/* Submit multiple Rx data URBs */
@@ -1333,39 +1372,17 @@ static int woal_usb_suspend(struct usb_interface *intf, pm_message_t message)
 	/* Enable Host Sleep */
 	woal_enable_hs(woal_get_priv(handle, MLAN_BSS_ROLE_ANY));
 
-	/* Indicate device suspended */
-	/* The flag must be set here before the usb_kill_urb() calls.
+	/* Indicate device suspended and close the serialized submit gate before
+	 * the usb_kill_urb() completion barriers.
 	 * Reason: In the complete handlers, urb->status(= -ENOENT) and
 	 * 'is_suspended' flag is used in combination to distinguish
 	 * between a suspended state and a 'disconnect' one.
 	 */
-	handle->is_suspended = MTRUE;
+	woal_kill_urbs(handle);
 	for (i = 0; i < handle->priv_num; i++) {
 		if (handle->priv[i])
 			netif_carrier_off(handle->priv[i]->netdev);
 	}
-
-	/* Unlink Rx cmd URB */
-	if (atomic_read(&cardp->rx_cmd_urb_pending) && cardp->rx_cmd.urb)
-		usb_kill_urb(cardp->rx_cmd.urb);
-	/* Unlink Rx data URBs */
-	if (atomic_read(&cardp->rx_data_urb_pending)) {
-		for (i = 0; i < MVUSB_RX_DATA_URB; i++) {
-			if (cardp->rx_data_list[i].urb)
-				usb_kill_urb(cardp->rx_data_list[i].urb);
-		}
-	}
-
-	/* Unlink Tx data URBs */
-	for (i = 0; i < MVUSB_TX_HIGH_WMARK; i++) {
-		if (cardp->tx_data_list[i].urb)
-			usb_kill_urb(cardp->tx_data_list[i].urb);
-		if (cardp->tx_data2_list[i].urb)
-			usb_kill_urb(cardp->tx_data2_list[i].urb);
-	}
-	/* Unlink Tx cmd URB */
-	if (cardp->tx_cmd.urb)
-		usb_kill_urb(cardp->tx_cmd.urb);
 
 	handle->suspend_wait_q_woken = MTRUE;
 	wake_up_interruptible(&handle->suspend_wait_q);
@@ -1388,6 +1405,7 @@ static int woal_usb_resume(struct usb_interface *intf)
 	struct usb_card_rec *cardp = usb_get_intfdata(intf);
 	moal_handle *handle = NULL;
 	int i;
+	int ret = 0;
 
 	ENTER();
 
@@ -1403,22 +1421,12 @@ static int woal_usb_resume(struct usb_interface *intf)
 		goto done;
 	}
 
-	/* Indicate device resumed.
-	 * The netdev queue will be resumed only after the urbs
-	 * have been resubmitted
-	 */
-	handle->is_suspended = MFALSE;
-
-	if (!atomic_read(&cardp->rx_data_urb_pending)) {
-		/* Submit multiple Rx data URBs */
-		woal_usb_submit_rx_data_urbs(handle);
-	}
-	if (!atomic_read(&cardp->rx_cmd_urb_pending)) {
-		cardp->rx_cmd.pmbuf =
-			woal_alloc_mlan_buffer(handle, MLAN_RX_CMD_BUF_SIZE);
-		if (cardp->rx_cmd.pmbuf)
-			woal_usb_submit_rx_urb(&cardp->rx_cmd,
-					       MLAN_RX_CMD_BUF_SIZE);
+	/* The netdev queue is resumed only after the shared helper atomically
+	 * reopens the submit gate and restores the complete RX URB set. */
+	if (woal_resubmit_urbs(handle) != MLAN_STATUS_SUCCESS) {
+		PRINTM(MERROR, "Failed to resubmit USB RX URBs\n");
+		ret = -EIO;
+		goto done;
 	}
 
 	for (i = 0; i < handle->priv_num; i++)
@@ -1455,7 +1463,7 @@ static int woal_usb_resume(struct usb_interface *intf)
 done:
 	PRINTM(MCMND, "<--- Leave woal_usb_resume --->\n");
 	LEAVE();
-	return 0;
+	return ret;
 }
 #endif /* CONFIG_PM */
 
@@ -1708,13 +1716,16 @@ mlan_status woal_write_data_async(moal_handle *handle, mlan_buffer *pmbuf,
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 	t_u32 data_len = pmbuf->data_len;
 	int bulk_out_maxpktsize = 512;
+	unsigned long flags;
+	int submit_ret;
 
 	ENTER();
 
 	/* Both removal and suspend are producer gates.  Read them explicitly: a
 	 * driver-mode rebuild can flush work which reaches this low-level path
 	 * after URBs were killed but before the old adapter is unregistered. */
-	if (READ_ONCE(handle->surprise_removed) ||
+	if (READ_ONCE(cardp->urb_stopping) ||
+	    READ_ONCE(handle->surprise_removed) ||
 	    READ_ONCE(handle->is_suspended)) {
 		PRINTM(MERROR, "Device removed or suspended\n");
 		ret = MLAN_STATUS_FAILURE;
@@ -1784,15 +1795,24 @@ mlan_status woal_write_data_async(moal_handle *handle, mlan_buffer *pmbuf,
 	/* We find on Ubuntu 12.10 this flag does not work */
 	// tx_urb->transfer_flags |= URB_ZERO_PACKET;
 
+	/* Serialize the authoritative gate check with teardown.  GFP_ATOMIC makes
+	 * usb_submit_urb() valid while the spinlock is held. */
+	spin_lock_irqsave(&cardp->urb_submit_lock, flags);
+	if (cardp->urb_stopping || READ_ONCE(handle->surprise_removed) ||
+	    READ_ONCE(handle->is_suspended)) {
+		spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
+		ret = MLAN_STATUS_FAILURE;
+		goto tx_ret;
+	}
 	if (ep == cardp->tx_cmd_ep)
 		atomic_inc(&cardp->tx_cmd_urb_pending);
 	else if (ep == cardp->tx_data_ep)
 		atomic_inc(&cardp->tx_data_urb_pending);
 	else if (ep == cardp->tx_data2_ep)
 		atomic_inc(&cardp->tx_data2_urb_pending);
-	if (usb_submit_urb(tx_urb, GFP_ATOMIC)) {
+	submit_ret = usb_submit_urb(tx_urb, GFP_ATOMIC);
+	if (submit_ret) {
 		/* Submit URB failure */
-		PRINTM(MERROR, "Submit EP %d Tx URB failed: %d\n", ep, ret);
 		if (ep == cardp->tx_cmd_ep)
 			atomic_dec(&cardp->tx_cmd_urb_pending);
 		else {
@@ -1824,6 +1844,10 @@ mlan_status woal_write_data_async(moal_handle *handle, mlan_buffer *pmbuf,
 		else
 			ret = MLAN_STATUS_SUCCESS;
 	}
+	spin_unlock_irqrestore(&cardp->urb_submit_lock, flags);
+	if (submit_ret)
+		PRINTM(MERROR, "Submit EP %d Tx URB failed: %d\n", ep,
+		       submit_ret);
 
 tx_ret:
 

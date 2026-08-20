@@ -1678,10 +1678,6 @@ mlan_status moal_recv_complete(t_void *pmoal, pmlan_buffer pmbuf, t_u32 port,
 		priv = woal_bss_index_to_priv(handle, pmbuf->bss_index);
 		if (priv && (pmbuf->buf_type == MLAN_BUF_TYPE_DATA) &&
 		    (status == MLAN_STATUS_FAILURE)) {
-			/* [DBG-RXDROP] ratelimited marker — remove after triage */
-			pr_info_ratelimited("[DBG-RXDROP] usb_recv_complete fail bss=%d @%s:%d\n",
-					    pmbuf ? pmbuf->bss_index : -1,
-					    __func__, __LINE__);
 			priv->stats.rx_dropped++;
 		}
 		/* Reuse the buffer in case of command/event */
@@ -2633,9 +2629,6 @@ mlan_status moal_recv_amsdu_packet(t_void *pmoal, pmlan_buffer pmbuf)
 	if (pmbuf->flags & MLAN_BUF_FLAG_EASYMESH) {
 		aid = (pmbuf->priority & 0xFF000000) >> 24;
 		if (!priv->vlan_sta_list[(aid - 1) % MAX_STA_COUNT]->is_valid) {
-			/* [DBG-RXDROP] ratelimited marker — remove after triage */
-			pr_info_ratelimited("[DBG-RXDROP] easymesh_invalid_pre_skb aid=%u @%s:%d\n",
-					    aid, __func__, __LINE__);
 			priv->stats.rx_dropped++;
 			goto done;
 		}
@@ -2994,11 +2987,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					       skb_tailroom(skb),
 					       pmbuf->data_len);
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] skb_overflow tail=%d len=%d @%s:%d\n",
-							    skb_tailroom(skb),
-							    pmbuf->data_len,
-							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -3054,9 +3042,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					       "%s Drop packet without skb\n",
 					       __func__);
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] mon_no_skb @%s:%d\n",
-							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -3068,10 +3053,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 					PRINTM(MERROR, "%s fail to alloc skb\n",
 					       __func__);
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] alloc_skb_fail len=%d @%s:%d\n",
-							    pmbuf->data_len,
-							    __func__, __LINE__);
 					priv->stats.rx_dropped++;
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
@@ -3125,9 +3106,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 							  MAX_STA_COUNT]
 					      ->is_valid)) {
 					status = MLAN_STATUS_FAILURE;
-					/* [DBG-RXDROP] ratelimited marker — remove after triage */
-					pr_info_ratelimited("[DBG-RXDROP] easymesh_invalid_post_skb aid=%u @%s:%d\n",
-							    aid, __func__, __LINE__);
 					priv->stats.rx_dropped++;
 					goto done;
 				}
@@ -3234,10 +3212,6 @@ mlan_status moal_recv_packet(t_void *pmoal, pmlan_buffer pmbuf)
 				PRINTM(MEVENT, "drop filtered packet %s\n",
 				       priv->netdev->name);
 				status = MLAN_STATUS_FAILURE;
-				/* [DBG-RXDROP] ratelimited marker — remove after triage */
-				pr_info_ratelimited("[DBG-RXDROP] filter_reject len=%u proto=0x%04x @%s:%d\n",
-						    skb->len, ntohs(skb->protocol),
-						    __func__, __LINE__);
 				priv->stats.rx_dropped++;
 				if (drvdbg & MDAT_D)
 					woal_packet_fate_monitor(
@@ -5392,22 +5366,32 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 #endif /* UAP_WEXT */
 		break;
 	case MLAN_EVENT_ID_DRV_MGMT_FRAME: {
-		t_u8 rx_snr = pmevent->event_buf[2];
-		t_u8 rx_nf = pmevent->event_buf[3];
+		const mlan_mgmt_event_metadata *metadata;
+		t_u8 rx_snr;
+		t_u8 rx_nf;
 		bool ret = 0;
+
+		if (pmevent->event_len < MLAN_MGMT_EVENT_PAYLOAD_OFFSET) {
+			PRINTM(MERROR, "Short management event: len=%u\n",
+			       pmevent->event_len);
+			break;
+		}
+		metadata = (const mlan_mgmt_event_metadata *)pmevent->event_buf;
+		rx_snr = metadata->snr;
+		rx_nf = metadata->nf;
 
 		/** The four-byte metadata prefix is band, channel, SNR, NF. */
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
-		band_config = pmevent->event_buf[0];
-		chan_num = pmevent->event_buf[1];
+		band_config = metadata->band_config;
+		chan_num = metadata->channel;
 #endif
 
 		/* RX management frame logging */
 		if (priv->phandle->params.net_rx >= 2) {
 			int _buf_len = pmevent->event_len -
-				       sizeof(pmevent->event_id);
+				       MLAN_MGMT_EVENT_PAYLOAD_OFFSET;
 			t_u8 *_pkt = ((t_u8 *)pmevent->event_buf +
-				      sizeof(pmevent->event_id));
+				      MLAN_MGMT_EVENT_PAYLOAD_OFFSET);
 
 			if (_buf_len >= 24) {
 				const struct ieee80211_mgmt *_mgmt =
@@ -5515,8 +5499,17 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				 */
 #define PACKET_ADDR4_POS (2 + 2 + 6 + 6 + 6 + 2)
 				t_u8 *pkt;
-				int freq = woal_get_rx_freq(priv, band_config,
-							    chan_num);
+				int freq;
+
+				if (pmevent->event_len <
+				    MLAN_MGMT_EVENT_PAYLOAD_OFFSET +
+					    PACKET_ADDR4_POS + ETH_ALEN) {
+					PRINTM(MERROR,
+					       "Short management frame event: len=%u\n",
+					       pmevent->event_len);
+					break;
+				}
+				freq = woal_get_rx_freq(priv, band_config, chan_num);
 				if (!freq) {
 					if (!priv->phandle->chan.center_freq) {
 						PRINTM(MINFO,
@@ -5527,17 +5520,18 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				}
 
 				pkt = ((t_u8 *)pmevent->event_buf +
-				       sizeof(pmevent->event_id));
+				       MLAN_MGMT_EVENT_PAYLOAD_OFFSET);
 
 				/* move addr4 */
 				memmove(pkt + PACKET_ADDR4_POS,
 					pkt + PACKET_ADDR4_POS + ETH_ALEN,
 					pmevent->event_len -
-						sizeof(pmevent->event_id) -
+						MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 						PACKET_ADDR4_POS - ETH_ALEN);
 
 #if 0 //JHW_TEST
-				if (pmevent->event_len - sizeof(pmevent->event_id) >= 24) {
+				if (pmevent->event_len -
+				    MLAN_MGMT_EVENT_PAYLOAD_OFFSET >= 24) {
 					struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)pkt;
 					u16 fc = le16_to_cpu(mgmt->frame_control);
 					u8 subtype = (fc >> 4) & 0x0F;
@@ -5558,7 +5552,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					woal_cfg80211_display_p2p_actframe(
 						pkt,
 						pmevent->event_len -
-							sizeof(pmevent->event_id) -
+							MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 							MLAN_MAC_ADDR_LENGTH,
 						ieee80211_get_channel(
 							priv->wdev->wiphy,
@@ -5708,7 +5702,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					woal_rx_mgmt_pkt_event(
 						priv, pkt,
 						pmevent->event_len -
-							sizeof(pmevent->event_id) -
+							MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 							MLAN_MAC_ADDR_LENGTH);
 #else
 					if (ieee80211_is_deauth(
@@ -5718,7 +5712,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						cfg80211_send_deauth(
 							priv->netdev, pkt,
 							pmevent->event_len -
-								sizeof(pmevent->event_id) -
+								MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 								MLAN_MAC_ADDR_LENGTH);
 					else if (ieee80211_is_auth(
 							 ((struct ieee80211_mgmt
@@ -5727,7 +5721,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						cfg80211_send_rx_auth(
 							priv->netdev, pkt,
 							pmevent->event_len -
-								sizeof(pmevent->event_id) -
+								MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 								MLAN_MAC_ADDR_LENGTH);
 					else if (ieee80211_is_disassoc(
 							 ((struct ieee80211_mgmt
@@ -5736,7 +5730,7 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						cfg80211_send_disassoc(
 							priv->netdev, pkt,
 							pmevent->event_len -
-								sizeof(pmevent->event_id) -
+								MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 								MLAN_MAC_ADDR_LENGTH);
 
 #endif
@@ -5753,9 +5747,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						freq, 0,
 						((const t_u8 *)
 							 pmevent->event_buf) +
-							sizeof(pmevent->event_id),
+							MLAN_MGMT_EVENT_PAYLOAD_OFFSET,
 						pmevent->event_len -
-							sizeof(pmevent->event_id) -
+							MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 							MLAN_MAC_ADDR_LENGTH
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 12, 0)
 						,
@@ -5770,9 +5764,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 				cfg80211_rx_mgmt(
 					priv->netdev, freq,
 					((const t_u8 *)pmevent->event_buf) +
-						sizeof(pmevent->event_id),
+						MLAN_MGMT_EVENT_PAYLOAD_OFFSET,
 					pmevent->event_len -
-						sizeof(pmevent->event_id) -
+						MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 						MLAN_MAC_ADDR_LENGTH,
 					GFP_ATOMIC);
 #endif
@@ -5788,9 +5782,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 					RX_PKT_FATE_SUCCESS,
 					FRAME_TYPE_80211_MGMT, 0, 0,
 					((t_u8 *)pmevent->event_buf) +
-						sizeof(pmevent->event_id),
+						MLAN_MGMT_EVENT_PAYLOAD_OFFSET,
 					pmevent->event_len -
-						sizeof(pmevent->event_id) -
+						MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 						MLAN_MAC_ADDR_LENGTH);
 #endif
 #endif
@@ -5802,9 +5796,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		{
 			const t_u8 *frame =
 				((const t_u8 *)pmevent->event_buf) +
-				sizeof(pmevent->event_id);
+				MLAN_MGMT_EVENT_PAYLOAD_OFFSET;
 			int frame_len = pmevent->event_len -
-					sizeof(pmevent->event_id) -
+					MLAN_MGMT_EVENT_PAYLOAD_OFFSET -
 					MLAN_MAC_ADDR_LENGTH;
 
 			if (frame_len >= 24) {

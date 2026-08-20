@@ -3049,9 +3049,11 @@ typedef struct _moal_tp_acnt_t {
 
 struct mgmt_log_ring {
 	char *buf;
+	char *line_buf;       /* ring-owned formatting scratch */
 	unsigned int head;  /* next write position */
 	unsigned int count; /* bytes stored */
 	unsigned int size;  /* ring buffer total size */
+	unsigned int line_size;
 	spinlock_t lock;
 };
 
@@ -4908,6 +4910,7 @@ mlan_status woal_set_chan_track_mode(moal_handle *handle, t_u8 wait_option);
 int woal_hexval(char chr);
 mlan_status woal_pmic_configure(moal_handle *handle, t_u8 wait_option);
 mlan_status woal_set_user_antcfg(moal_handle *handle, t_u8 wait_option);
+void woal_rx_acct_max(atomic_long_t *max, long us);
 void woal_hist_data_reset(moal_private *priv);
 void woal_hist_do_reset(moal_private *priv, void *data);
 void woal_hist_reset_table(moal_private *priv, t_u8 antenna);

@@ -1233,6 +1233,18 @@ typedef struct _chan_freq_power_t {
 	cfp_dyn_t dynamic;
 } chan_freq_power_t;
 
+/** Metadata prefix for MLAN_EVENT_ID_DRV_MGMT_FRAME. */
+typedef struct _mlan_mgmt_event_metadata {
+	t_u8 band_config;
+	t_u8 channel;
+	t_u8 snr;
+	t_u8 nf;
+} mlan_mgmt_event_metadata;
+
+/** Management payload begins immediately after the four-byte metadata. */
+#define MLAN_MGMT_EVENT_PAYLOAD_OFFSET \
+	((t_u32)sizeof(mlan_mgmt_event_metadata))
+
 /** mlan_event data structure */
 typedef struct _mlan_event {
 	/** BSS index number for multiple BSS support */

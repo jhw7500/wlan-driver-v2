@@ -15687,6 +15687,12 @@ mlan_status woal_remove_card(void *card)
 						 handle->init_wait_q_woken);
 		PRINTM(MIOCTL, "mlan_shutdown_fw done!\n");
 	}
+	/* USB completions dereference pmlan_adapter.  Close the serialized submit
+	 * gate and make the kill barrier terminal before unregistering MLAN. */
+#ifdef USB
+	if (IS_USB(handle->card_type))
+		woal_kill_urbs(handle);
+#endif
 	/* Bus remove has gated and synchronized IRQ/reset/hang producers.  Drain
 	 * work queued by shutdown itself before releasing the MLAN adapter. */
 	woal_flush_workqueue(handle);
@@ -16270,6 +16276,17 @@ static int woal_post_reset(moal_handle *handle)
 	}
 	/** un-block IOCTL */
 	handle->fw_reload = MFALSE;
+#ifdef USB
+	/* woal_pre_reset() closed and drained the USB submit gate.  Firmware
+	 * download uses the bus bootstrap path, but the warm-reset command below
+	 * uses normal RX/TX URBs, so restore them before issuing that IOCTL. */
+	if (IS_USB(handle->card_type) &&
+	    woal_resubmit_urbs(handle) != MLAN_STATUS_SUCCESS) {
+		PRINTM(MERROR, "%s: failed to restore USB URBs\n", __func__);
+		ret = -EIO;
+		goto done;
+	}
+#endif
 	/* Restart the firmware */
 	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
 	if (!req) {
@@ -16801,6 +16818,15 @@ done:
 	if (ret) {
 		if (destructive_started) {
 			moal_bridge_pending_cancel_all("firmware reload terminal failure");
+			/* A successful USB post-reset reopens normal URBs.  If a later
+			 * primary/companion step fails, close every reopened gate before
+			 * publishing the terminal recovery state. */
+#ifdef USB
+			if (IS_USB(handle->card_type))
+				woal_kill_urbs(handle);
+			if (ref_handle && IS_USB(ref_handle->card_type))
+				woal_kill_urbs(ref_handle);
+#endif
 			if (bridge_suspended)
 				moal_bridge_discard_suspended_owner();
 			moal_bridge_deinit(handle);

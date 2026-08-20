@@ -186,6 +186,10 @@ struct usb_card_rec {
 	moal_handle *phandle;
 	/** USB interface */
 	struct usb_interface *intf;
+	/** Serialize async submit against stop/kill teardown. */
+	spinlock_t urb_submit_lock;
+	/** Reject new async submissions until an explicit resume. */
+	bool urb_stopping;
 	/** Rx command endpoint type */
 	int rx_cmd_ep_type;
 	/** Rx command interval for INTR type */

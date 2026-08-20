@@ -3405,6 +3405,7 @@ mlan_status wlan_process_802dot11_mgmt_pkt(mlan_private *priv, t_u8 *payload,
 	t_u16 sub_type = 0;
 	t_u8 *event_buf = MNULL;
 	mlan_event *pevent = MNULL;
+	mlan_mgmt_event_metadata *metadata = MNULL;
 	t_u8 unicast = 0;
 	t_u8 broadcast[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 	IEEE80211_MGMT *mgmt = MNULL;
@@ -3685,15 +3686,17 @@ mlan_status wlan_process_802dot11_mgmt_pkt(mlan_private *priv, t_u8 *payload,
 			   pevent->event_len - MLAN_MAC_ADDR_LENGTH);
 	} else {
 		pevent->event_id = MLAN_EVENT_ID_DRV_MGMT_FRAME;
-		pevent->event_len = payload_len + sizeof(pevent->event_id);
-		pevent->event_buf[0] = band_config;
-		pevent->event_buf[1] = chan_num;
-		pevent->event_buf[2] = (t_u8)prx_pd->snr;
-		pevent->event_buf[3] = (t_u8)prx_pd->nf;
+		pevent->event_len = payload_len + MLAN_MGMT_EVENT_PAYLOAD_OFFSET;
+		metadata = (mlan_mgmt_event_metadata *)pevent->event_buf;
+		metadata->band_config = band_config;
+		metadata->channel = chan_num;
+		metadata->snr = (t_u8)prx_pd->snr;
+		metadata->nf = (t_u8)prx_pd->nf;
 		// coverity[cert_arr30_c_violation: SUPPRESS]
 		memcpy_ext(
 			pmadapter,
-			(t_u8 *)(pevent->event_buf + sizeof(pevent->event_id)),
+			(t_u8 *)(pevent->event_buf +
+				 MLAN_MGMT_EVENT_PAYLOAD_OFFSET),
 			payload, payload_len, payload_len);
 	}
 	wlan_recv_event(priv, pevent->event_id, pevent);

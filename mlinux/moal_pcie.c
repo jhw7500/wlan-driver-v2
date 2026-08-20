@@ -685,11 +685,6 @@ err_init_fw:
 	return (mlan_status)MLAN_STATUS_FAILURE;
 }
 
-static mlan_status woal_do_flr(moal_handle *handle, bool prepare, bool flr_flag)
-{
-	return __woal_do_flr(handle, prepare, flr_flag, false);
-}
-
 /* DBDC outer transactions retain AddRemoveCardSem across both handles. */
 static mlan_status woal_do_flr_locked(moal_handle *handle, bool prepare,
 				      bool flr_flag)

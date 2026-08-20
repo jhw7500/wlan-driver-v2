@@ -20988,8 +20988,9 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 	struct ifreq ifr;
 
 	/* Check if arguments are valid */
-	if ((argc != 3) && (argc != 4) && (argc != 5)) {
+	if ((argc != 3) && (argc != 4) && (argc != 5) && (argc != 7)) {
 		printf("ERR: Invalid arguments\n");
+		printf("usage: mlanutl <interface> antcfg [<tx> | <tx> <rx> | <tx> <rx> <tx_6g> <rx_6g>]\n");
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}

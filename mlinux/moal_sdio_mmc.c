@@ -274,7 +274,6 @@ static void woal_dump_sdio_reg(moal_handle *handle)
 /* bridge_debug (moal_init.c) gates the SDIO pull/tx latency instrumentation;
  * woal_rx_acct_max (moal_main.c) is the shared lock-free max helper. */
 extern int bridge_debug;
-extern void woal_rx_acct_max(atomic_long_t *max, long us);
 
 static void woal_sdio_interrupt(struct sdio_func *func)
 {
@@ -3808,12 +3807,6 @@ err_init_fw:
 		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 	return (mlan_status)MLAN_STATUS_FAILURE;
-}
-
-static mlan_status woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
-				       bool flr_flag)
-{
-	return __woal_do_sdiommc_flr(handle, prepare, flr_flag, false);
 }
 
 static mlan_status woal_do_sdiommc_flr_locked(moal_handle *handle,

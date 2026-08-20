@@ -15370,7 +15370,8 @@ static int woal_priv_set_get_tx_rx_ant(moal_private *priv, t_u8 *respbuf,
 		/* SET operation */
 		parse_arguments(respbuf + header_len, data, ARRAY_SIZE(data),
 				&user_data_len);
-		if (user_data_len > 4) {
+		if (user_data_len != 1 && user_data_len != 2 &&
+		    user_data_len != 4) {
 			PRINTM(MERROR, "Invalid number of args!\n");
 			ret = -EINVAL;
 			goto done;
@@ -15495,6 +15496,10 @@ static int woal_priv_get_antcfg_nss(moal_private *priv, t_u8 *respbuf,
 	if (respbuflen < sizeof(user_htstream)) {
 		LEAVE();
 		return -EMSGSIZE;
+	}
+	if (!(priv->phandle->feature_control & FEATURE_CTRL_STREAM_2X2)) {
+		LEAVE();
+		return -EOPNOTSUPP;
 	}
 
 	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_radio_cfg));

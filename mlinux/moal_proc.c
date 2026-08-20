@@ -54,22 +54,33 @@
 /********************************************************
 		net_rx mgmt frame log ring buffer
 ********************************************************/
-void mgmt_log_ring_init(struct mgmt_log_ring *ring)
+static void mgmt_ring_init(struct mgmt_log_ring *ring, unsigned int size,
+			   unsigned int line_size)
 {
-	ring->size = MGMT_LOG_BUF_SIZE;
+	ring->size = size;
+	ring->line_size = line_size;
 	ring->buf = vmalloc(ring->size);
+	ring->line_buf = vmalloc(ring->line_size);
 	ring->head = 0;
 	ring->count = 0;
 	spin_lock_init(&ring->lock);
+	if (!ring->buf || !ring->line_buf) {
+		vfree(ring->buf);
+		vfree(ring->line_buf);
+		ring->buf = NULL;
+		ring->line_buf = NULL;
+	}
+}
+
+void mgmt_log_ring_init(struct mgmt_log_ring *ring)
+{
+	/* Preserve the historical per-line truncation limit for both rings. */
+	mgmt_ring_init(ring, MGMT_LOG_BUF_SIZE, MGMT_DUMP_LINE_MAX);
 }
 
 void mgmt_dump_ring_init(struct mgmt_log_ring *ring)
 {
-	ring->size = MGMT_DUMP_BUF_SIZE;
-	ring->buf = vmalloc(ring->size);
-	ring->head = 0;
-	ring->count = 0;
-	spin_lock_init(&ring->lock);
+	mgmt_ring_init(ring, MGMT_DUMP_BUF_SIZE, MGMT_DUMP_LINE_MAX);
 }
 
 void mgmt_log_ring_free(struct mgmt_log_ring *ring)
@@ -78,44 +89,46 @@ void mgmt_log_ring_free(struct mgmt_log_ring *ring)
 		vfree(ring->buf);
 		ring->buf = NULL;
 	}
+	if (ring->line_buf) {
+		vfree(ring->line_buf);
+		ring->line_buf = NULL;
+	}
 }
 
 void mgmt_log_printf(struct mgmt_log_ring *ring, const char *fmt, ...)
 {
-	char line[MGMT_DUMP_LINE_MAX];
 	struct timespec64 ts;
+	struct tm tm;
 	unsigned long flags;
 	int prefix_len, msg_len, total;
 	va_list args;
 
-	if (!ring->buf)
+	if (!ring->buf || !ring->line_buf || !ring->line_size)
 		return;
 
 	ktime_get_real_ts64(&ts);
-	{
-		struct tm tm;
-		time64_to_tm(ts.tv_sec, 0, &tm);
-		prefix_len = snprintf(line, sizeof(line),
-				      "%04ld-%02d-%02d %02d:%02d:%02d.%03ld ",
-				      tm.tm_year + 1900, tm.tm_mon + 1,
-				      tm.tm_mday, tm.tm_hour, tm.tm_min,
-				      tm.tm_sec, ts.tv_nsec / 1000000);
-	}
-
+	time64_to_tm(ts.tv_sec, 0, &tm);
+	/* line_buf belongs to this ring; the ring lock serializes formatting and
+	 * the bounded copy without adding a 1 KiB frame to each caller. */
+	spin_lock_irqsave(&ring->lock, flags);
+	prefix_len = scnprintf(ring->line_buf, ring->line_size,
+			      "%04ld-%02d-%02d %02d:%02d:%02d.%03ld ",
+			      tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+			      tm.tm_hour, tm.tm_min, tm.tm_sec,
+			      ts.tv_nsec / 1000000);
 	va_start(args, fmt);
-	msg_len = vsnprintf(line + prefix_len, sizeof(line) - prefix_len,
-			    fmt, args);
+	msg_len = vsnprintf(ring->line_buf + prefix_len,
+			    ring->line_size - prefix_len, fmt, args);
 	va_end(args);
 
 	total = prefix_len + msg_len;
-	if (total >= (int)sizeof(line))
-		total = sizeof(line) - 1;
+	if (total >= (int)ring->line_size)
+		total = ring->line_size - 1;
 
-	spin_lock_irqsave(&ring->lock, flags);
 	{
 		int i;
 		for (i = 0; i < total; i++) {
-			ring->buf[ring->head] = line[i];
+			ring->buf[ring->head] = ring->line_buf[i];
 			ring->head = (ring->head + 1) % ring->size;
 		}
 		if (ring->count + total > ring->size)
@@ -1997,13 +2010,13 @@ void woal_proc_init(moal_handle *handle)
 	mgmt_log_ring_init(&handle->mgmt_log);
 	if (handle->mgmt_log.buf) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
-		r = proc_create_data(MGMT_LOG_PROC, 0644, handle->proc_wlan,
+		r = proc_create_data(MGMT_LOG_PROC, 0600, handle->proc_wlan,
 				     &mgmt_log_proc_ops, &handle->mgmt_log);
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
-		r = proc_create_data(MGMT_LOG_PROC, 0644, handle->proc_wlan,
+		r = proc_create_data(MGMT_LOG_PROC, 0600, handle->proc_wlan,
 				     &mgmt_log_proc_fops, &handle->mgmt_log);
 #else
-		r = create_proc_entry(MGMT_LOG_PROC, 0644, handle->proc_wlan);
+		r = create_proc_entry(MGMT_LOG_PROC, 0600, handle->proc_wlan);
 		if (r) {
 			r->data = &handle->mgmt_log;
 			r->proc_fops = &mgmt_log_proc_fops;
@@ -2017,13 +2030,13 @@ void woal_proc_init(moal_handle *handle)
 	mgmt_dump_ring_init(&handle->mgmt_dump);
 	if (handle->mgmt_dump.buf) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
-		r = proc_create_data(MGMT_DUMP_PROC, 0644, handle->proc_wlan,
+		r = proc_create_data(MGMT_DUMP_PROC, 0600, handle->proc_wlan,
 				     &mgmt_log_proc_ops, &handle->mgmt_dump);
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
-		r = proc_create_data(MGMT_DUMP_PROC, 0644, handle->proc_wlan,
+		r = proc_create_data(MGMT_DUMP_PROC, 0600, handle->proc_wlan,
 				     &mgmt_log_proc_fops, &handle->mgmt_dump);
 #else
-		r = create_proc_entry(MGMT_DUMP_PROC, 0644, handle->proc_wlan);
+		r = create_proc_entry(MGMT_DUMP_PROC, 0600, handle->proc_wlan);
 		if (r) {
 			r->data = &handle->mgmt_dump;
 			r->proc_fops = &mgmt_log_proc_fops;

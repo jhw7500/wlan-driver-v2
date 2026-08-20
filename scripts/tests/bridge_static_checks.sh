@@ -2793,8 +2793,8 @@ grep -q 'wait_event_interruptible(br->p2w_wait' "$BRIDGE_C" && \
 
 # --- v6 D8: peer_rx_handler uses VLAN-aware EAPOL detection ---
 P2W_RX_HANDLER_BLOCK3="$(grep -n -A200 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK3" | \
-  grep -q 'vlan_get_protocol(skb) == htons(ETH_P_PAE)' || \
+grep -q 'vlan_get_protocol(skb) == htons(ETH_P_PAE)' \
+  <<< "$P2W_RX_HANDLER_BLOCK3" || \
   fail "D8: peer_rx_handler must use vlan_get_protocol for EAPOL detection (symmetry with rx_fast D7)"
 
 # --- v6 IA-M10: A-MSDU loop caches bridge pointer outside the subframe loop ---
