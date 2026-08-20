@@ -154,6 +154,25 @@ build와 분리한다.
 | management diagnostics | `moal_cfg80211.c`, `moal_sta_cfg80211.c`, `moal_proc.c` | missing metadata/log stack 또는 production log noise | upstream delivery를 유지하고 local log/dump는 `net_rx`/`mgmt_hex_dump`로 gate | volume/PII-like frame exposure — Medium | management dump wrap, production `drvdbg`/ioctl log-volume 확인 |
 | build metadata | `Makefile:118,122,551` | static QA만 실행되어 modules 미생성; unconditional default goal의 Kbuild leakage | top-level-only default goal과 compiled bridge object | target toolchain variance — Low | direct out-of-tree build 및 deployed module load |
 
+## `main..HEAD` final branch review
+
+다음의 final branch review를 실행했다.
+
+```bash
+rtk git diff --name-status main..HEAD -- Makefile mlan mlinux mapp
+rtk git diff --check main..HEAD
+```
+
+첫 명령은 exit 0이며 scoped 결과는 `M=94`, `A=5`이다. 이 변화는 exact
+upstream 40-commit merge, `e48323b`의 top-level default-goal repair, 및 위
+residual table에서 분류한 local overlay로 검토했다. 새 Critical/Important defect는
+발견하지 못했다. 두 번째 명령은 exit 2이며
+`mlinux/iw610_sdio_over_spi_linux.patch:25,26,27,30,31,32`의 embedded-patch
+context `space before tab` 여섯 건만 보고했다. 이 byte는 upstream patch context라
+변경하지 않으며, Task 1–4의
+`git -c core.whitespace=-space-before-tab diff --cached --check` exit 0과 같은
+제한이다. 이 review는 target runtime correctness 또는 hardware pass를 뜻하지 않는다.
+
 ## Upstream-tip residual delta classification
 
 검토 명령은 `git diff --name-status
@@ -217,30 +236,65 @@ reconciled한 부분은 `mapp/mlanutl/Makefile`의 standalone
 | `rtk bash scripts/tests/bridge_qa_keepalive_inline.sh` | 1 | target `.ko`, `mlan0`, permitted `dmesg` 부재 | target runtime pass 아님 |
 | `rtk make clean KERNELDIR=/lib/modules/6.8.0-111-generic/build ARCH=x86_64` | 0 | final build 전/후 generated output clean | Linux 6.8 headers host만 사용 |
 | `rtk make -j4 KERNELDIR=/lib/modules/6.8.0-111-generic/build ARCH=x86_64` | 0 | `MODPOST`, `LD .../mlan.ko`, `LD .../moal.ko` | hardware load/traffic 미검증 |
-+| \`rtk sh -lc "stat -c '%n %s bytes' mlan.ko moal.ko; sha256sum mlan.ko moal.ko"\` | 0 | \`mlan.ko\` 1,969,752 bytes / \`moal.ko\` 3,161,744 bytes와 report의 SHA-256 | clean 후 artifact 제거 |
-| \`rtk sh -lc "grep -R -n '^<<<<<<<\\|^=======\\|^>>>>>>>' -- Makefile mlan mlinux"\` | 1 | marker 없음; no-match가 기대 exit | source inspection only |
-| \`rtk git diff --check\` | 0 | Task 5 당시 working diff whitespace error 없음 | upstream-tip 전체 diff check와 다른 scope |
-| \`rtk sh -lc "cmp -s mlan/mlan_ioctl.h mlinux/mlan_ioctl.h"\` | 0 | mirrored ioctl headers byte-identical | ABI runtime interoperability 미검증 |
-| focused duplicate-definition audit | 0 | management case 및 USB/reload helper 각각 하나 | semantic firmware execution 미검증 |
-| \`rtk git merge-base --is-ancestor 2e481212d262758cbd4d0fc7ea95a2ad5f704bc3 HEAD\` | 0 | exact upstream tip ancestor | runtime correctness 증명 아님 |
-| \`rtk git rev-list --parents -n 1 cc7f79de3c58073eb0780d4dd56c1cffe56ee161\` | 0 | local/upstream two-parent merge | 후속 document commit은 single parent |
+| `rtk sh -lc "stat -c '%n %s bytes' mlan.ko moal.ko; sha256sum mlan.ko moal.ko"` | 0 | 출력: `mlan.ko 1969752 bytes`, `moal.ko 3161744 bytes`; SHA-256 `mlan.ko=1c15d88d9cbb4d27c5c0898135e13e05e717eb1b073fc97107e4744e5d633245`, `moal.ko=d4f7cc908263b1cc048c7fddd0e2fe6fac4e873005e1dc967986d936de8df4e7` | clean 후 artifact 제거 |
+| `rtk sh -lc "grep -R -n '^<<<<<<<\\|^=======\\|^>>>>>>>' -- Makefile mlan mlinux"` | 1 | marker 없음; no-match가 기대 exit | source inspection only |
+| `rtk git diff --check` | 0 | Task 5 당시 working diff whitespace error 없음 | upstream-tip 전체 diff check와 다른 scope |
+| `rtk sh -lc "cmp -s mlan/mlan_ioctl.h mlinux/mlan_ioctl.h"` | 0 | mirrored ioctl headers byte-identical | ABI runtime interoperability 미검증 |
+| focused duplicate-definition audit (아래 exact command) | 0 | high-risk definitions/case 모두 하나씩; `focused_duplicate_definition_audit=PASS` | semantic firmware execution 미검증 |
+| `rtk git merge-base --is-ancestor 2e481212d262758cbd4d0fc7ea95a2ad5f704bc3 HEAD` | 0 | exact upstream tip ancestor | runtime correctness 증명 아님 |
+| `rtk git rev-list --parents -n 1 cc7f79de3c58073eb0780d4dd56c1cffe56ee161` | 0 | local/upstream two-parent merge | 후속 document commit은 single parent |
 
-Task 6의 required review 명령 중 \`git diff --name-status
-2e481212d262758cbd4d0fc7ea95a2ad5f704bc3..HEAD -- Makefile mlan mlinux mapp\`는
+위 duplicate-definition audit의 complete reproducible command와 실제 exit/result는
+다음과 같다.
+
+```bash
+rtk sh -lc "python3 - <<'PY'
+import re
+checks = [
+    ('mlan/mlan_uap_ioctl.c', r'^\s*static mlan_status wlan_uap_snmp_mib_chan_track\s*\('),
+    ('mlan/mlan_uap_ioctl.c', r'^\s*static mlan_status wlan_uap_agcs_cfg\s*\('),
+    ('mlan/mlan_uap_ioctl.c', r'^\s*static mlan_status wlan_uap_chan_switch_cnt_cfg\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*void woal_agcs_event\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*mlan_status moal_agcs_trans_state\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*agcs_state moal_agcs_get_state\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*static mlan_status woal_agcs_pick_scan_list\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*void woal_process_agcs_event\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*void woal_process_ch_sel_and_switch\s*\('),
+    ('mlinux/moal_usb.c', r'^\s*mlan_status woal_resubmit_urbs\s*\('),
+    ('mlinux/moal_main.c', r'^\s*void woal_cancel_hang_work\s*\('),
+    ('mlinux/moal_main.c', r'^\s*int woal_request_fw_reload\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*static int woal_setget_priv_ratebitmapcfg\s*\('),
+    ('mlinux/moal_eth_ioctl.c', r'^\s*static int woal_priv_get_antcfg_nss\s*\('),
+    ('mlinux/moal_shim.c', r'^\s*case MLAN_EVENT_ID_DRV_MGMT_FRAME:'),
+]
+for path, pattern in checks:
+    count = sum(bool(re.search(pattern, line)) for line in open(path, encoding='utf-8'))
+    print(f'{path}:{pattern}={count}')
+    if count != 1:
+        raise SystemExit(1)
+print('focused_duplicate_definition_audit=PASS')
+PY"
+```
+
+exit 0; 15개 각 count가 `1`이고 마지막 출력은
+`focused_duplicate_definition_audit=PASS`였다.
+
+Task 6의 required review 명령 중 `git diff --name-status
+2e481212d262758cbd4d0fc7ea95a2ad5f704bc3..HEAD -- Makefile mlan mlinux mapp`는
 위 residual table의 28 core files와 bundled utility surface를 제공했다.
-\`git diff --check 2e481212d262758cbd4d0fc7ea95a2ad5f704bc3..HEAD\`는 exit 2이다.
+`git diff --check 2e481212d262758cbd4d0fc7ea95a2ad5f704bc3..HEAD`는 exit 2이다.
 이는 upstream-tip과 local product tree의 전 범위를 비교하므로 추가된 binary
-\`docs/AN13297.pdf\`와 기존 docs/config/utility whitespace가 보고되기 때문이다.
+`docs/AN13297.pdf`와 기존 docs/config/utility whitespace가 보고되기 때문이다.
 이 결과를 core code whitespace pass라고 해석하지 않았다. Task 1–4 staged audit의
-별도 결과는 embedded upstream patch \`mlinux/iw610_sdio_over_spi_linux.patch\`의
-patch-context six \`space before tab\`만으로 default check exit 2였고,
-\`git -c core.whitespace=-space-before-tab diff --cached --check\`는 exit 0이었다.
+별도 결과는 embedded upstream patch `mlinux/iw610_sdio_over_spi_linux.patch`의
+patch-context six `space before tab`만으로 default check exit 2였고,
+`git -c core.whitespace=-space-before-tab diff --cached --check`는 exit 0이었다.
 그 context byte를 바꾸면 embedded patch 자체가 변하므로 수정하지 않았다.
 
-Task 5 host build는 기존 warning도 남긴다: \`woal_rx_acct_max\` missing prototype,
-1,120-byte \`mgmt_log_printf\` frame, unused PCIe/SDIO FLR helpers. warning을 숨기거나
-변경하지 않았다. BTF는 host에 \`vmlinux\`가 없어 skipped되었지만 \`mlan.ko\`와
-\`moal.ko\` link는 성공했다.
+Task 5 host build는 기존 warning도 남긴다: `woal_rx_acct_max` missing prototype,
+1,120-byte `mgmt_log_printf` frame, unused PCIe/SDIO FLR helpers. warning을 숨기거나
+변경하지 않았다. BTF는 host에 `vmlinux`가 없어 skipped되었지만 `mlan.ko`와
+`moal.ko` link는 성공했다.
 
 ## target-only exit gates
 
@@ -254,10 +308,10 @@ test가 통과했다고 주장하지 않는다.
 4. suspend/resume: USB/PCIe/SDIO 각각의 traffic 및 bridge pending switch와 결합.
 5. STA/uAP: association, roaming, uAP start/stop, host-MLME/P2P management masks.
 6. UAP/AGCS: channel-track GET/SET, AGCS GET/SET, channel-switch count와 firmware trace.
-7. antenna: 2.4/5/6 GHz \`antcfg\` SET/GET, repeated GET, bundled \`antcfgnss\` display.
-8. VHT/HE: \`vhtcfg\` round-trip/assoc IE, HE power groups 0–14, 20/40/80 MHz, NSS 1/2,
+7. antenna: 2.4/5/6 GHz `antcfg` SET/GET, repeated GET, bundled `antcfgnss` display.
+8. VHT/HE: `vhtcfg` round-trip/assoc IE, HE power groups 0–14, 20/40/80 MHz, NSS 1/2,
    low-dBm 및 reconnect.
-9. ratebitmap: 26-word GET/SET, HT/VHT/HE \`ratemax\`, reconnect persistence.
+9. ratebitmap: 26-word GET/SET, HT/VHT/HE `ratemax`, reconnect persistence.
 10. management dump: ring wrap/clear, hex-dump, log volume, concurrent proc read/unload.
 11. bridge: runtime interface switching, DBDC, peer delete/recreate, recovery, traffic,
     KASAN/lockdep.
