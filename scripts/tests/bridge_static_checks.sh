@@ -923,7 +923,7 @@ check_standard_artifact_fault_absence() {
   for artifact in "$ROOT"/moal.ko "$ROOT"/bin_wlan/*.ko; do
     [ -f "$artifact" ] || continue
     found=1
-    if strings "$artifact" | grep -Fq 'bridge_switch_fault_mask'; then
+    if grep -Fq 'bridge_switch_fault_mask' < <(strings "$artifact"); then
       fail "runtime-switch: standard artifact exposes fault symbol: $artifact"
     fi
     printf 'PASS: runtime-switch standard artifact has no fault symbol: %s (freshness not established)\n' "$artifact"
@@ -2529,9 +2529,9 @@ grep -q 'oom=%ld' "$BRIDGE_C" || fail "deinit stats dump missing oom=%ld field"
 
 # --- v2 B6: DBDC double-init returns -EBUSY ---
 DBDC_BLOCK="$(grep -n -A6 -m1 'atomic_cmpxchg(&bridge_instance_active, 0, 1) != 0' "$BRIDGE_C")"
-printf '%s\n' "$DBDC_BLOCK" | grep -q 'return -EBUSY;' || \
+grep -q 'return -EBUSY;' <<< "$DBDC_BLOCK" || \
   fail "DBDC double-init guard must return -EBUSY"
-printf '%s\n' "$DBDC_BLOCK" | grep -q 'MERROR' || \
+grep -q 'MERROR' <<< "$DBDC_BLOCK" || \
   fail "DBDC double-init log level must be MERROR"
 
 # --- v2 B1: NETDEV_UNREGISTER handler/ref release ---
@@ -2541,11 +2541,11 @@ grep -Eq 'atomic_t\s+peer_released' "$ROOT/mlinux/moal_bridge.h" || \
 UNREG_BLOCK="$(grep -n -A55 -m1 'case NETDEV_UNREGISTER:' "$BRIDGE_C")"
 grep -Eq 'netdev_rx_handler_unregister\(br->peer_dev\)|dev_remove_pack\(&br->peer_pt\)' <<< "$UNREG_BLOCK" || \
   fail "NETDEV_UNREGISTER branch must unregister handler"
-printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_set_promiscuity(br->peer_dev, -1)' || \
+grep -q 'dev_set_promiscuity(br->peer_dev, -1)' <<< "$UNREG_BLOCK" || \
   fail "NETDEV_UNREGISTER branch must drop promisc"
-printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_put(br->peer_dev)' || \
+grep -q 'dev_put(br->peer_dev)' <<< "$UNREG_BLOCK" || \
   fail "NETDEV_UNREGISTER branch must dev_put peer"
-printf '%s\n' "$UNREG_BLOCK" | grep -q 'atomic_set(&br->peer_released, 1)' || \
+grep -q 'atomic_set(&br->peer_released, 1)' <<< "$UNREG_BLOCK" || \
   fail "NETDEV_UNREGISTER branch must atomic_set peer_released = 1 (F1)"
 printf '%s\n' "$UNREG_BLOCK" | awk '
   /atomic_set\(&br->peer_released, 1\)/ { released=NR }
@@ -2558,7 +2558,7 @@ printf '%s\n' "$UNREG_BLOCK" | awk '
 ' || fail "NETDEV_UNREGISTER must drain workers before peer ref release"
 
 DEINIT_BLOCK="$(grep -n -A90 -m1 'void __moal_bridge_deinit_locked' "$BRIDGE_C")"
-printf '%s\n' "$DEINIT_BLOCK" | grep -q 'if (!atomic_read(&br->peer_released))' || \
+grep -q 'if (!atomic_read(&br->peer_released))' <<< "$DEINIT_BLOCK" || \
   fail "deinit must use atomic_read(&peer_released) for gate check (F1)"
 
 # --- v2 B2: atomic qlen hard cap ---
@@ -2581,15 +2581,15 @@ grep -q 'skb_queue_len_lockless' "$BRIDGE_C" && \
 
 # --- v2 B4: NETDEV_DOWN drains with per-SKB qlen accounting ---
 DOWN_BLOCK="$(grep -n -A24 -m1 'case NETDEV_DOWN:' "$BRIDGE_C")"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_dequeue(&br->w2p_queue)' || \
+grep -q 'skb_dequeue(&br->w2p_queue)' <<< "$DOWN_BLOCK" || \
   fail "NETDEV_DOWN must drain w2p_queue"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'skb_dequeue(&br->p2w_queue)' || \
+grep -q 'skb_dequeue(&br->p2w_queue)' <<< "$DOWN_BLOCK" || \
   fail "NETDEV_DOWN must drain p2w_queue"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_dec(&br->w2p_qlen)' || \
+grep -q 'atomic_dec(&br->w2p_qlen)' <<< "$DOWN_BLOCK" || \
   fail "NETDEV_DOWN must account w2p drain"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_dec(&br->p2w_qlen)' || \
+grep -q 'atomic_dec(&br->p2w_qlen)' <<< "$DOWN_BLOCK" || \
   fail "NETDEV_DOWN must account p2w drain"
-printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->.*_qlen, 0)' && \
+grep -q 'atomic_set(&br->.*_qlen, 0)' <<< "$DOWN_BLOCK" && \
   fail "NETDEV_DOWN must not race queue accounting with blind reset"
 
 # --- v2 B3: pskb_may_pull guards in rx_fast ---
@@ -2601,8 +2601,7 @@ grep -Eq 'pskb_may_pull\(skb,\s*l3_off \+ sizeof\(struct iphdr\)\)' <<< "$W2P_FA
 # --- v2 B7: packet_type fallback skb_share_check ---
 grep -Eq 'skb\s*=\s*skb_share_check\(skb,\s*GFP_ATOMIC\)' <<< "$P2W_PACKET_TYPE_BLOCK" || \
   fail "packet_type fallback must unshare via skb_share_check"
-printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -q 'atomic_long_inc(&br->peer_to_wlan.oom_drops)' || \
+grep -q 'atomic_long_inc(&br->peer_to_wlan.oom_drops)' <<< "$P2W_PACKET_TYPE_BLOCK" || \
   fail "packet_type fallback must count share_check OOM as oom_drops"
 
 # --- v2 A1: ktime_get gated by bridge_debug in rx_fast ---
@@ -2615,8 +2614,7 @@ grep -Eq 'if \(bridge_debug\)[[:space:]]*\{' <<< "$W2P_FAST_BLOCK" || \
 # --- v2 A2: non-self unicast consumed without clone ---
 grep -Eq 'return[[:space:]]+RX_HANDLER_CONSUMED' <<< "$P2W_RX_HANDLER_BLOCK" || \
   fail "rx_handler must return RX_HANDLER_CONSUMED for non-self unicast"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -q '\*pskb = NULL;' || \
+grep -q '\*pskb = NULL;' <<< "$P2W_RX_HANDLER_BLOCK" || \
   fail "rx_handler must null pskb before returning CONSUMED"
 
 # --- v3 D1: RCU protection on handle->bridge ---
@@ -2651,11 +2649,9 @@ fi
 
 # --- v3 D4: use cached peer_mac in rx_handler ---
 P2W_RX_HANDLER_BLOCK2="$(grep -n -A200 -m1 'moal_bridge_peer_rx_handler' "$BRIDGE_C")"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
-  grep -q 'br->peer_dev->dev_addr' && \
+grep -q 'br->peer_dev->dev_addr' <<< "$P2W_RX_HANDLER_BLOCK2" && \
   fail "rx_handler must use cached br->peer_mac, not br->peer_dev->dev_addr"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
-  grep -q 'br->peer_mac' || \
+grep -q 'br->peer_mac' <<< "$P2W_RX_HANDLER_BLOCK2" || \
   fail "rx_handler must reference cached br->peer_mac"
 
 # --- v3 D5: READ_ONCE / WRITE_ONCE on shared hot-path fields ---
@@ -2683,11 +2679,9 @@ grep -q 'moal_bridge_is_link_local' "$BRIDGE_C" || \
   fail "802.1D link-local filter helper (moal_bridge_is_link_local) missing"
 grep -q 'IEEE 802.1D' "$BRIDGE_C" || \
   fail "IEEE 802.1D bridge group drop comment missing from moal_bridge.c"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -q 'moal_bridge_is_link_local' || \
+grep -q 'moal_bridge_is_link_local' <<< "$W2P_FAST_BLOCK" || \
   fail "rx_fast must drop 802.1D link-local frames"
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK2" | \
-  grep -q 'moal_bridge_is_link_local' || \
+grep -q 'moal_bridge_is_link_local' <<< "$P2W_RX_HANDLER_BLOCK2" || \
   fail "peer_rx_handler must drop 802.1D link-local frames"
 
 # --- v4 E2: carrier/registration readiness checks ---
@@ -2704,7 +2698,7 @@ grep -q 'NETREG_REGISTERED' "$BRIDGE_C" || \
 
 # --- v4 E3: sched_setscheduler / setattr failures surface via pr_warn_once ---
 SCHED_BLOCK="$(grep -n -A40 -m1 'moal_bridge_apply_sched' "$BRIDGE_C")"
-printf '%s\n' "$SCHED_BLOCK" | grep -q 'pr_warn_once' || \
+grep -q 'pr_warn_once' <<< "$SCHED_BLOCK" || \
   fail "moal_bridge_apply_sched must pr_warn_once on scheduler API failure"
 
 # --- v4 E4: skb headroom guard before skb_push(ETH_HLEN) ---
@@ -2846,11 +2840,11 @@ P2W_PT_INJECT="$(printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | grep -c 'netif_rx(skb)
 for token in 'm_handle\[' MLAN_BSS_TYPE_STA NETREG_REGISTERED \
              netif_device_present HardwareStatusReady fw_reseting \
              surprise_removed fw_reload driver_status; do
-  printf '%s\n' "$FIND_TARGET_BLOCK" | grep -q "$token" || \
+  grep -q "$token" <<< "$FIND_TARGET_BLOCK" || \
     fail "runtime-switch: structural target resolver missing $token"
 done
 for token in netif_running media_connected netif_carrier_ok; do
-  printf '%s\n' "$LINK_STATUS_BLOCK" | grep -q "$token" || \
+  grep -q "$token" <<< "$LINK_STATUS_BLOCK" || \
     fail "runtime-switch: target link readiness helper missing $token"
 done
 
