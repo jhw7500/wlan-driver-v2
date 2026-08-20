@@ -114,6 +114,10 @@ CONFIG_JHW_TEST=n
 # declaration and injected branch behind the same default-off compile guard.
 CONFIG_BRIDGE_SWITCH_FAULT_INJECT=n
 
+ifeq ($(KERNELRELEASE),)
+.DEFAULT_GOAL := default
+endif
+
 .PHONY: bridge-fault-guard-check
 bridge-fault-guard-check:
 	@bash scripts/tests/bridge_static_checks.sh
