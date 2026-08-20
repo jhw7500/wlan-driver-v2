@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file mlan_sta_tx.c
  *
  *  @brief This file contains the handling of data packet
  *  transmission in MLAN module.
  *
  *
- *  Copyright 2008-2021, 2024-2025 NXP
+ *  Copyright 2008-2021, 2024-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -22,9 +23,10 @@
  */
 
 /********************************************************
-Change log:
-    10/21/2008: initial version
-********************************************************/
+ * Change log:
+ * 10/21/2008: initial version
+ * ******************************************************
+ */
 
 #include "mlan.h"
 #include "mlan_join.h"
@@ -34,20 +36,24 @@ Change log:
 #include "mlan_wmm.h"
 
 /********************************************************
-		Local Variables
-********************************************************/
+ * Local Variables
+ * ******************************************************
+ */
 
 /********************************************************
-		Global Variables
-********************************************************/
+ * Global Variables
+ * ******************************************************
+ */
 
 /********************************************************
-		Local Functions
-********************************************************/
+ * Local Functions
+ * ******************************************************
+ */
 
 /********************************************************
-		Global functions
-********************************************************/
+ * Global functions
+ * ******************************************************
+ */
 /**
  *  @brief This function fill the txpd for tx packet
  *
@@ -64,6 +70,7 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 	t_u8 *head_ptr = MNULL;
 	t_u32 pkt_type;
 	t_u32 tx_control;
+	t_s32 offset = 0;
 
 	ENTER();
 
@@ -98,11 +105,11 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 	/* head_ptr should be aligned */
 	head_ptr = pmbuf->pbuf + pmbuf->data_offset - Tx_PD_SIZEOF(pmadapter) -
 		   pmpriv->intf_hr_len;
+	// Typecasting is done for alignment of head_ptr
+	// coverity[misra_c_2012_rule_10_8_violation:SUPPRESS]
 	head_ptr = (t_u8 *)((t_ptr)head_ptr & ~((t_ptr)(DMA_ALIGNMENT - 1)));
-
 	plocal_tx_pd = (TxPD *)(head_ptr + pmpriv->intf_hr_len);
-	// coverity[bad_memset:SUPPRESS]
-	memset(pmadapter, plocal_tx_pd, 0, Tx_PD_SIZEOF(pmadapter));
+	_memset(pmadapter, plocal_tx_pd, 0, Tx_PD_SIZEOF(pmadapter));
 	/* Set the BSS number to TxPD */
 	plocal_tx_pd->bss_num = GET_BSS_NUM(pmpriv);
 	plocal_tx_pd->bss_type = pmpriv->bss_type;
@@ -121,7 +128,7 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 		plocal_tx_pd->tx_control =
 			pmpriv->wmm.user_pri_pkt_tx_ctrl[plocal_tx_pd->priority];
 	if (pmadapter->pps_uapsd_mode) {
-		if (MTRUE == wlan_check_last_packet_indication(pmpriv)) {
+		if (wlan_check_last_packet_indication(pmpriv) == MTRUE) {
 			pmadapter->tx_lock_flag = MTRUE;
 			plocal_tx_pd->flags =
 				MRVDRV_TxPD_POWER_MGMT_LAST_PACKET;
@@ -180,6 +187,7 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 		tx_ctrl *ctrl = (tx_ctrl *)&plocal_tx_pd->tx_control;
 		mc_tx_ctrl *mc_ctrl =
 			(mc_tx_ctrl *)&plocal_tx_pd->pkt_delay_2ms;
+
 		plocal_tx_pd->tx_pkt_type = PKT_TYPE_802DOT11_MC_AGGR;
 		if (pmbuf->u.mc_tx_info.mc_pkt_flags & MC_FLAG_START_CYCLE)
 			ctrl->mc_cycle_start = MTRUE;
@@ -211,7 +219,8 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 
 	/* Adjust the data offset and length to include TxPD in pmbuf */
 	pmbuf->data_len += pmbuf->data_offset;
-	pmbuf->data_offset = (t_u32)(head_ptr - pmbuf->pbuf);
+	offset = head_ptr - pmbuf->pbuf;
+	pmbuf->data_offset = (t_u32)offset;
 	pmbuf->data_len -= pmbuf->data_offset;
 
 done:
@@ -293,6 +302,7 @@ mlan_status wlan_send_null_packet(pmlan_private priv, t_u8 flags)
 	ptx_pd->bss_type = priv->bss_type;
 
 	endian_convert_TxPD(ptx_pd);
+	/* Here pmadapter->ops.host_to_card is not a null pointer. */
 	// coverity[cert_exp34_c_violation:SUPPRESS]
 	ret = pmadapter->ops.host_to_card(priv, MLAN_TYPE_DATA, pmbuf, MNULL);
 

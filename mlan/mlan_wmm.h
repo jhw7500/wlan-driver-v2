@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file mlan_wmm.h
  *
  *  @brief This file contains related macros, enum, and struct
  *  of wmm functionalities
  *
  *
- *  Copyright 2008-2021, 2024 NXP
+ *  Copyright 2008-2021, 2024-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -22,9 +23,10 @@
  */
 
 /****************************************************
-Change log:
-    10/24/2008: initial version
-****************************************************/
+ * Change log:
+ * 10/24/2008: initial version
+ * **************************************************
+ */
 
 #ifndef _MLAN_WMM_H_
 #define _MLAN_WMM_H_
@@ -46,9 +48,9 @@ static INLINE t_u32 wlan_get_tid(pmlan_adapter pmadapter, praListTbl ptr)
 					    &ptr->buf_head, MNULL, MNULL);
 	LEAVE();
 
-	if (!mbuf) {
+	if (!mbuf)
 		return 0; // The default TID,BE
-	} else
+	else
 		return mbuf->priority;
 }
 
@@ -154,7 +156,7 @@ extern void wlan_wmm_setup_queues(pmlan_private priv);
 void wlan_wmm_default_queue_priorities(pmlan_private priv);
 /* process wmm_param_config command */
 mlan_status wlan_cmd_wmm_param_config(pmlan_private pmpriv,
-				      HostCmd_DS_COMMAND *cmd, t_u8 cmd_action,
+				      HostCmd_DS_COMMAND *cmd, t_u16 cmd_action,
 				      t_void *pdata_buf);
 
 /* process wmm_param_config command response */

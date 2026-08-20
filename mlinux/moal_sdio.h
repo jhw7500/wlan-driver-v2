@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file moal_sdio.h
  *
  * @brief This file contains definitions for SDIO interface.
  * driver.
  *
  *
- * Copyright 2008-2022, 2024 NXP
+ * Copyright 2008-2022, 2024-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -21,8 +22,9 @@
  *
  */
 /****************************************************
-Change log:
-****************************************************/
+ * Change log:
+ * **************************************************
+ */
 
 #ifndef _MOAL_SDIO_H
 #define _MOAL_SDIO_H
@@ -55,13 +57,16 @@ Change log:
 #define FIXED_ADDRESS 0
 #endif
 
+/** SDIO register card control 3 */
+#define SD_CARD_CTRL3 0xF3
+
 #if defined(SD8977)
 #define SD8977_V0 0x0
 #define SD8977_V1 0x8
 #define SD8977_V2 0x9
 #define SD8977_V0_FW_NAME "nxp/sdsd8977_combo.bin"
-#define SD8977_V1_FW_NAME "nxp/sdsd8977_combo_v1.bin"
-#define SD8977_V2_FW_NAME "nxp/sdsd8977_combo_v2.bin"
+#define SD8977_V1_FW_NAME "nxp/sduart8977_combo_v1.bin"
+#define SD8977_V2_FW_NAME "nxp/sduart8977_combo_v2.bin"
 #define SD8977_WLAN_V2_FW_NAME "nxp/sd8977_wlan_v2.bin"
 #define SD8977_WLAN_V1_FW_NAME "nxp/sd8977_wlan_v1.bin"
 #define SD8977_WLAN_V0_FW_NAME "nxp/sd8977_wlan.bin"
@@ -73,47 +78,36 @@ Change log:
 #define SD8887_A2 0x2
 
 #define SD8887_A0_FW_NAME "nxp/sd8887_uapsta.bin"
-#define SD8887_A2_FW_NAME "nxp/sd8887_uapsta_a2.bin"
+#define SD8887_A2_FW_NAME "nxp/sduart8887_combo_a2.bin"
 #define SD8887_WLAN_A2_FW_NAME "nxp/sd8887_wlan_a2.bin"
 #define SD8887_WLAN_A0_FW_NAME "nxp/sd8887_wlan.bin"
 #endif /* SD8887_MULTI_FW */
 
-#ifdef SD8801
-#define SD8801_DEFAULT_WLAN_FW_NAME "nxp/sd8801_uapsta.bin"
-#endif /* SD8801 */
-
 /** Default firmware name */
 #ifdef SD8887
-#define SD8887_DEFAULT_COMBO_FW_NAME "nxp/sd8887_uapsta_a2.bin"
+#define SD8887_DEFAULT_COMBO_FW_NAME "nxp/sduart8887_combo_a2.bin"
 #define SD8887_DEFAULT_WLAN_FW_NAME "nxp/sd8887_wlan_a2.bin"
 #endif /* SD8887 */
 
 #ifdef SD8977
-#define SD8977_DEFAULT_COMBO_FW_NAME "nxp/sdsd8977_combo_v2.bin"
+#define SD8977_DEFAULT_COMBO_FW_NAME "nxp/sduart8977_combo_v2.bin"
 #define SD8977_DEFAULT_WLAN_FW_NAME "nxp/sd8977_wlan_v2.bin"
 #endif /* SD8977 */
 
-#ifdef SD8997
-#define SD8997_DEFAULT_COMBO_FW_NAME "nxp/sdsd8997_combo_v4.bin"
-#define SDUART8997_DEFAULT_COMBO_FW_NAME "nxp/sduart8997_combo_v4.bin"
-#define SDSD8997_DEFAULT_COMBO_FW_NAME "nxp/sdsd8997_combo_v4.bin"
-#define SD8997_DEFAULT_WLAN_FW_NAME "nxp/sd8997_wlan_v4.bin"
-#endif /* SD8997 */
-
 #ifdef SD8987
-#define SD8987_DEFAULT_COMBO_FW_NAME "nxp/sdsd8987_combo.bin"
+#define SD8987_DEFAULT_COMBO_FW_NAME "nxp/sduart8987_combo.bin"
 #define SDUART8987_DEFAULT_COMBO_FW_NAME "nxp/sduart8987_combo.bin"
 #define SDSD8987_DEFAULT_COMBO_FW_NAME "nxp/sdsd8987_combo.bin"
 #define SD8987_DEFAULT_WLAN_FW_NAME "nxp/sd8987_wlan.bin"
 #endif /* SD8987 */
 
 #ifdef SD8897
-#define SD8897_DEFAULT_COMBO_FW_NAME "nxp/sdsd8897_uapsta.bin"
+#define SD8897_DEFAULT_COMBO_FW_NAME "nxp/sduart8897_combo.bin"
 #define SD8897_DEFAULT_WLAN_FW_NAME "nxp/sd8897_wlan.bin"
 #endif /* SD8897 */
 
 #ifdef SD8978
-#define SD8978_DEFAULT_COMBO_FW_NAME "nxp/sdsdiw416_combo.bin"
+#define SD8978_DEFAULT_COMBO_FW_NAME "nxp/sduartiw416_combo.bin"
 #define SDUART8978_DEFAULT_COMBO_FW_NAME "nxp/sduartiw416_combo.bin"
 #define SDSD8978_DEFAULT_COMBO_FW_NAME "nxp/sdsdiw416_combo.bin"
 #define SD8978_DEFAULT_WLAN_FW_NAME "nxp/sdiw416_wlan.bin"
@@ -124,7 +118,7 @@ Change log:
 #define SD9098_A0 0x01
 #define SD9098_A1 0x02
 #define SD9098_A2 0x03
-#define SD9098_DEFAULT_COMBO_FW_NAME "nxp/sdsd9098_combo.bin"
+#define SD9098_DEFAULT_COMBO_FW_NAME "nxp/sduart9098_combo.bin"
 #define SDUART9098_DEFAULT_COMBO_FW_NAME "nxp/sduart9098_combo.bin"
 #define SDSD9098_DEFAULT_COMBO_FW_NAME "nxp/sdsd9098_combo.bin"
 #define SD9098_DEFAULT_WLAN_FW_NAME "nxp/sd9098_wlan.bin"
@@ -136,7 +130,7 @@ Change log:
 #ifdef SD9097
 #define SD9097_B0 0x01
 #define SD9097_B1 0x02
-#define SD9097_DEFAULT_COMBO_FW_NAME "nxp/sdsdiw620_combo_v1.bin"
+#define SD9097_DEFAULT_COMBO_FW_NAME "nxp/sduartiw620_combo_v1.bin"
 
 #define SD9097_DEFAULT_WLAN_FW_NAME "nxp/sdiw620_wlan_v1.bin"
 #define SDUART9097_COMBO_V1_FW_NAME "nxp/sduartiw620_combo_v1.bin"
@@ -145,7 +139,7 @@ Change log:
 #endif /* SD9097 */
 
 #ifdef SDIW624
-#define SDIW624_DEFAULT_COMBO_FW_NAME "nxp/sdsdiw624_combo.bin"
+#define SDIW624_DEFAULT_COMBO_FW_NAME "nxp/sduartiw624_combo.bin"
 #define SDUARTIW624_COMBO_FW_NAME "nxp/sduartiw624_combo.bin"
 #define SDUARTSPIIW624_COMBO_FW_NAME "nxp/sduartspiiw624_combo.bin"
 #define SDUARTUARTIW624_COMBO_FW_NAME "nxp/sduartuartiw624_combo.bin"
@@ -156,19 +150,19 @@ Change log:
 #ifdef SDAW693
 #define SDAW693_A0 0x00
 #define SDAW693_A1 0x01
-#define SDAW693_DEFAULT_COMBO_FW_NAME "nxp/sdsdwaw693_combo.bin"
-#define SDUARTAW693_COMBO_FW_NAME "nxp/sduartaw693_combo.bin"
-#define SDSDAW693_COMBO_FW_NAME "sdsdaw693_combo.bin"
-#define SDUARTAW693_COMBO_V1_FW_NAME "nxp/sduartaw693_combo_v1.bin.se"
-#define SDSDAW693_COMBO_V1_FW_NAME "sdsdaw693_combo_v1.bin.se"
-#define SDAW693_DEFAULT_WLAN_FW_NAME "nxp/sdaw693_wlan.bin"
-#define SDAW693_WLAN_V1_FW_NAME "nxp/sdaw693_wlan_v1.bin.se"
+#define SDIW693_DEFAULT_COMBO_FW_NAME "nxp/sduartiw693_combo.bin"
+#define SDUARTIW693_COMBO_FW_NAME "nxp/sduartiw693_combo.bin"
+#define SDSDIW693_COMBO_FW_NAME "sdsdiw693_combo.bin"
+#define SDUARTIW693_COMBO_V1_FW_NAME "nxp/sduartiw693_combo_v1.bin.se"
+#define SDSDIW693_COMBO_V1_FW_NAME "sdsdiw693_combo_v1.bin.se"
+#define SDIW693_DEFAULT_WLAN_FW_NAME "nxp/sdiw693_wlan.bin"
+#define SDIW693_WLAN_V1_FW_NAME "nxp/sdiw693_wlan_v1.bin.se"
 #endif /* SDAW693 */
 
 #ifdef SD9177
 #define SD9177_A0 0x00
 #define SD9177_A1 0x01
-#define SD9177_DEFAULT_COMBO_FW_NAME "nxp/sdsd_nw61x.bin.se"
+#define SD9177_DEFAULT_COMBO_FW_NAME "nxp/sduart_nw61x.bin.se"
 #define SD9177_DEFAULT_COMBO_V1_FW_NAME "nxp/sduart_nw61x_v1.bin.se"
 #define SDUART9177_DEFAULT_COMBO_FW_NAME "nxp/sduart_nw61x.bin.se"
 #define SDSD9177_DEFAULT_COMBO_FW_NAME "nxp/sdsd_nw61x.bin.se"
@@ -190,8 +184,9 @@ Change log:
 #endif /* SDIW610 */
 
 /********************************************************
-		Global Functions
-********************************************************/
+ * Global Functions
+ * ******************************************************
+ */
 
 /** Register to bus driver function */
 mlan_status woal_sdiommc_bus_register(void);

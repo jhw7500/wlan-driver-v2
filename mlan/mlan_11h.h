@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file mlan_11h.h
  *
  *  @brief This header file contains data structures and
  *  function declarations of 802.11h
  *
  *
- *  Copyright 2008-2024 NXP
+ *  Copyright 2008-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -22,9 +23,10 @@
  */
 
 /*************************************************************
-Change Log:
-    03/26/2009: initial creation
-*************************************************************/
+ * Change Log:
+ * 03/26/2009: initial creation
+ * ***********************************************************
+ */
 
 #ifndef _MLAN_11H_
 #define _MLAN_11H_
@@ -123,7 +125,7 @@ extern t_s32 wlan_11h_process_join(mlan_private *priv, t_u8 **ppbuffer,
 /** Complete the firmware command preparation for an 11h command function */
 extern mlan_status wlan_11h_cmd_process(mlan_private *priv,
 					HostCmd_DS_COMMAND *pcmd_ptr,
-					const t_void *pinfo_buf);
+					t_void *pinfo_buf);
 
 /** Process the response of an 11h firmware command */
 extern mlan_status wlan_11h_cmdresp_process(mlan_private *priv,

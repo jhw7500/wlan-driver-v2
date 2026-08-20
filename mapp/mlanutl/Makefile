@@ -9,6 +9,13 @@ ifeq ($(findstring IMX_ANDROID,$(ccflags-y)),IMX_ANDROID)
 CC=/usr/local/arm/android-ndk-r23-beta5/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
 endif
 
+# The utility source always exposes both station and UAP commands.  Top-level
+# builds export these feature flags, but keep the documented standalone build
+# equivalent when mlanutl is invoked directly.
+ifeq ($(strip $(ccflags-y)),)
+ccflags-y := -DSTA_SUPPORT -DUAP_SUPPORT
+endif
+
 # Determine how we should copy things to the install directory
 ABSPATH := $(filter /%, $(INSTALLDIR))
 RELPATH := $(filter-out /%, $(INSTALLDIR))
@@ -105,4 +112,3 @@ tags:
 distclean clean:
 	$(ECHO)$(RM) $(OBJECTS) $(TARGET)
 	$(ECHO)$(RM) tags.txt
-

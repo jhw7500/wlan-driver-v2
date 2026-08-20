@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /**  @file moal_proc.c
  *
  * @brief This file contains functions for proc file.
  *
  *
- * Copyright 2008-2022, 2024-2025 NXP
+ * Copyright 2008-2022, 2025-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -21,9 +22,10 @@
  */
 
 /********************************************************
-Change log:
-    10/21/2008: initial version
-********************************************************/
+ * Change log:
+ * 10/21/2008: initial version
+ * ******************************************************
+ */
 
 #include "moal_main.h"
 #include "moal_eth_ioctl.h"
@@ -39,8 +41,9 @@ Change log:
 #endif
 
 /********************************************************
-		Local Variables
-********************************************************/
+ * Local Variables
+ * ******************************************************
+ */
 #ifdef CONFIG_PROC_FS
 #define STATUS_PROC "wifi_status"
 #define MWLAN_PROC "mwlan"
@@ -346,13 +349,15 @@ static char *szModes[] = {
 #endif
 
 /********************************************************
-		Global Variables
-********************************************************/
+ * Global Variables
+ * ******************************************************
+ */
 int wifi_status;
 
 /********************************************************
-		Local Functions
-********************************************************/
+ * Local Functions
+ * ******************************************************
+ */
 /**
  *  @brief Proc read function for info
  *
@@ -386,10 +391,6 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 #ifdef UAP_SUPPORT
 	mlan_ds_uap_stats ustats;
 #endif
-	union {
-		t_u32 l;
-		t_u8 c[4];
-	} ver;
 
 	fw_info.uuid_lo = fw_info.uuid_hi = 0x0ULL;
 
@@ -412,11 +413,10 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 #ifdef UAP_SUPPORT
 	memset(&ustats, 0, sizeof(ustats));
 	if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_UAP) {
-		seq_printf(sfp, "driver_name = "
-				"\"uap\"\n");
+		seq_printf(sfp, "driver_name = \"uap\"\n");
 		woal_uap_get_version(priv, fmt, sizeof(fmt) - 1);
-		if (MLAN_STATUS_SUCCESS !=
-		    woal_uap_get_stats(priv, MOAL_IOCTL_WAIT, &ustats)) {
+		if (woal_uap_get_stats(priv, MOAL_IOCTL_WAIT, &ustats) !=
+		    MLAN_STATUS_SUCCESS) {
 			MODULE_PUT;
 			LEAVE();
 			return -EFAULT;
@@ -427,21 +427,23 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 	memset(&info, 0, sizeof(info));
 	if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) {
 		woal_get_version(handle, fmt, sizeof(fmt) - 1);
-		if (MLAN_STATUS_SUCCESS !=
-		    woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &info)) {
+		if (woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &info) !=
+		    MLAN_STATUS_SUCCESS) {
 			MODULE_PUT;
 			LEAVE();
 			return -EFAULT;
 		}
-		seq_printf(sfp, "driver_name = "
-				"\"wlan\"\n");
+		seq_printf(sfp, "driver_name = \"wlan\"\n");
 	}
 #endif
 	seq_printf(sfp, "driver_version = %s", fmt);
 	seq_printf(sfp, "\ninterface_name=\"%s\"\n", netdev->name);
-	ver.l = handle->fw_release_number;
-	seq_printf(sfp, "firmware_major_version=%u.%u.%u\n", ver.c[2], ver.c[1],
-		   ver.c[0]);
+	seq_printf(sfp, "firmware_major_version=%s-%u.%u.%u, %s-%s\n",
+		   handle->fw_ver_milestone,
+		   handle->fw_release_number.majorRevNum,
+		   handle->fw_release_number.minorRevNum,
+		   handle->fw_release_number.releaseNum,
+		   priv->phandle->fw_ver_data, priv->phandle->fw_ver_buildtype);
 
 	woal_request_get_fw_info(priv, MOAL_IOCTL_WAIT, &fw_info);
 	if (fw_info.uuid_lo || fw_info.uuid_hi)
@@ -450,9 +452,9 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 #ifdef WIFI_DIRECT_SUPPORT
 	if (priv->bss_type == MLAN_BSS_TYPE_WIFIDIRECT) {
 		if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA)
-			seq_printf(sfp, "bss_mode = \"WIFIDIRECT-Client\"\n");
+			seq_puts(sfp, "bss_mode = \"WIFIDIRECT-Client\"\n");
 		else
-			seq_printf(sfp, "bss_mode = \"WIFIDIRECT-GO\"\n");
+			seq_puts(sfp, "bss_mode = \"WIFIDIRECT-GO\"\n");
 	}
 #endif
 #ifdef STA_SUPPORT
@@ -492,6 +494,8 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 			mcptr = mcptr->next;
 		}
 #else
+		// Coverity violation raised for kernel's API
+		// coverity[cert_arr39_c_violation:SUPPRESS]
 		netdev_for_each_mc_addr (mcptr, netdev)
 			seq_printf(
 				sfp,
@@ -565,7 +569,7 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 #endif /* UAP_SUPPORT */
 	seq_printf(sfp, "=== tp_acnt.on:%d drop_point:%d ===\n",
 		   handle->tp_acnt.on, handle->tp_acnt.drop_point);
-	seq_printf(sfp, "====Tx accounting====\n");
+	seq_puts(sfp, "====Tx accounting====\n");
 	for (i = 0; i < MAX_TP_ACCOUNT_DROP_POINT_NUM; i++) {
 		seq_printf(sfp, "[%d] Tx packets     : %lu\n", i,
 			   handle->tp_acnt.tx_packets[i]);
@@ -604,7 +608,7 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 		   handle->tp_acnt.tx_xmit_skb_realloc_cnt);
 	seq_printf(sfp, "Tx stop queue cnt : %lu\n",
 		   handle->tp_acnt.tx_stop_queue_cnt);
-	seq_printf(sfp, "====Rx accounting====\n");
+	seq_puts(sfp, "====Rx accounting====\n");
 	for (i = 0; i < MAX_TP_ACCOUNT_DROP_POINT_NUM; i++) {
 		seq_printf(sfp, "[%d] Rx packets     : %lu\n", i,
 			   handle->tp_acnt.rx_packets[i]);
@@ -631,8 +635,7 @@ static int woal_info_proc_read(struct seq_file *sfp, void *data)
 		   handle->tp_acnt.rx_amsdu_pkt_cnt_last);
 	seq_printf(sfp, "Rx amsdu pkt cnt rate : %lu\n",
 		   handle->tp_acnt.rx_amsdu_pkt_cnt_rate);
-	seq_printf(sfp, "Rx intr cnt    	 : %lu\n",
-		   handle->tp_acnt.rx_intr_cnt);
+	seq_printf(sfp, "Rx intr cnt	 : %lu\n", handle->tp_acnt.rx_intr_cnt);
 	seq_printf(sfp, "Rx intr last        : %lu\n",
 		   handle->tp_acnt.rx_intr_last);
 	seq_printf(sfp, "Rx intr rate        : %lu\n",
@@ -706,6 +709,8 @@ static int parse_cmd52_string(const char *buffer, size_t len, int *func,
 
 	moal_memcpy_ext(NULL, string, buffer + strlen("sdcmd52rw="),
 			len - strlen("sdcmd52rw="), CMD52_STR_LEN - 1);
+	// Ensure null termination
+	string[CMD52_STR_LEN - 1] = '\0';
 	tmp = string;
 	string = strstrip(string);
 
@@ -751,7 +756,7 @@ static void woal_priv_get_tx_rx_ant(struct seq_file *sfp, moal_private *priv)
 
 	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_radio_cfg));
 	if (req == NULL) {
-		PRINTM(MERROR, "Memory allocation failure \n");
+		PRINTM(MERROR, "Memory allocation failure\n");
 		LEAVE();
 		return;
 	}
@@ -774,10 +779,20 @@ static void woal_priv_get_tx_rx_ant(struct seq_file *sfp, moal_private *priv)
 			ret = sizeof(int) * 2;
 		else
 			ret = sizeof(int) * 1;
+		if (IS_CARDIW624(priv->phandle->card_type) ||
+		    IS_CARDAW693(priv->phandle->card_type)) {
+			data[2] = radio->param.ant_cfg.tx_antenna_6g;
+			data[3] = radio->param.ant_cfg.rx_antenna_6g;
+			if (data[2] && data[3])
+				ret = sizeof(int) * 4;
+		}
 		if (ret == sizeof(int) * 1)
 			seq_printf(sfp, "antcfg=0x%x\n", data[0]);
 		else if (ret == sizeof(int) * 2)
 			seq_printf(sfp, "antcfg=0x%x 0x%x\n", data[0], data[1]);
+		else if (ret == sizeof(int) * 4)
+			seq_printf(sfp, "antcfg=0x%x 0x%x %d %d\n", data[0],
+				   data[1], data[2], data[3]);
 
 	} else {
 		if (radio->param.ant_cfg_1x1.antenna == 0xffff) {
@@ -810,7 +825,7 @@ static mlan_status woal_priv_set_tx_rx_ant(moal_handle *handle, char *line)
 	memset((char *)data, 0, sizeof(data));
 	parse_arguments(line, data, ARRAY_SIZE(data), &user_data_len);
 
-	if (user_data_len > 2) {
+	if (user_data_len > 4) {
 		PRINTM(MERROR, "Invalid number of args!\n");
 		LEAVE();
 		return MLAN_STATUS_FAILURE;
@@ -850,6 +865,10 @@ static mlan_status woal_priv_set_tx_rx_ant(moal_handle *handle, char *line)
 		}
 		if (user_data_len == 2)
 			radio->param.ant_cfg.rx_antenna = data[1];
+		if (user_data_len == 4) {
+			radio->param.ant_cfg.tx_antenna_6g = data[2];
+			radio->param.ant_cfg.rx_antenna_6g = data[3];
+		}
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 		if (IS_CARD9098(priv->phandle->card_type) ||
 		    IS_CARD9097(priv->phandle->card_type) ||
@@ -904,6 +923,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 #endif
 	moal_handle *ref_handle = NULL;
 	t_u32 cmd = 0;
+	t_u32 tmp_count = 0;
 	int copy_len;
 	moal_private *priv = NULL;
 
@@ -913,8 +933,21 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		return 0;
 	}
 
+	if (handle->fw_reseting) {
+		PRINTM(MERROR,
+		       "Firmware reset in progress, ignore proc file write\n");
+		LEAVE();
+		return -EINVAL;
+	}
+
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	databuf = kzalloc(count, flag);
+
+	if (!woal_secure_add(&count, 1, &tmp_count, TYPE_UINT32)) {
+		PRINTM(MERROR, "%s:count param overflow\n", __func__);
+		LEAVE();
+		return -EINVAL;
+	}
+	databuf = kzalloc(tmp_count, flag);
 	if (databuf == NULL) {
 		LEAVE();
 		return -ENOMEM;
@@ -927,6 +960,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		LEAVE();
 		return 0;
 	}
+	databuf[count] = '\0';
 	line = databuf;
 	if (!strncmp(databuf, "soft_reset", strlen("soft_reset"))) {
 		line += strlen("soft_reset") + 1;
@@ -964,9 +998,13 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		if (!IS_USB(handle->card_type))
 #endif
 			handle->driver_status = MTRUE;
+		mlan_set_driver_status(handle->pmlan_adapter,
+				       handle->driver_status);
 		ref_handle = (moal_handle *)handle->pref_mac;
 		if (ref_handle) {
 			ref_handle->driver_status = MTRUE;
+			mlan_set_driver_status(ref_handle->pmlan_adapter,
+					       ref_handle->driver_status);
 			priv = woal_get_priv(ref_handle, MLAN_BSS_ROLE_ANY);
 			if (priv) {
 				ref_handle->fw_dump_status = MTRUE;
@@ -986,6 +1024,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	if (!strncmp(databuf, "fwdump_file=", strlen("fwdump_file="))) {
 		int len = copy_len - strlen("fwdump_file=");
 		gfp_t flag;
+
 		if (len > 0) {
 			kfree(handle->fwdump_fname);
 			flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC :
@@ -1012,6 +1051,10 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	}
 	if (!strncmp(databuf, "drop_point=", strlen("drop_point="))) {
 		line += strlen("drop_point") + 1;
+		/* line is assigned from databuf, which is checked for NULL
+		 * before use. Therefore, line is guaranteed to be non-NULL at
+		 * this point.
+		 */
 		// coverity[string_null:SUPPRESS]
 		config_data = (t_u32)woal_string_to_number(line);
 		if (config_data) {
@@ -1107,7 +1150,13 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		     "otp_cal_data_rd_wr=", strlen("otp_cal_data_rd_wr=")) &&
 	    count > strlen("otp_cal_data_rd_wr="))
 		cmd = MFG_CMD_OTP_CAL_DATA;
-
+	if (!strncmp(databuf, "set_debug_temperature=",
+		     strlen("set_debug_temperature=")) &&
+	    count > strlen("set_debug_temperature="))
+		cmd = MFG_CMD_SET_DEBUG_TEMPERATURE;
+	if (!strncmp(databuf, "generic_cmd=", strlen("generic_cmd=")) &&
+	    count > strlen("generic_cmd="))
+		cmd = MFG_CMD_CONFIG_GENERIC_CMD;
 	if (cmd && handle->rf_test_mode &&
 	    (woal_process_rf_test_mode_cmd(
 		     handle, cmd, (const char *)databuf, (size_t)count,
@@ -1123,7 +1172,6 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		    MLAN_STATUS_SUCCESS)
 			PRINTM(MERROR, "Could not set Antenna Diversity!!\n");
 	}
-
 	MODULE_PUT;
 	kfree(databuf);
 	LEAVE();
@@ -1181,17 +1229,17 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			seq_printf(sfp, "channel=%u\n",
 				   handle->rf_data->channel);
 		else
-			seq_printf(sfp, "channel=\n");
+			seq_puts(sfp, "channel=\n");
 		if (handle->rf_data->radio_mode[0])
 			seq_printf(sfp, "radio_mode[0]=%u\n",
 				   handle->rf_data->radio_mode[0]);
 		else
-			seq_printf(sfp, "radio_mode[0]=\n");
+			seq_puts(sfp, "radio_mode[0]=\n");
 		if (handle->rf_data->radio_mode[1])
 			seq_printf(sfp, "radio_mode[1]=%u\n",
 				   handle->rf_data->radio_mode[1]);
 		else
-			seq_printf(sfp, "radio_mode[1]=\n");
+			seq_puts(sfp, "radio_mode[1]=\n");
 		seq_printf(sfp, "total rx pkt count=%u\n",
 			   handle->rf_data->rx_tot_pkt_count);
 		seq_printf(sfp, "rx multicast/broadcast pkt count=%u\n",
@@ -1206,7 +1254,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			seq_printf(sfp, " %u\n",
 				   handle->rf_data->tx_power_data[2]);
 		} else
-			seq_printf(sfp, "tx_power=\n");
+			seq_puts(sfp, "tx_power=\n");
 		seq_printf(sfp, "tx_continuous=%u",
 			   handle->rf_data->tx_cont_data[0]);
 		if (handle->rf_data->tx_cont_data[0] == MTRUE) {
@@ -1218,7 +1266,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 				seq_printf(sfp, " %u",
 					   handle->rf_data->tx_cont_data[i]);
 		}
-		seq_printf(sfp, "\n");
+		seq_puts(sfp, "\n");
 		seq_printf(sfp, "tx_frame=%u",
 			   handle->rf_data->tx_frame_data[0]);
 		if (handle->rf_data->tx_frame_data[0] == MTRUE) {
@@ -1240,7 +1288,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 				   handle->rf_data->bssid[4],
 				   handle->rf_data->bssid[5]);
 		}
-		seq_printf(sfp, "\n");
+		seq_puts(sfp, "\n");
 		seq_printf(sfp, "he_tb_tx=%u", handle->rf_data->he_tb_tx[0]);
 		if (handle->rf_data->he_tb_tx[0] == MTRUE) {
 			seq_printf(sfp, " %u", handle->rf_data->he_tb_tx[1]);
@@ -1249,7 +1297,7 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			seq_printf(sfp, " %d",
 				   handle->rf_data->he_tb_tx_power[0]);
 		}
-		seq_printf(sfp, "\n");
+		seq_puts(sfp, "\n");
 		seq_printf(sfp, "trigger_frame=%u",
 			   handle->rf_data->mfg_tx_trigger_config.enable_tx);
 		if (handle->rf_data->mfg_tx_trigger_config.enable_tx == MTRUE) {
@@ -1352,16 +1400,39 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 				   handle->rf_data->mfg_tx_trigger_config
 					   .basic_trig_user_info.pref_ac);
 		}
-		seq_printf(sfp, "\n");
-		seq_printf(sfp, "otp_mac_add_rd_wr=");
-		seq_printf(sfp, " %02x:%02x:%02x:%02x:%02x:%02x \n",
+		seq_puts(sfp, "\n");
+		seq_puts(sfp, "otp_mac_add_rd_wr=");
+		seq_printf(sfp, " %02x:%02x:%02x:%02x:%02x:%02x\n",
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[0],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[1],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[2],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[3],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[4],
 			   handle->rf_data->mfg_otp_mac_addr_rd_wr.mac_addr[5]);
+
+		seq_puts(sfp, "\n");
+		seq_printf(sfp, "set_debug_temperature=%u,",
+			   handle->rf_data->mfg_debug_temp.simulation_enable);
+		seq_printf(sfp, "%d,",
+			   handle->rf_data->mfg_debug_temp.cau_temperature);
+		seq_printf(
+			sfp, "%d,%d,%d,%d\n",
+			handle->rf_data->mfg_debug_temp.rfu_temperature[0][0],
+			handle->rf_data->mfg_debug_temp.rfu_temperature[0][1],
+			handle->rf_data->mfg_debug_temp.rfu_temperature[1][0],
+			handle->rf_data->mfg_debug_temp.rfu_temperature[1][1]);
+
+		seq_puts(sfp, "\n");
+
+		seq_puts(sfp, "\n");
+		seq_puts(sfp, "generic_cmd=");
+		seq_printf(sfp, " %u",
+			   handle->rf_data->mfg_InternalTest_t.opcode);
+		for (i = 0; i < 10; i++)
+			seq_printf(sfp, " %u",
+				   handle->rf_data->mfg_InternalTest_t.data[i]);
 	}
+
 	// Read current antcfg configuration
 	woal_priv_get_tx_rx_ant(sfp, priv);
 
@@ -1427,7 +1498,7 @@ static int woal_drv_dump_read(struct seq_file *sfp, void *data)
 		goto done;
 	}
 	if (sfp->size < handle->drv_dump_len) {
-		PRINTM(MERROR,
+		PRINTM(MCMND,
 		       "drv dump size too big, size=%d, drv_dump_len=%d\n",
 		       (int)sfp->size, handle->drv_dump_len);
 		sfp->count = sfp->size;
@@ -1505,9 +1576,9 @@ static int woal_fw_dump_read(struct seq_file *sfp, void *data)
 	}
 
 	if (sfp->size < handle->fw_dump_len) {
-		PRINTM(MERROR,
+		PRINTM(MCMND,
 		       "fw dump size too big, size=%d, fw_dump_len=%ld\n",
-		       (int)sfp->size, (long int)handle->fw_dump_len);
+		       (int)sfp->size, (long)handle->fw_dump_len);
 		sfp->count = sfp->size;
 		ret = 0;
 		MODULE_PUT;
@@ -1553,6 +1624,108 @@ static const struct file_operations fw_dump_fops = {
 	.llseek = seq_lseek,
 	.release = single_release,
 };
+#endif
+
+#if defined(PCIE)
+static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
+{
+	moal_handle *handle = (moal_handle *)sfp->private;
+	int ret = 0;
+	int format_result = 0;
+	t_u32 i;
+	t_u32 *tmpbuf;
+	unsigned char *sfpbuf;
+	char dw_string[10] = {0};
+
+	ENTER();
+
+	if (MODULE_GET == 0) {
+		LEAVE();
+		return 0;
+	}
+
+	if (!handle) {
+		PRINTM(MERROR, "handle is null!\n");
+		goto done;
+	}
+
+	if (!handle->ssu_dump_buf || !handle->ssu_dump_len) {
+		PRINTM(MERROR,
+		       "ssu dump buffer is NULL or total length is zero\n");
+		goto done;
+	}
+
+	if (sfp->size < ((handle->ssu_dump_len * 9) / 4)) {
+		PRINTM(MCMND,
+		       "ssu dump size too big, size=%lu, ssu_dump_len=%lu\n",
+		       (unsigned long)sfp->size,
+		       (unsigned long)((handle->ssu_dump_len * 9) / 4));
+		sfp->count = sfp->size;
+		ret = 0;
+		MODULE_PUT;
+		return ret;
+	}
+
+	tmpbuf = (t_u32 *)handle->ssu_dump_buf;
+	sfpbuf = sfp->buf;
+	for (i = 0; i < handle->ssu_dump_len / 4; i++) {
+		// Use array indexing instead of pointer arithmetic to avoid
+		// overflow
+		t_u32 current_word = tmpbuf[i];
+
+		if ((i + 1) % 8 == 0) {
+			format_result = snprintf(dw_string, sizeof(dw_string),
+						 "%08x\n", current_word);
+		} else {
+			format_result = snprintf(dw_string, sizeof(dw_string),
+						 "%08x ", current_word);
+		}
+		if (format_result <= 0 || format_result >= sizeof(dw_string))
+			PRINTM(MERROR, "String formatting failed at word %u\n",
+			       i);
+
+		moal_memcpy_ext(handle, sfpbuf, dw_string, 9, 9);
+		sfpbuf += 9;
+	}
+
+	sfp->count = ((handle->ssu_dump_len * 9) / 4);
+	moal_vfree(handle, handle->ssu_dump_buf);
+	handle->ssu_dump_buf = NULL;
+	handle->ssu_dump_len = 0;
+
+done:
+	MODULE_PUT;
+	LEAVE();
+	return 0;
+}
+
+static int woal_ssu_dump_proc_open(struct inode *inode, struct file *file)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+	return single_open(file, woal_ssu_dump_read, pde_data(inode));
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	return single_open(file, woal_ssu_dump_read, PDE_DATA(inode));
+#else
+	return single_open(file, woal_ssu_dump_read, PDE(inode)->data);
+#endif
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops ssu_dump_fops = {
+	.proc_open = woal_ssu_dump_proc_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
+};
+#else
+static const struct file_operations ssu_dump_fops = {
+	.owner = THIS_MODULE,
+	.open = woal_ssu_dump_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+#endif
 #endif
 #endif
 
@@ -1609,8 +1782,9 @@ static const struct file_operations wifi_status_proc_fops = {
 #endif
 
 /********************************************************
-		Global Functions
-********************************************************/
+ * Global Functions
+ * ******************************************************
+ */
 /**
  *  @brief Convert string to number
  *
@@ -1634,7 +1808,7 @@ int woal_string_to_number(char *s)
 	} else
 		base = 10;
 
-	for (; *s; s++) {
+	for (; *s;) {
 		if ((*s >= '0') && (*s <= '9'))
 			r = (r * base) + (*s - '0');
 		else if ((*s >= 'A') && (*s <= 'F'))
@@ -1643,6 +1817,8 @@ int woal_string_to_number(char *s)
 			r = (r * base) + (*s - 'a' + 10);
 		else
 			break;
+		if (!woal_secure_add(&s, 1, &s, TYPE_PTR))
+			break;
 	}
 
 	return r * pn;
@@ -1650,7 +1826,7 @@ int woal_string_to_number(char *s)
 
 /**
  *  @brief This function creates proc mwlan directory
- *  directory structure
+ *  structure
  *
  *  @return         MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
  */
@@ -1678,7 +1854,7 @@ mlan_status woal_root_proc_init(void)
 
 /**
  *  @brief This function removes proc mwlan directory
- *  directory structure
+ *  structure
  *
  *  @return         N/A
  */
@@ -1711,6 +1887,9 @@ void woal_proc_init(moal_handle *handle)
 #ifdef DUMP_TO_PROC
 	char drv_dump_dir[20];
 	char fw_dump_dir[20];
+#if defined(PCIE)
+	char ssu_dump_dir[20];
+#endif
 #endif
 
 	ENTER();
@@ -1721,8 +1900,9 @@ void woal_proc_init(moal_handle *handle)
 		goto done;
 	}
 
-	snprintf(handle->proc_wlan_name, sizeof(handle->proc_wlan_name),
-		 WLAN_PROC, handle->handle_idx);
+	if (snprintf(handle->proc_wlan_name, sizeof(handle->proc_wlan_name),
+		     WLAN_PROC, handle->handle_idx) <= 0)
+		PRINTM(MERROR, "Couldn't write proc interface name\n");
 	PRINTM(MINFO, "Create Proc Interface %s\n", handle->proc_wlan_name);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 26)
@@ -1795,6 +1975,22 @@ void woal_proc_init(moal_handle *handle)
 #endif
 	if (!r)
 		PRINTM(MERROR, "Failed to create proc fw dump\n");
+
+#if defined(PCIE)
+	strncpy(ssu_dump_dir, "ssu_dump", sizeof(ssu_dump_dir));
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
+	r = proc_create_data(ssu_dump_dir, 0644, handle->proc_wlan,
+			     &ssu_dump_fops, handle);
+#else
+	r = create_proc_entry(ssu_dump_dir, 0644, handle->proc_wlan);
+	if (r) {
+		r->data = handle;
+		r->proc_fops = &ssu_dump_fops;
+	}
+#endif
+	if (!r)
+		PRINTM(MERROR, "Failed to create proc ssu dump\n");
+#endif
 #endif
 
 	/* Create mgmt_log proc entry for net_rx logging */
@@ -1854,6 +2050,9 @@ void woal_proc_exit(moal_handle *handle)
 #ifdef DUMP_TO_PROC
 	char drv_dump_dir[20];
 	char fw_dump_dir[20];
+#if defined(PCIE)
+	char ssu_dump_dir[20];
+#endif
 #endif
 
 	ENTER();
@@ -1872,6 +2071,10 @@ void woal_proc_exit(moal_handle *handle)
 		remove_proc_entry(drv_dump_dir, handle->proc_wlan);
 		strncpy(fw_dump_dir, "fw_dump", sizeof(fw_dump_dir));
 		remove_proc_entry(fw_dump_dir, handle->proc_wlan);
+#if defined(PCIE)
+		strncpy(ssu_dump_dir, "ssu_dump", sizeof(ssu_dump_dir));
+		remove_proc_entry(ssu_dump_dir, handle->proc_wlan);
+#endif
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 10, 0)
@@ -1901,6 +2104,13 @@ void woal_proc_exit(moal_handle *handle)
 		handle->drv_dump_len = 0;
 		handle->drv_dump_buf = NULL;
 	}
+#if defined(PCIE)
+	if (handle->ssu_dump_buf) {
+		moal_vfree(handle, handle->ssu_dump_buf);
+		handle->ssu_dump_buf = NULL;
+		handle->ssu_dump_len = 0;
+	}
+#endif
 #endif
 	LEAVE();
 }
@@ -1938,7 +2148,8 @@ void woal_create_proc_entry(moal_private *priv)
 		}
 		strncat(proc_dir_name, dev->name, sizeof(proc_dir_name) - 1);
 		/* Try to create adapterX/dev_name directory first under
-		 * /proc/mwlan/ */
+		 * /proc/mwlan/
+		 */
 		priv->proc_entry = proc_mkdir(proc_dir_name, proc_mwlan);
 		if (priv->proc_entry) {
 			/* Success. Continue normally */
@@ -1951,7 +2162,8 @@ void woal_create_proc_entry(moal_private *priv)
 #endif
 		} else {
 			/* Failure. adapterX/ may not exist. Try to create that
-			 * first */
+			 * first
+			 */
 			priv->phandle->proc_wlan = proc_mkdir(
 				priv->phandle->proc_wlan_name, proc_mwlan);
 			if (!priv->phandle->proc_wlan) {

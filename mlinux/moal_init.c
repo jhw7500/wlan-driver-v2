@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file moal_init.c
  *
  * @brief This file contains the major functions in WLAN
  * driver.
  *
  *
- * Copyright 2018-2022, 2024-2025 NXP
+ * Copyright 2018-2022, 2024-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -22,6 +23,9 @@
  */
 #include "moal_main.h"
 #include "moal_bridge.h"
+#ifdef SDIO_MMC
+#include "moal_sdio.h"
+#endif
 
 /** Global moal_handle array */
 extern pmoal_handle m_handle[];
@@ -30,6 +34,7 @@ extern pmoal_handle m_handle[];
 static char *fw_name;
 static int req_fw_nowait;
 int fw_reload;
+static char *wifi_fw_name;
 #ifdef PCIE
 int auto_fw_reload = AUTO_FW_RELOAD_ENABLE | AUTO_FW_RELOAD_PCIE_INBAND_RESET;
 #else
@@ -77,10 +82,8 @@ static int host_mlme = 1;
 #endif
 
 #if CFG80211_VERSION_CODE > KERNEL_VERSION(4, 12, 14)
-static int cfg80211_eapol_offload = 0;
+static int cfg80211_eapol_offload;
 #endif
-
-static int roamoffload_in_hs;
 
 static int drcs_chantime_mode;
 
@@ -120,15 +123,25 @@ int bridge_consume_link_local;
 /** amsdu deaggr mode */
 static int amsdu_deaggr = 1;
 
+/** wifi_reset_config */
+/**Default reset is after 5 EAPOL failures, 0 disables the reset */
+static int wifi_reset_config = 5;
+
 static int tx_budget = 2600;
 static int mclient_scheduling = 1;
+
+static int copy_policy;
 
 static int ext_scan;
 
 /** Boot Time config */
-static int bootup_cal_ctrl = 0;
+static int bootup_cal_ctrl;
 /** IEEE PS mode */
 static int ps_mode;
+/** plinkstats parameter */
+static char *plinkstats;
+/** tcpackenh parameter */
+static int tcpackenh = 1;
 /** passive to active scan */
 static int p2a_scan;
 /** scan chan gap */
@@ -154,10 +167,18 @@ static char *uap_name;
 static int uap_max_sta;
 /** WACP mode */
 static int wacp_mode = WACP_MODE_DEFAULT;
+
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+/** XDP(express datapath) mode */
+static int xdp;
+#endif
+#endif
+
 #endif
 
 /** Fw cutom data config */
-static unsigned int fw_data_cfg = 0;
+static unsigned int fw_data_cfg;
 
 #ifdef WIFI_DIRECT_SUPPORT
 /** Max WIFIDIRECT interfaces */
@@ -189,16 +210,16 @@ static int slew_rate = 3;
 #ifdef IMX_SUPPORT
 static int tx_work = 1;
 #else
-static int tx_work = 0;
+static int tx_work;
 #endif
 
 #if defined(CONFIG_RPS)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 7, 0)
 /**
  * RPS to steer packets to specific CPU
- * Default value of 0 keeps rps disabled by default
+ * Default value of 0xf keeps rps enabled by default
  */
-static int rps = 0;
+static int rps = 0x0F;
 
 /**
  * rps cpu mask
@@ -214,26 +235,28 @@ static int rps = 0;
  * EDMAC for EU adaptivity
  * Default value of 0 keeps edmac disabled by default
  */
-static int edmac_ctrl = 0;
+static int edmac_ctrl;
+static int tx_skb_clone = 1;
 
 #ifdef IMX_SUPPORT
-static int tx_skb_clone = 1;
 static int pmqos = 1;
 #else
-static int tx_skb_clone = 0;
-static int pmqos = 0;
+static int pmqos;
 #endif
 
-static int chan_track = 0;
+static int chan_track;
 static int mcs32 = 1;
 /** hs_auto_arp setting */
-static int hs_auto_arp = 0;
+static int hs_auto_arp;
 
 #if defined(STA_SUPPORT)
 /** 802.11d configuration */
 static int cfg_11d;
 #endif
-
+#if defined(UAP_SUPPORT)
+static int custom_11d_bcn_country_ie_en;
+#endif
+static int amsdu_disable;
 /** fw serial download check */
 static int fw_serial = 1;
 
@@ -357,20 +380,25 @@ static t_u16 inact_tmo;
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 /* default filter flag 0x27 Stands for
-  (MLAN_NETMON_NON_BSS_BCN | \
-   MLAN_NETMON_DATA | \
-   MLAN_NETMON_CONTROL | \
-   MLAN_NETMON_MANAGEMENT)
-*/
+ * (MLAN_NETMON_NON_BSS_BCN | \
+ * MLAN_NETMON_DATA | \
+ * MLAN_NETMON_CONTROL | \
+ * MLAN_NETMON_MANAGEMENT)
+ */
 #define DEFAULT_NETMON_FILTER 0x27
 static int mon_filter = DEFAULT_NETMON_FILTER;
 #endif
 #endif
 
-int dual_nb;
+int dual_nb = 1;
 
 /** disable 802.11h tpc configuration */
-static int disable_11h_tpc = 0;
+static int disable_11h_tpc;
+
+/** ignore TPE IE configuration from ex-AP*/
+static int tpe_ie_ignore;
+
+static int amsdu_8k_rx;
 
 #ifdef DEBUG_LEVEL1
 #ifdef DEBUG_LEVEL2
@@ -383,9 +411,6 @@ t_u32 drvdbg = DEFAULT_DEBUG_MASK;
 #endif /* DEBUG_LEVEL1 */
 
 static card_type_entry card_type_map_tbl[] = {
-#ifdef SD8801
-	{CARD_TYPE_SD8801, 0, CARD_SD8801},
-#endif
 #ifdef SD8887
 	{CARD_TYPE_SD8887, 0, CARD_SD8887},
 #endif
@@ -397,9 +422,6 @@ static card_type_entry card_type_map_tbl[] = {
 #endif
 #ifdef SD8978
 	{CARD_TYPE_SD8978, 0, CARD_SD8978},
-#endif
-#ifdef SD8997
-	{CARD_TYPE_SD8997, 0, CARD_SD8997},
 #endif
 #ifdef SD8987
 	{CARD_TYPE_SD8987, 0, CARD_SD8987},
@@ -425,9 +447,6 @@ static card_type_entry card_type_map_tbl[] = {
 #ifdef PCIE8897
 	{CARD_TYPE_PCIE8897, 0, CARD_PCIE8897},
 #endif
-#ifdef PCIE8997
-	{CARD_TYPE_PCIE8997, 0, CARD_PCIE8997},
-#endif
 #ifdef PCIE9097
 	{CARD_TYPE_PCIE9097, 0, CARD_PCIE9097},
 #endif
@@ -440,15 +459,9 @@ static card_type_entry card_type_map_tbl[] = {
 #ifdef PCIEIW624
 	{CARD_TYPE_PCIEIW624, 0, CARD_PCIEIW624},
 #endif
-#ifdef USB8801
-	{CARD_TYPE_USB8801, 0, CARD_USB8801},
-#endif
 
 #ifdef USB8897
 	{CARD_TYPE_USB8897, 0, CARD_USB8897},
-#endif
-#ifdef USB8997
-	{CARD_TYPE_USB8997, 0, CARD_USB8997},
 #endif
 #ifdef USB8978
 	{CARD_TYPE_USB8978, 0, CARD_USB8978},
@@ -470,8 +483,46 @@ static card_type_entry card_type_map_tbl[] = {
 static int dfs53cfg = DFS_W53_DEFAULT_FW;
 
 static int keep_previous_scan = 1;
+static int make_before_break;
 static int auto_11ax = 1;
-static int reject_addba_req = 0;
+static int reject_addba_req;
+
+/** bandctrl */
+static int bandctrl;
+
+#if defined(USB)
+/**
+ *  @brief This function checks if a device name exists in the card type mapping
+ * table
+ *
+ *  @param device_name  A pointer to the device name string to search for
+ *  @param card_type    A pointer to store the corresponding card type if found
+ *  @return             MLAN_STATUS_SUCCESS if device name is found,
+ * MLAN_STATUS_FAILURE otherwise
+ */
+mlan_status check_device_name_info(char *device_name, t_u16 *card_type)
+{
+	t_u32 tbl_size =
+		sizeof(card_type_map_tbl) / sizeof(card_type_map_tbl[0]);
+	t_u32 i;
+
+	for (i = 0; i < tbl_size; i++) {
+		if (strcmp(card_type_map_tbl[i].name, device_name) == 0) {
+			if (card_type != NULL)
+				*card_type = card_type_map_tbl[i].card_type;
+
+			return MLAN_STATUS_SUCCESS;
+		}
+	}
+
+	return MLAN_STATUS_FAILURE;
+}
+#endif
+
+#ifdef SECURE_HOST
+/** secure host mode support */
+int secure_host = 0;
+#endif
 
 /**
  *  @brief This function read a line in module parameter file
@@ -481,7 +532,8 @@ static int reject_addba_req = 0;
  *  @param line_pos A pointer to offset of current line
  *  @return         MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
  */
-static t_size parse_cfg_get_line(t_u8 *data, t_size size, t_u8 *line_pos)
+static t_size parse_cfg_get_line(t_u8 *data, t_size size, t_u8 *line_pos,
+				 t_s32 *cur_pos)
 {
 	t_u8 *src, *dest;
 	static t_s32 pos;
@@ -514,6 +566,9 @@ static t_size parse_cfg_get_line(t_u8 *data, t_size size, t_u8 *line_pos)
 	/* parse new line */
 	pos++;
 	*dest = '\0';
+
+	if (cur_pos != NULL)
+		*cur_pos = pos;
 	LEAVE();
 	return strlen(line_pos);
 }
@@ -529,6 +584,7 @@ static t_size parse_cfg_get_line(t_u8 *data, t_size size, t_u8 *line_pos)
 static void woal_dup_string(char **dst, char *src)
 {
 	size_t len = 0;
+
 	if (src) {
 		len = strlen(src);
 		if (len != 0) {
@@ -686,7 +742,7 @@ static mlan_status parse_line_read_card_info(t_u8 *line, char **type,
 	if (p != NULL) {
 		*p = '\0';
 		if (!woal_secure_add(&p, 1, &p, TYPE_PTR))
-			PRINTM(MERROR, "%s:ERR:pointer overflow \n", __func__);
+			PRINTM(MERROR, "%s:ERR:pointer overflow\n", __func__);
 		*if_id = p;
 	} else {
 		*if_id = NULL;
@@ -695,6 +751,139 @@ static mlan_status parse_line_read_card_info(t_u8 *line, char **type,
 out:
 	return ret;
 }
+
+/**
+ *  @brief This function validates and converts string to mac address
+ *
+ *  @param str     A pointer to a string
+ *  @param mac     A pointer to save mac address
+ *
+ *  @return         true: if mac address is valid or false:otherwise
+ */
+static bool woal_str2mac(char *str, t_u8 *mac)
+{
+	size_t max_len = 3 * MLAN_MAC_ADDR_LENGTH - 1;
+	int i;
+
+	if (!str || strnlen(str, max_len) < max_len)
+		return MFALSE;
+
+	for (i = 0; i < MLAN_MAC_ADDR_LENGTH; i++) {
+		if (!isxdigit(str[i * 3]) || !isxdigit(str[i * 3 + 1]))
+			return MFALSE;
+		if (i != MLAN_MAC_ADDR_LENGTH - 1 && str[i * 3 + 2] != ':')
+			return MFALSE;
+	}
+
+	for (i = 0; i < MLAN_MAC_ADDR_LENGTH; i++) {
+		mac[i] = (woal_hexval(str[i * 3]) << 4) |
+			 woal_hexval(str[i * 3 + 1]);
+	}
+
+	return MTRUE;
+}
+
+#ifdef SDIO_MMC
+/**
+ *  @brief This function parses slot ID information from configuration data
+ *
+ *  @param data     A pointer to configuration data
+ *  @param size     Size of the configuration data
+ *  @param cur_pos  Current position in the data buffer
+ *  @param handle   A pointer to moal_handle structure
+ *
+ *  @return         MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
+ */
+static mlan_status parse_cfg_slot_id_info(t_u8 *data, t_u32 size, t_s32 cur_pos,
+					  moal_handle *handle)
+{
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	int out_data = -1, end = 0;
+	t_u8 *src, *dest;
+	t_s32 pos = cur_pos;
+	t_u8 line[MAX_LINE_LEN];
+	sdio_mmc_card *card_info = (sdio_mmc_card *)handle->card;
+
+	if (data == NULL)
+		return MLAN_STATUS_FAILURE;
+
+	memset(line, 0, MAX_LINE_LEN);
+	src = data + pos;
+	dest = line;
+
+	while (!end) {
+		while (pos < (t_s32)size && *src != '\x0A' && *src != '\0') {
+			if ((dest - line) >= (MAX_LINE_LEN - 1)) {
+				PRINTM(MERROR,
+				       "error: input data size exceeds the dest buff limit\n");
+				return ret;
+			}
+			if (*src != ' ' && *src != '\t') /* parse space */
+				*dest++ = *src++;
+			else
+				src++;
+			pos++;
+		}
+		/* parse new line */
+		pos++;
+		*dest = '\0';
+
+		PRINTM(MINFO, "get line %s\n", line);
+
+		if (line[0] == '#' || strstr(line, "={")) {
+			memset(line, 0, MAX_LINE_LEN);
+			src = data + pos;
+			dest = line;
+			continue;
+		}
+
+		if (strncmp(line, "}", strlen("}")) == 0) {
+			end = 1;
+			break;
+		}
+
+		if (end == 0 && strstr(line, "{") != NULL) {
+			break;
+		}
+
+		if (strncmp(line, "slot_id", strlen("slot_id")) == 0) {
+			if (parse_line_read_int(line, &out_data) ==
+			    MLAN_STATUS_SUCCESS) {
+				if (out_data >= 0) {
+					if (out_data !=
+					    card_info->func->card->host->index) {
+						ret = MLAN_STATUS_FAILURE;
+						PRINTM(MINFO,
+						       "incorrect conf slot id %d, device slot id %d\n",
+						       out_data,
+						       card_info->func->card
+							       ->host->index);
+					} else {
+						PRINTM(MINFO,
+						       "correct conf slot id %d\n",
+						       out_data);
+					}
+					break;
+				} else {
+					ret = MLAN_STATUS_FAILURE;
+					PRINTM(MERROR, "negative value\n");
+					break;
+				}
+			} else {
+				PRINTM(MERROR, "empty value\n");
+				break;
+			}
+		} else {
+			memset(line, 0, MAX_LINE_LEN);
+			src = data + pos;
+			dest = line;
+			continue;
+		}
+	}
+
+	return ret;
+}
+#endif
 
 /**
  *  @brief This function read blocks in module parameter file
@@ -716,9 +905,10 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 	char *out_str = NULL;
 	t_u8 line[MAX_LINE_LEN];
 	moal_mod_para *params = &handle->params;
+	t_u8 addr[ETH_ALEN];
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 
-	while ((int)parse_cfg_get_line(data, size, line) != -1) {
+	while ((int)parse_cfg_get_line(data, size, line, NULL) != -1) {
 		if (strncmp(line, "}", strlen("}")) == 0) {
 			end = 1;
 			break;
@@ -787,6 +977,13 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->auto_fw_reload = out_data;
 			PRINTM(MMSG, "auto_fw_reload %d\n",
 			       params->auto_fw_reload);
+		} else if (strncmp(line, "wifi_fw_name",
+				   strlen("wifi_fw_name")) == 0) {
+			if (parse_line_read_string(line, &out_str) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			woal_dup_string(&params->wifi_fw_name, out_str);
+			PRINTM(MMSG, "wifi_fw_name=%s\n", params->wifi_fw_name);
 		} else if (strncmp(line, "fw_serial", strlen("fw_serial")) ==
 			   0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -810,8 +1007,15 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			if (parse_line_read_string(line, &out_str) !=
 			    MLAN_STATUS_SUCCESS)
 				goto err;
-			woal_dup_string(&params->mac_addr, out_str);
-			PRINTM(MMSG, "mac_addr=%s\n", params->mac_addr);
+
+			if (woal_str2mac(out_str, addr) &&
+			    is_unicast_ether_addr(addr)) {
+				woal_dup_string(&params->mac_addr, out_str);
+				PRINTM(MMSG, "mac_addr=%s\n", params->mac_addr);
+			} else {
+				PRINTM(MERROR, "Invalid mac addr %s in cfg\n",
+				       out_str);
+			}
 		}
 #ifdef MFG_CMD_SUPPORT
 		else if (strncmp(line, "mfg_mode", strlen("mfg_mode")) == 0) {
@@ -1011,6 +1215,14 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->bridge_keepalive_idle_ms_present = 1;
 			PRINTM(MMSG, "bridge_keepalive_idle_ms = %d\n",
 			       params->bridge_keepalive_idle_ms);
+		} else if (strncmp(line, "wifi_reset_config",
+				   strlen("wifi_reset_config")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->wifi_reset_config = out_data;
+			PRINTM(MMSG, "wifi_reset_config = %d\n",
+			       params->wifi_reset_config);
 		} else if (strncmp(line, "amsdu_deaggr",
 				   strlen("amsdu_deaggr")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1031,6 +1243,12 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			    MLAN_STATUS_SUCCESS)
 				goto err;
 			params->mclient_scheduling = out_data;
+		} else if (strncmp(line, "copy_policy",
+				   strlen("copy_policy")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->copy_policy = out_data;
 		} else if (strncmp(line, "ext_scan", strlen("ext_scan")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
 			    MLAN_STATUS_SUCCESS)
@@ -1051,6 +1269,20 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 				goto err;
 			params->ps_mode = out_data;
 			PRINTM(MMSG, "ps_mode = %d\n", params->ps_mode);
+		} else if (strncmp(line, "plinkstats", strlen("plinkstats")) ==
+			   0) {
+			if (parse_line_read_string(line, &out_str) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			woal_dup_string(&params->plinkstats, out_str);
+			PRINTM(MMSG, "plinkstats=%s\n", params->plinkstats);
+		} else if (strncmp(line, "tcpackenh", strlen("tcpackenh")) ==
+			   0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->tcpackenh = out_data;
+			PRINTM(MMSG, "tcpackenh = %d\n", params->tcpackenh);
 		} else if (strncmp(line, "p2a_scan", strlen("p2a_scan")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
 			    MLAN_STATUS_SUCCESS)
@@ -1105,10 +1337,20 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			if (parse_line_read_int(line, &out_data) !=
 			    MLAN_STATUS_SUCCESS)
 				goto err;
-			if (out_data)
+
+			if (IS_PCIE(handle->card_type)) {
+				if (out_data)
+					moal_extflg_set(handle,
+							EXT_PM_KEEP_POWER);
+				else
+					moal_extflg_clear(handle,
+							  EXT_PM_KEEP_POWER);
+			} else {
 				moal_extflg_set(handle, EXT_PM_KEEP_POWER);
-			else
-				moal_extflg_clear(handle, EXT_PM_KEEP_POWER);
+				if (!out_data)
+					PRINTM(MMSG,
+					       "pm_keep_power=0 config is not eligible for SDIO/USB");
+			}
 			PRINTM(MMSG, "pm_keep_power %s\n",
 			       moal_extflg_isset(handle, EXT_PM_KEEP_POWER) ?
 				       "on" :
@@ -1139,6 +1381,26 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			PRINTM(MMSG, "cfg_11d = %d\n", params->cfg_11d);
 		}
 #endif
+#if defined(UAP_SUPPORT)
+		else if (strncmp(line, "custom_11d_bcn_country_ie_en",
+				 strlen("custom_11d_bcn_country_ie_en")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->custom_11d_bcn_country_ie_en = out_data;
+			PRINTM(MMSG, "custom_11d_bcn_country_ie_en = %d\n",
+			       params->custom_11d_bcn_country_ie_en);
+		}
+#endif
+		else if (strncmp(line, "amsdu_disable",
+				 strlen("amsdu_disable")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->amsdu_disable = out_data;
+			PRINTM(MERROR, "amsdu_disable = %d\n",
+			       params->amsdu_disable);
+		}
 #if defined(SDIO)
 		else if (strncmp(line, "slew_rate", strlen("slew_rate")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1176,6 +1438,18 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			woal_dup_string(&params->txpwrlimit_cfg, out_str);
 			PRINTM(MMSG, "txpwrlimit_cfg=%s\n",
 			       params->txpwrlimit_cfg);
+			if (params->txpwrlimit_cfg) {
+				memset(handle->mode_psd_file, 0,
+				       sizeof(handle->mode_psd_file));
+				strncpy(handle->mode_psd_file,
+					params->txpwrlimit_cfg,
+					sizeof(handle->mode_psd_file) - 1);
+				handle->mode_psd_file
+					[sizeof(handle->mode_psd_file) - 1] =
+					'\0';
+				PRINTM(MMSG, "Mode PSD file name: %s",
+				       handle->mode_psd_file);
+			}
 		} else if (strncmp(line, "cntry_txpwr",
 				   strlen("cntry_txpwr")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
@@ -1583,21 +1857,6 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->drcs_chantime_mode = out_data;
 			PRINTM(MMSG, "drcs_chantime_mode=%d\n",
 			       params->drcs_chantime_mode);
-		} else if (strncmp(line, "roamoffload_in_hs",
-				   strlen("roamoffload_in_hs")) == 0) {
-			if (parse_line_read_int(line, &out_data) !=
-			    MLAN_STATUS_SUCCESS)
-				goto err;
-			if (out_data)
-				moal_extflg_set(handle, EXT_ROAMOFFLOAD_IN_HS);
-			else
-				moal_extflg_clear(handle,
-						  EXT_ROAMOFFLOAD_IN_HS);
-			PRINTM(MMSG, "roamoffload_in_hs %s\n",
-			       moal_extflg_isset(handle,
-						 EXT_ROAMOFFLOAD_IN_HS) ?
-				       "on" :
-				       "off");
 		}
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 		else if (strncmp(line, "disable_regd_by_driver",
@@ -1672,6 +1931,18 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->wacp_mode = out_data;
 			PRINTM(MMSG, "wacp_moe=%d\n", params->wacp_mode);
 		}
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+		else if (strncmp(line, "xdp", strlen("xdp")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->xdp = out_data;
+			PRINTM(MMSG, "xdp=%d\n", params->xdp);
+		}
+#endif
+#endif
+
 #endif
 		else if (strncmp(line, "fw_data_cfg", strlen("fw_data_cfg")) ==
 			 0) {
@@ -1781,6 +2052,38 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			params->disable_11h_tpc = out_data;
 			PRINTM(MMSG, "disable_11h_tpc=%x\n",
 			       params->disable_11h_tpc);
+		} else if (strncmp(line, "tpe_ie_ignore",
+				   strlen("tpe_ie_ignore")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->tpe_ie_ignore = out_data;
+			PRINTM(MMSG, "tpe_ie_ignore=%x\n",
+			       params->tpe_ie_ignore);
+		} else if (strncmp(line, "make_before_break",
+				   strlen("make_before_break")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->make_before_break = out_data;
+			PRINTM(MMSG, "make_before_break=%x\n",
+			       params->make_before_break);
+		}
+#ifdef SECURE_HOST
+		else if (strncmp(line, "secure_host", strlen("secure_host")) ==
+			 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->secure_host = out_data;
+		}
+#endif
+
+		else if (strncmp(line, "bandctrl", strlen("bandctrl")) == 0) {
+			if (parse_line_read_int(line, &out_data) !=
+			    MLAN_STATUS_SUCCESS)
+				goto err;
+			params->bandctrl = out_data;
 		}
 	}
 
@@ -1792,6 +2095,12 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 		params->mclient_scheduling = 0;
 #else
 	params->mclient_scheduling = 0;
+#endif
+
+
+#ifdef SECURE_HOST
+	if (!IS_CARDAW693(handle->card_type))
+		params->secure_host = 0;
 #endif
 
 	if (end) {
@@ -1830,6 +2139,9 @@ err:
  */
 static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 {
+	t_u8 addr[ETH_ALEN];
+	bool is_valid_mac_addr = false;
+
 	if (hw_test)
 		moal_extflg_set(handle, EXT_HW_TEST);
 #ifdef CONFIG_OF
@@ -1839,6 +2151,9 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	woal_dup_string(&handle->params.fw_name, fw_name);
 	if (params && params->fw_name)
 		woal_dup_string(&handle->params.fw_name, params->fw_name);
+	woal_dup_string(&handle->params.plinkstats, plinkstats);
+	if (params && params->plinkstats)
+		woal_dup_string(&handle->params.plinkstats, params->plinkstats);
 	if (req_fw_nowait)
 		moal_extflg_set(handle, EXT_REQ_FW_NOWAIT);
 	handle->params.fw_reload = fw_reload;
@@ -1854,15 +2169,38 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.auto_fw_reload = auto_fw_reload;
 	if (params)
 		handle->params.auto_fw_reload = params->auto_fw_reload;
+
+	woal_dup_string(&handle->params.wifi_fw_name, wifi_fw_name);
+	if (params && params->wifi_fw_name)
+		woal_dup_string(&handle->params.wifi_fw_name,
+				params->wifi_fw_name);
+
 	if (fw_serial)
 		moal_extflg_set(handle, EXT_FW_SERIAL);
 	woal_dup_string(&handle->params.hw_name, hw_name);
 	if (params && params->hw_name)
 		woal_dup_string(&handle->params.hw_name, params->hw_name);
 
-	woal_dup_string(&handle->params.mac_addr, mac_addr);
-	if (params && params->mac_addr)
-		woal_dup_string(&handle->params.mac_addr, params->mac_addr);
+	if (mac_addr) {
+		is_valid_mac_addr = woal_str2mac(mac_addr, addr);
+		if (is_valid_mac_addr && is_unicast_ether_addr(addr)) {
+			woal_dup_string(&handle->params.mac_addr, mac_addr);
+		} else {
+			PRINTM(MMSG, "Invalid mac addr %s in module param\n",
+			       mac_addr);
+		}
+	}
+
+	if (params && params->mac_addr) {
+		is_valid_mac_addr = woal_str2mac(params->mac_addr, addr);
+		if (is_valid_mac_addr && is_unicast_ether_addr(addr)) {
+			woal_dup_string(&handle->params.mac_addr,
+					params->mac_addr);
+		} else {
+			PRINTM(MMSG, "Invalid mac addr %s in params\n",
+			       params->mac_addr);
+		}
+	}
 #ifdef MFG_CMD_SUPPORT
 	handle->params.mfg_mode = mfg_mode;
 	if (params)
@@ -1902,23 +2240,31 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.uap_max_sta = uap_max_sta;
 	handle->params.wacp_mode = wacp_mode;
 	handle->params.mcs32 = mcs32;
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	handle->params.xdp = xdp;
+#endif
+#endif
 	if (params) {
 		handle->params.max_uap_bss = params->max_uap_bss;
 		woal_dup_string(&handle->params.uap_name, params->uap_name);
 		handle->params.uap_max_sta = params->uap_max_sta;
 		handle->params.wacp_mode = params->wacp_mode;
 		handle->params.mcs32 = params->mcs32;
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+		handle->params.xdp = params->xdp;
+#endif
+#endif
 	}
 #endif /* UAP_SUPPORT */
 	handle->params.fw_data_cfg = fw_data_cfg;
-	if (params) {
+	if (params)
 		handle->params.fw_data_cfg = params->fw_data_cfg;
-	}
 
 	handle->params.hs_auto_arp = hs_auto_arp;
-	if (params) {
+	if (params)
 		handle->params.hs_auto_arp = params->hs_auto_arp;
-	}
 #ifdef WIFI_DIRECT_SUPPORT
 	handle->params.max_wfd_bss = max_wfd_bss;
 	woal_dup_string(&handle->params.wfd_name, wfd_name);
@@ -1978,10 +2324,17 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 			handle->params.bridge_keepalive_idle_ms_present = 1;
 		}
 	}
+	handle->params.wifi_reset_config = wifi_reset_config;
+	if (params)
+		handle->params.wifi_reset_config = params->wifi_reset_config;
 
 	handle->params.amsdu_deaggr = amsdu_deaggr;
 	if (params)
 		handle->params.amsdu_deaggr = params->amsdu_deaggr;
+
+	handle->params.copy_policy = copy_policy;
+	if (params)
+		handle->params.copy_policy = params->copy_policy;
 
 	handle->params.tx_budget = params ? params->tx_budget : tx_budget;
 	handle->params.mclient_scheduling =
@@ -2004,10 +2357,12 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	handle->params.bootup_cal_ctrl = bootup_cal_ctrl;
 	handle->params.ps_mode = ps_mode;
 	handle->params.p2a_scan = p2a_scan;
+	handle->params.tcpackenh = tcpackenh;
 	handle->params.scan_chan_gap = scan_chan_gap;
 	handle->params.sched_scan = sched_scan;
 	handle->params.max_tx_buf = max_tx_buf;
 	if (params) {
+		handle->params.tcpackenh = params->tcpackenh;
 		handle->params.bootup_cal_ctrl = params->bootup_cal_ctrl;
 		handle->params.ps_mode = params->ps_mode;
 		handle->params.max_tx_buf = params->max_tx_buf;
@@ -2022,8 +2377,15 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		handle->params.gpiopin = params->gpiopin;
 #endif
-	if (pm_keep_power)
+	if (IS_PCIE(handle->card_type)) {
+		if (pm_keep_power)
+			moal_extflg_set(handle, EXT_PM_KEEP_POWER);
+	} else {
 		moal_extflg_set(handle, EXT_PM_KEEP_POWER);
+		if (!pm_keep_power)
+			PRINTM(MMSG,
+			       "pm_keep_power=0 config is not eligible for SDIO/USB\n");
+	}
 #if defined(SDIO) && defined(SDIO_SUSPEND_RESUME)
 	if (shutdown_hs)
 		moal_extflg_set(handle, EXT_SHUTDOWN_HS);
@@ -2033,6 +2395,17 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		handle->params.cfg_11d = params->cfg_11d;
 #endif
+#if defined(UAP_SUPPORT)
+	handle->params.custom_11d_bcn_country_ie_en =
+		custom_11d_bcn_country_ie_en;
+	if (params)
+		handle->params.custom_11d_bcn_country_ie_en =
+			params->custom_11d_bcn_country_ie_en;
+#endif
+	handle->params.amsdu_disable = amsdu_disable;
+	if (params)
+		handle->params.amsdu_disable = params->amsdu_disable;
+
 #if defined(SDIO)
 	handle->params.slew_rate = slew_rate;
 	if (params)
@@ -2053,6 +2426,15 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (params)
 		woal_dup_string(&handle->params.txpwrlimit_cfg,
 				params->txpwrlimit_cfg);
+
+	if (handle->params.txpwrlimit_cfg) {
+		memset(handle->mode_psd_file, 0, sizeof(handle->mode_psd_file));
+		strncpy(handle->mode_psd_file, handle->params.txpwrlimit_cfg,
+			sizeof(handle->mode_psd_file) - 1);
+		handle->mode_psd_file[sizeof(handle->mode_psd_file) - 1] = '\0';
+		PRINTM(MINFO, "Mode PSD file name: %s", handle->mode_psd_file);
+	}
+
 	handle->params.cntry_txpwr = cntry_txpwr;
 	if (params)
 		handle->params.cntry_txpwr = params->cntry_txpwr;
@@ -2177,8 +2559,6 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 	if (dfs_offload)
 		moal_extflg_set(handle, EXT_DFS_OFFLOAD);
 #endif
-	if (roamoffload_in_hs)
-		moal_extflg_set(handle, EXT_ROAMOFFLOAD_IN_HS);
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
 	if (host_mlme)
@@ -2248,6 +2628,27 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 		moal_extflg_set(handle, EXT_COUNTRY_IE_IGNORE);
 	if (params)
 		handle->params.disable_11h_tpc = params->disable_11h_tpc;
+	handle->params.tpe_ie_ignore = tpe_ie_ignore;
+	/* Ignore country IE when tpe ie is disabled */
+	if (tpe_ie_ignore)
+		moal_extflg_set(handle, EXT_COUNTRY_IE_IGNORE);
+	if (params)
+		handle->params.tpe_ie_ignore = params->tpe_ie_ignore;
+	handle->params.make_before_break = make_before_break;
+	handle->params.amsdu_rx_size = amsdu_8k_rx ? MLAN_RX_DATA_BUF_SIZE_8K :
+						     MLAN_RX_DATA_BUF_SIZE_4K;
+
+#ifdef SECURE_HOST
+	handle->params.secure_host = secure_host;
+	if (params)
+		handle->params.secure_host = params->secure_host;
+	if (!IS_CARDAW693(handle->card_type))
+		handle->params.secure_host = 0;
+#endif
+
+	handle->params.bandctrl = bandctrl;
+	if (params)
+		handle->params.bandctrl = params->bandctrl;
 }
 
 /**
@@ -2260,10 +2661,20 @@ static void woal_setup_module_param(moal_handle *handle, moal_mod_para *params)
 void woal_free_module_param(moal_handle *handle)
 {
 	moal_mod_para *params = &handle->params;
+
 	PRINTM(MMSG, "Free module params\n");
 	if (params->fw_name) {
 		kfree(params->fw_name);
 		params->fw_name = NULL;
+	}
+
+	if (params->wifi_fw_name) {
+		kfree(params->wifi_fw_name);
+		params->wifi_fw_name = NULL;
+	}
+	if (params->plinkstats) {
+		kfree(params->plinkstats);
+		params->plinkstats = NULL;
 	}
 	if (params->hw_name) {
 		kfree(params->hw_name);
@@ -2349,7 +2760,7 @@ static mlan_status woal_req_mod_param(moal_handle *handle, char *mod_file)
 	status = request_firmware(&handle->param_data, mod_file, dev);
 	if (status < 0) {
 		PRINTM(MERROR, "Request firmware: %s failed, error: %d\n",
-		       mod_file, ret);
+		       mod_file, status);
 		ret = MLAN_STATUS_FAILURE;
 	}
 out:
@@ -2492,6 +2903,14 @@ void woal_init_from_dev_tree(void)
 						     &string_data)) {
 				fw_name = (char *)string_data;
 				PRINTM(MIOCTL, "fw_name=%s\n", fw_name);
+			}
+		} else if (!strncmp(prop->name, "wifi_fw_name",
+				    strlen("wifi_fw_name"))) {
+			if (!of_property_read_string(dt_node, prop->name,
+						     &string_data)) {
+				wifi_fw_name = (char *)string_data;
+				PRINTM(MIOCTL, "wifi_fw_name=%s\n",
+				       wifi_fw_name);
 			}
 		} else if (!strncmp(prop->name, "hw_name", strlen("hw_name"))) {
 			if (!of_property_read_string(dt_node, prop->name,
@@ -2716,6 +3135,12 @@ void woal_init_from_dev_tree(void)
 				PRINTM(MIOCTL, "bootup_cal_ctrl=%d\n",
 				       bootup_cal_ctrl);
 			}
+		} else if (!strncmp(prop->name, "tcpackenh",
+				    strlen("tcpackenh"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				tcpackenh = data;
+				PRINTM(MIOCTL, "tcpackenh=%d\n", tcpackenh);
+			}
 		} else if (!strncmp(prop->name, "inact_tmo",
 				    strlen("inact_tmo"))) {
 			if (!of_property_read_u32(dt_node, prop->name, &data)) {
@@ -2732,15 +3157,8 @@ void woal_init_from_dev_tree(void)
 			}
 		}
 #endif
-		else if (!strncmp(prop->name, "roamoffload_in_hs",
-				  strlen("roamoffload_in_hs"))) {
-			if (!of_property_read_u32(dt_node, prop->name, &data)) {
-				roamoffload_in_hs = data;
-				PRINTM(MIOCTL, "roamoffload_in_hs=%d\n",
-				       roamoffload_in_hs);
-			}
-		} else if (!strncmp(prop->name, "gtk_rekey_offload",
-				    strlen("gtk_rekey_offload"))) {
+		else if (!strncmp(prop->name, "gtk_rekey_offload",
+				  strlen("gtk_rekey_offload"))) {
 			if (!of_property_read_u32(dt_node, prop->name, &data)) {
 				gtk_rekey_offload = data;
 				PRINTM(MIOCTL, "gtk_rekey_offload=%d\n",
@@ -2772,6 +3190,17 @@ void woal_init_from_dev_tree(void)
 				wacp_mode = data;
 			}
 		}
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+		else if (!strncmp(prop->name, "xdp", strlen("xdp"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MMSG, "xdp=0x%x\n", data);
+				xdp = data;
+			}
+		}
+#endif
+#endif
+
 #endif
 		else if (!strncmp(prop->name, "fw_data_cfg",
 				  strlen("fw_data_cfg"))) {
@@ -2833,6 +3262,12 @@ void woal_init_from_dev_tree(void)
 				PRINTM(MERROR, "disable_11h_tpc=0x%x\n", data);
 				disable_11h_tpc = data;
 			}
+		} else if (!strncmp(prop->name, "tpe_ie_ignore",
+				    strlen("tpe_ie_ignore"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MERROR, "tpe_ie_ignore=0x%x\n", data);
+				tpe_ie_ignore = data;
+			}
 		}
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
@@ -2845,7 +3280,32 @@ void woal_init_from_dev_tree(void)
 		}
 #endif
 #endif
+		else if (!strncmp(prop->name, "make_before_break",
+				  strlen("make_before_break"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MERROR, "make_before_break=0x%x\n",
+				       data);
+				make_before_break = data;
+			}
+		}
+#ifdef SECURE_HOST
+		else if (!strncmp(prop->name, "secure_host",
+				  strlen("secure_host"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MIOCTL, "secure_host=0x%x\n", data);
+				secure_host = data;
+			}
+		}
+#endif
+
+		else if (!strncmp(prop->name, "bandctrl", strlen("bandctrl"))) {
+			if (!of_property_read_u32(dt_node, prop->name, &data)) {
+				PRINTM(MIOCTL, "bandctrl=0x%x\n", data);
+				bandctrl = data;
+			}
+		}
 	}
+	of_node_put(dt_node);
 	LEAVE();
 	return;
 }
@@ -2862,13 +3322,13 @@ static mlan_status woal_validate_cfg_id(moal_handle *handle)
 {
 	int i;
 	mlan_status ret = MLAN_STATUS_SUCCESS;
+
 	for (i = 0; i < MAX_MLAN_ADAPTER; i++) {
 		if (m_handle[i] == NULL || m_handle[i] == handle)
 			continue;
 		if (m_handle[i]->card_type == handle->card_type) {
-			if (m_handle[i]->blk_id == handle->blk_id) {
+			if (m_handle[i]->blk_id == handle->blk_id)
 				ret = MLAN_STATUS_FAILURE;
-			}
 		}
 	}
 	return ret;
@@ -2886,7 +3346,8 @@ static mlan_status parse_skip_cfg_block(t_u8 *data, t_u32 size)
 {
 	int end = 0;
 	t_u8 line[MAX_LINE_LEN];
-	while ((int)parse_cfg_get_line(data, size, line) != -1) {
+
+	while ((int)parse_cfg_get_line(data, size, line, NULL) != -1) {
 		if (strncmp(line, "}", strlen("}")) == 0) {
 			end = 1;
 			break;
@@ -2909,6 +3370,7 @@ static mlan_status woal_cfg_fallback_process(moal_handle *handle)
 {
 	int i, blk_id = 0x7fffffff, idx = -1;
 	mlan_status ret = MLAN_STATUS_FAILURE;
+
 	PRINTM(MMSG, "Configuration block, fallback processing\n");
 	for (i = 0; i < MAX_MLAN_ADAPTER; i++) {
 		if (m_handle[i] == NULL || m_handle[i] == handle ||
@@ -2945,6 +3407,7 @@ mlan_status woal_init_module_param(moal_handle *handle)
 	t_u8 line[MAX_LINE_LEN], *data = NULL;
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 	char *card_type = NULL, *blk_id = NULL;
+	t_s32 cur_pos = 0;
 
 	memset(line, 0, MAX_LINE_LEN);
 	woal_setup_module_param(handle, NULL);
@@ -2970,8 +3433,10 @@ mlan_status woal_init_module_param(moal_handle *handle)
 	PRINTM(MMSG, "%s: init module param from usr cfg\n",
 	       card_type_map_tbl[i].name);
 	size = (t_u32)handle->param_data->size;
+	// Casting is done to read and parse the data
+	// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 	data = (t_u8 *)handle->param_data->data;
-	while ((int)parse_cfg_get_line(data, size, line) != -1) {
+	while ((int)parse_cfg_get_line(data, size, line, &cur_pos) != -1) {
 		if (line[0] == '#')
 			continue;
 		if (strstr(line, "={")) {
@@ -2994,7 +3459,13 @@ mlan_status woal_init_module_param(moal_handle *handle)
 				       card_type, handle->blk_id);
 				/* check validation of config id */
 				if (woal_validate_cfg_id(handle) !=
-				    MLAN_STATUS_SUCCESS) {
+					    MLAN_STATUS_SUCCESS
+#ifdef SDIO_MMC
+				    || (parse_cfg_slot_id_info(
+						data, size, cur_pos, handle) !=
+					MLAN_STATUS_SUCCESS)
+#endif
+				) {
 					ret = parse_skip_cfg_block(data, size);
 					if (ret != MLAN_STATUS_SUCCESS) {
 						PRINTM(MMSG,
@@ -3034,7 +3505,7 @@ out:
 	if (handle->param_data) {
 		release_firmware(handle->param_data);
 		/* rewind pos */
-		(void)parse_cfg_get_line(NULL, 0, NULL);
+		(void)parse_cfg_get_line(NULL, 0, NULL, NULL);
 	}
 	if (ret != MLAN_STATUS_SUCCESS) {
 		PRINTM(MERROR, "Invalid block: %s\n", line);
@@ -3114,6 +3585,110 @@ static const struct kernel_param_ops bridge_runtime_deferred_ops = {
 	.get = param_get_int,
 };
 
+#if defined(USB)
+/**
+ *  @brief Parse module parameter configuration file to extract c_vidpid value
+ *
+ *  This function reads the module parameter configuration file specified by
+ *  mod_para and searches for the c_vidpid parameter value. It parses through
+ *  configuration blocks and extracts the c_vidpid string when found.
+ *
+ *  @param c_vidpid    Pointer to store the extracted c_vidpid string
+ *
+ *  @return            MLAN_STATUS_SUCCESS on success, MLAN_STATUS_FAILURE on
+ * error
+ */
+mlan_status woal_get_c_vidpid(char **c_vidpid)
+{
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	int status;
+	const struct firmware *tmp_param_data = NULL;
+	t_u8 line[MAX_LINE_LEN], *data = NULL;
+	t_u32 size, i, tbl_size;
+	char *card_type = NULL, *blk_id = NULL, *out_str = NULL;
+
+	if (mod_para == NULL) {
+		PRINTM(MMSG, "No module param cfg file specified\n");
+		goto out;
+	}
+
+	status = request_firmware(&tmp_param_data, mod_para, NULL);
+	if (status < 0) {
+		PRINTM(MERROR, "Request conf: %s failed, error: %d\n", mod_para,
+		       status);
+		goto err;
+	}
+
+	tbl_size = sizeof(card_type_map_tbl) / sizeof(card_type_map_tbl[0]);
+	// Casting is done to read and parse the data
+	// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
+	data = (t_u8 *)tmp_param_data->data;
+	size = (t_u32)tmp_param_data->size;
+	while ((int)parse_cfg_get_line(data, size, line, NULL) != -1) {
+		if (line[0] == '#')
+			continue;
+
+		if (strstr(line, "={")) {
+			ret = parse_line_read_card_info(line, &card_type,
+							&blk_id);
+			if (ret != MLAN_STATUS_SUCCESS)
+				goto err;
+
+			PRINTM(MINFO,
+			       "Traverse for c_vidpid, card_type: %s, config block: %s\n",
+			       card_type, blk_id);
+
+			for (i = 0; i < tbl_size; i++) {
+				if (strcmp(card_type_map_tbl[i].name,
+					   card_type) == 0)
+					continue;
+			}
+		} else {
+			if (strncmp(line, "}", strlen("}")) == 0) {
+				continue;
+			} else {
+				if (strncmp(line, "c_vidpid",
+					    strlen("c_vidpid")) == 0) {
+					if (parse_line_read_string(line,
+								   &out_str) !=
+					    MLAN_STATUS_SUCCESS)
+						goto err;
+
+					woal_dup_string(c_vidpid, out_str);
+					PRINTM(MINFO, "c_vidpid = %s\n",
+					       out_str);
+					goto out;
+				}
+			}
+		}
+	}
+out:
+	if (tmp_param_data) {
+		release_firmware(tmp_param_data);
+		/* rewind pos */
+		(void)parse_cfg_get_line(NULL, 0, NULL, NULL);
+	}
+	return ret;
+
+err:
+	PRINTM(MMSG, "Invalid line: %s\n", line);
+	if (tmp_param_data) {
+		release_firmware(tmp_param_data);
+		/* rewind pos */
+		(void)parse_cfg_get_line(NULL, 0, NULL, NULL);
+	}
+
+	ret = MLAN_STATUS_FAILURE;
+	return ret;
+}
+#endif
+
+/* Register module parameter 'plinkstats' for runtime configuration.
+ * Accepts string input via sysfs or kernel command line.
+ * Format: "0" to disable, "1" to enable, "2" to reset.
+ */
+module_param(plinkstats, charp, 0);
+MODULE_PARM_DESC(plinkstats, "0: Disable; 1: Enable; 2: Reset");
 module_param(mod_para, charp, 0);
 MODULE_PARM_DESC(mod_para, "Module parameters configuration file");
 module_param(hw_test, int, 0660);
@@ -3135,6 +3710,8 @@ module_param(fw_reload, int, 0);
 MODULE_PARM_DESC(fw_reload,
 		 "0: disable fw_reload; 1: enable fw reload feature");
 module_param(auto_fw_reload, int, 0);
+module_param(wifi_fw_name, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(wifi_fw_name, "Wlan firmware name for IR");
 #ifdef PCIE
 MODULE_PARM_DESC(
 	auto_fw_reload,
@@ -3182,7 +3759,7 @@ module_param(wfd_name, charp, 0);
 MODULE_PARM_DESC(wfd_name, "WIFIDIRECT interface name");
 #if defined(STA_CFG80211) && defined(UAP_CFG80211)
 module_param(max_vir_bss, int, 0);
-MODULE_PARM_DESC(max_vir_bss, "Number of Virtual interfaces (0)");
+MODULE_PARM_DESC(max_vir_bss, "Number of Virtual interfaces (1)");
 #endif
 #endif /* WIFI_DIRECT_SUPPORT */
 module_param(nan_name, charp, 0);
@@ -3205,6 +3782,11 @@ module_param(bootup_cal_ctrl, int, 0660);
 MODULE_PARM_DESC(
 	bootup_cal_ctrl,
 	"0: Disable boot time optimization (default); 1: Enable boot time optimization");
+// coverity[misra_c_2012_rule_7_1_violation:SUPPRESS]
+module_param(tcpackenh, int, 0660);
+MODULE_PARM_DESC(
+	tcpackenh,
+	"1: MLAN default; 0: Disable tcpackenh; 1: Enable tcpackenh default");
 module_param(ps_mode, int, 0660);
 MODULE_PARM_DESC(
 	ps_mode,
@@ -3244,6 +3826,21 @@ module_param(cfg_11d, int, 0);
 MODULE_PARM_DESC(cfg_11d,
 		 "0: MLAN default; 1: Enable 802.11d; 2: Disable 802.11d");
 #endif
+#if defined(UAP_SUPPORT)
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
+module_param(custom_11d_bcn_country_ie_en, int, 0);
+MODULE_PARM_DESC(
+	custom_11d_bcn_country_ie_en,
+	"1: Enable Custom BCN Country ie; 0: Disable Custom BCN Country ie");
+#endif
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
+module_param(amsdu_disable, int, 0);
+MODULE_PARM_DESC(amsdu_disable, "1: Disable AMSDU aggr; 0: Enable AMSDU aggr");
+
 #if defined(SDIO)
 module_param(slew_rate, int, 0);
 MODULE_PARM_DESC(
@@ -3259,7 +3856,7 @@ MODULE_PARM_DESC(
 module_param(rps, uint, 0660);
 MODULE_PARM_DESC(
 	rps,
-	"bit0-bit4 (0x1-0xf): Enables rps on specific cpu ; 0: Disables rps (default)");
+	"bit0-bit4 (0x1-0xf): Enables rps on specific cpu (0xf default); 0: Disables rps");
 #endif
 #endif
 module_param(edmac_ctrl, int, 0660);
@@ -3329,6 +3926,9 @@ MODULE_PARM_DESC(ring_size,
 module_param(pcie_int_mode, int, 0);
 MODULE_PARM_DESC(pcie_int_mode, "0: Legacy mode; 1: MSI mode");
 #endif /* PCIE */
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
 module_param(low_power_mode_enable, int, 0);
 MODULE_PARM_DESC(low_power_mode_enable, "0/1: Disable/Enable Low Power Mode");
 
@@ -3385,6 +3985,10 @@ module_param(bridge_consume_link_local, int, 0644);
 MODULE_PARM_DESC(bridge_consume_link_local, "[DBG-RXDROP] 0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(bridge_local_hairpin, int, 0644);
 MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable). Fleet precondition: apply wlan iface arp_ignore=1 seal (wlan-package) or weak-host ARP opens on air — driver warns once via dmesg if unsealed");
+module_param(wifi_reset_config, int, 0);
+MODULE_PARM_DESC(
+	wifi_reset_config,
+	"0: disable Wi-Fi reset, positive integer: max retries before reset (default 5)");
 module_param(amsdu_deaggr, int, 0);
 MODULE_PARM_DESC(
 	amsdu_deaggr,
@@ -3398,6 +4002,11 @@ MODULE_PARM_DESC(
 module_param(mclient_scheduling, int, 0);
 MODULE_PARM_DESC(mclient_scheduling,
 		 "0: disable multi-client scheduling; 1 - enable(default)");
+
+module_param(copy_policy, int, 0);
+MODULE_PARM_DESC(
+	copy_policy,
+	"copy policy used on RX and TX. bit#0 - RX, bit#1 - TX 0: zero-copy (default), 1 use memcpy");
 
 #ifdef SDIO
 module_param(sdio_rx_aggr, int, 0);
@@ -3413,7 +4022,7 @@ MODULE_PARM_DESC(
 module_param(antcfg, int, 0660);
 MODULE_PARM_DESC(
 	antcfg,
-	"0:default; SD8887/SD8987-[1:Tx/Rx antenna 1, 2:Tx/Rx antenna 2, 0xffff:enable antenna diversity];SD8897/SD8997-[Bit0:Rx Path A, Bit1:Rx Path B, Bit 4:Tx Path A, Bit 5:Tx Path B];9098/9097-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B,Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B]");
+	"0:default; SD8887/SD8987-[1:Tx/Rx antenna 1, 2:Tx/Rx antenna 2, 0xffff:enable antenna diversity];SD8897-[Bit0:Rx Path A, Bit1:Rx Path B, Bit 4:Tx Path A, Bit 5:Tx Path B];9098/9097-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B,Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B];AW693-[Bit 0: 2G Tx/Rx path A, Bit 1: 2G Tx/Rx path B, Bit 8: 5G Tx/Rx path A, Bit 9: 5G Tx/Rx path B, Bit 16: 6G Tx/Rx path A, Bit 17: 6G Tx/Rx path B]");
 
 module_param(uap_oper_ctrl, uint, 0);
 MODULE_PARM_DESC(uap_oper_ctrl, "0:default; 0x20001:uap restarts on channel 6");
@@ -3426,6 +4035,9 @@ module_param(indication_gpio, int, 0);
 MODULE_PARM_DESC(
 	indication_gpio,
 	"GPIO to indicate wakeup source; high four bits: level for normal wakeup; low four bits: GPIO pin number.");
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
 module_param(disconnect_on_suspend, int, 0);
 MODULE_PARM_DESC(
 	disconnect_on_suspend,
@@ -3440,6 +4052,9 @@ MODULE_PARM_DESC(
 	indrstcfg,
 	"Independent reset configuration; high byte: GPIO pin number; low byte: IR mode");
 
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
 module_param(fixed_beacon_buffer, int, 0);
 MODULE_PARM_DESC(
 	fixed_beacon_buffer,
@@ -3488,11 +4103,6 @@ MODULE_PARM_DESC(
 	pref_dbc,
 	"0: Firmware Default (default); 1: Enable prefer DBC; 2:Disable prefer DBC");
 
-module_param(roamoffload_in_hs, int, 0);
-MODULE_PARM_DESC(
-	roamoffload_in_hs,
-	"1: enable fw roaming only when host suspend; 0: always enable fw roaming.");
-
 #ifdef UAP_SUPPORT
 module_param(uap_max_sta, int, 0);
 MODULE_PARM_DESC(uap_max_sta, "Maximum station number for UAP/GO.");
@@ -3500,6 +4110,13 @@ module_param(wacp_mode, int, 0);
 MODULE_PARM_DESC(
 	wacp_mode,
 	"WACP mode for UAP/GO 0: WACP_MODE_DEFAULT; 1: WACP_MODE_1; 2: WACP_MODE_2");
+#ifdef XDP_SUPPORT
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+module_param(xdp, int, 0);
+MODULE_PARM_DESC(xdp,
+		 "Express data path 0: disable xdp(default); 1: enable xdp");
+#endif
+#endif
 #endif
 module_param(fw_data_cfg, int, 0);
 MODULE_PARM_DESC(
@@ -3515,6 +4132,9 @@ MODULE_PARM_DESC(
 #endif
 
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
+// It raises warning for same input name used for
+// module_param and MODULE_PARM_DESC.
+// coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
 module_param(disable_regd_by_driver, int, 0);
 MODULE_PARM_DESC(
 	disable_regd_by_driver,
@@ -3541,9 +4161,13 @@ MODULE_PARM_DESC(
 	"1: Set channel tracking; 0: Restore channel tracking for 9098 only");
 
 #if CFG80211_VERSION_CODE > KERNEL_VERSION(4, 12, 14)
+// Warning is raised for same input name used for
+// module_param and MODULE_PARM_DESC.
 // coverity[misra_c_2012_rule_21_2_violation:SUPPRESS]
 // coverity[misra_c_2012_rule_5_2_violation:SUPPRESS]
 module_param(cfg80211_eapol_offload, int, 0);
+// Warning is raised for same input name used for
+// module_param and MODULE_PARM_DESC.
 // coverity[misra_c_2012_rule_21_2_violation:SUPPRESS]
 MODULE_PARM_DESC(cfg80211_eapol_offload,
 		 "0: Disable eapol offload (default); 1: Enable eapol offload");
@@ -3567,7 +4191,7 @@ MODULE_PARM_DESC(
 #endif
 
 module_param(dual_nb, int, 0);
-MODULE_PARM_DESC(dual_nb, "0: Single BT (Default); 1: Dual BT");
+MODULE_PARM_DESC(dual_nb, "0: Single Narrowband; 1: Dual Narrowband (default)");
 
 module_param(reject_addba_req, int, 0);
 MODULE_PARM_DESC(
@@ -3577,3 +4201,26 @@ MODULE_PARM_DESC(
 module_param(disable_11h_tpc, int, 0);
 MODULE_PARM_DESC(disable_11h_tpc,
 		 "0: Enable 802.11h tpc; 1: Disable 802.11h tpc");
+module_param(tpe_ie_ignore, int, 0);
+MODULE_PARM_DESC(tpe_ie_ignore,
+		 "0: obey TPE IEs from ex-AP; 1: ignore TPE IEs from ex-AP");
+
+module_param(make_before_break, int, 0);
+MODULE_PARM_DESC(
+	make_before_break,
+	"1: make_before_break during roam; 0: no make_before_break during roam");
+
+#ifdef SECURE_HOST
+module_param(secure_host, int, 0660);
+MODULE_PARM_DESC(
+	secure_host,
+	"0: Disable secure host mode(default); 1: Enable secure host mode");
+#endif
+
+module_param(bandctrl, int, 0);
+MODULE_PARM_DESC(bandctrl,
+		 "0: Disable bandctrl mode(default); 1: Enable bandctrl mode");
+
+module_param(amsdu_8k_rx, int, 0);
+MODULE_PARM_DESC(amsdu_8k_rx,
+		 "1: support AMPDU 8K RX; 0: just support AMPDU 4K RX");

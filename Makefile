@@ -1,6 +1,6 @@
 #  File: Makefile
 #
-#  Copyright 2008-2024 NXP
+#  Copyright 2008-2025 NXP
 #
 #  This software file (the File) is distributed by NXP
 #  under the terms of the GNU General Public License Version 2, June 1991
@@ -22,10 +22,6 @@ COMPATDIR=/lib/modules/$(KERNELVERSION_X86)/build/compat-wireless-3.2-rc1-1/incl
 CC ?=		$(CROSS_COMPILE)gcc -I$(COMPATDIR)
 endif
 
-KERNELDIR ?= /opt/sda/mini-6.6.3/imx-6.6.3-1.0.0-build/build-wayland/tmp/work/imx8mmevk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
-CROSS_COMPILE?=/shared/fsl-imx-xwayland/6.6-nanbield/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
-CC =            $(CROSS_COMPILE)gcc
-
 LD ?=		$(CROSS_COMPILE)ld
 BACKUP=		/root/backup
 YMD=		`date +%Y%m%d%H%M`
@@ -39,28 +35,23 @@ CONFIG_SD8897=n
 CONFIG_USB8897=n
 CONFIG_PCIE8897=n
 CONFIG_SD8977=n
-CONFIG_SD8978=n
+CONFIG_SD8978=y
 CONFIG_USB8978=n
-CONFIG_SD8997=n
-CONFIG_USB8997=n
-CONFIG_PCIE8997=n
-CONFIG_SD8987=n
+CONFIG_SD8987=y
 CONFIG_SD9097=n
-CONFIG_SD9177=n
-CONFIG_SD8801=n
-CONFIG_USB8801=n
+CONFIG_SD9177=y
 CONFIG_USB9097=n
 CONFIG_PCIE9097=n
 CONFIG_SD9098=y
 CONFIG_USB9098=n
 CONFIG_PCIE9098=y
-CONFIG_SDIW610=n
-CONFIG_USBIW610=n
+CONFIG_SDIW610=y
+CONFIG_USBIW610=y
 CONFIG_SDIW624=n
-CONFIG_SDAW693=n
+CONFIG_SDAW693=y
 CONFIG_PCIEIW624=n
 CONFIG_USBIW624=n
-CONFIG_PCIEAW693=n
+CONFIG_PCIEAW693=y
 
 
 # Debug Option
@@ -79,6 +70,8 @@ CONFIG_UAP_SUPPORT=y
 # Enable WIFIDIRECT support
 CONFIG_WIFI_DIRECT_SUPPORT=y
 
+# Enable WIFIDISPLAY support
+CONFIG_WIFI_DISPLAY_SUPPORT=n
 
 # Re-association in driver
 CONFIG_REASSOCIATION=y
@@ -93,6 +86,8 @@ CONFIG_OPENWRT_SUPPORT=n
 # Big-endian platform
 CONFIG_BIG_ENDIAN=n
 
+CONFIG_XDP_SUPPORT=n
+
 
 
 
@@ -106,9 +101,10 @@ CONFIG_DFS_TESTING_SUPPORT=y
 CONFIG_MULTI_CHAN_SUPPORT=y
 
 
-
+# Enable driver/FW dump to proc
 CONFIG_DUMP_TO_PROC=y
 
+# Enable tasklet support (PCIe only)
 CONFIG_TASKLET_SUPPORT=n
 
 CONFIG_JHW_TEST=n
@@ -150,12 +146,20 @@ endif
 #############################################################################
 # Select Platform Tools
 #############################################################################
-
-ifeq ($(ANDROID_BUILD), 1)
+ifeq ($(ANDROID_BUILD), yes)
+# Set target Android SDK version.
+# ANDROID_SDK_VERSION 29 corresponds to Android 10 Android 10
+# ANDROID_SDK_VERSION 30 corresponds to Android 11 (Red Velvet Cake)
+# ANDROID_SDK_VERSION 31 corresponds to Android 12 (Snow Cone)
+# ANDROID_SDK_VERSION 33 corresponds to Android 13 (Tiramisu)
+# ANDROID_SDK_VERSION 34 corresponds to Android 14 (Upside Down Cake)
+# ANDROID_SDK_VERSION 35 corresponds to Android 15 (Vanilla Ice Cream)
+# ANDROID_SDK_VERSION 36 corresponds to Android 16
     KERNEL_CFLAGS += -DANDROID
     PWD := $(shell pwd)
     KERNELDIR ?= $(KERNEL_SRC)
     ccflags-y += -DANDROID_SDK_VERSION=$(ANDROID_SDK_VERSION)
+    CONFIG_SD8978=n
 endif
 
 MODEXT = ko
@@ -194,7 +198,9 @@ APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 #############################################################################
 
 	ccflags-y += -I$(KERNELDIR)/include
-	ccflags-y += -DMLAN_RELEASE_VERSION='"505.p14"'
+	ccflags-y += -DMLAN_RELEASE_VERSION='"543.p18"'
+	ccflags-y += -DMLAN_EXT_RELEASE_VERSION='"543.p18"'
+	ccflags-y += -DREL_MILESTONE='""'
 
 	ccflags-y += -DFPNUM='"92"'
 
@@ -233,6 +239,9 @@ endif
 
 ifeq ($(CONFIG_WIFI_DIRECT_SUPPORT),y)
 	ccflags-y += -DWIFI_DIRECT_SUPPORT
+endif
+ifeq ($(CONFIG_WIFI_DISPLAY_SUPPORT),y)
+	ccflags-y += -DWIFI_DISPLAY_SUPPORT
 endif
 
 ifeq ($(CONFIG_MFG_CMD_SUPPORT),y)
@@ -299,10 +308,6 @@ ifeq ($(CONFIG_SD8978),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSD8978
 endif
-ifeq ($(CONFIG_SD8997),y)
-	CONFIG_SDIO=y
-	ccflags-y += -DSD8997
-endif
 ifeq ($(CONFIG_SD8987),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSD8987
@@ -322,30 +327,22 @@ endif
 ifeq ($(CONFIG_SDAW693),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSDAW693
+	CONFIG_SECURE_HOST=n
+        ifeq ($(CONFIG_SECURE_HOST), y)
+            BINDIR = secure_hostif_wlan_bin
+        endif
 endif
 ifeq ($(CONFIG_SD9177),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSD9177
 endif
-ifeq ($(CONFIG_SD8801),y)
-	CONFIG_SDIO=y
-	ccflags-y += -DSD8801
-endif
 ifeq ($(CONFIG_SD9098),y)
 	CONFIG_SDIO=y
 	ccflags-y += -DSD9098
 endif
-ifeq ($(CONFIG_USB8801),y)
-	CONFIG_MUSB=y
-	ccflags-y += -DUSB8801
-endif
 ifeq ($(CONFIG_USB8897),y)
 	CONFIG_MUSB=y
 	ccflags-y += -DUSB8897
-endif
-ifeq ($(CONFIG_USB8997),y)
-	CONFIG_MUSB=y
-	ccflags-y += -DUSB8997
 endif
 ifeq ($(CONFIG_USB8978),y)
 	CONFIG_MUSB=y
@@ -371,10 +368,6 @@ ifeq ($(CONFIG_PCIE8897),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIE8897
 endif
-ifeq ($(CONFIG_PCIE8997),y)
-	CONFIG_PCIE=y
-	ccflags-y += -DPCIE8997
-endif
 ifeq ($(CONFIG_PCIE9097),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIE9097
@@ -390,6 +383,14 @@ endif
 ifeq ($(CONFIG_PCIEAW693),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIEAW693
+	CONFIG_XDP_SUPPORT=y
+ifeq ($(ANDROID_BUILD), 1)
+	CONFIG_XDP_SUPPORT=n
+endif
+	CONFIG_SECURE_HOST=n
+        ifeq ($(CONFIG_SECURE_HOST), y)
+            BINDIR = secure_hostif_wlan_bin
+        endif
 endif
 ifeq ($(CONFIG_SDIO),y)
 	ccflags-y += -DSDIO
@@ -400,6 +401,11 @@ ifeq ($(CONFIG_MUSB),y)
 endif
 ifeq ($(CONFIG_PCIE),y)
 	ccflags-y += -DPCIE
+endif
+
+
+ifeq ($(CONFIG_XDP_SUPPORT), y)
+	ccflags-y += -DXDP_SUPPORT
 endif
 
 ifeq ($(CONFIG_MAC80211_SUPPORT),y)
@@ -527,9 +533,11 @@ endif
 endif
 endif
 
-
-
-
+# Default for out-of-tree builds
+CONFIG_NXP_WLAN_DRIVER ?= m
+ifeq ($(CONFIG_SECURE_HOST), y)
+       ccflags-y += -DSECURE_HOST
+endif
 
 MOALOBJS =	mlinux/moal_main.o \
 		mlinux/moal_ioctl.o \
@@ -602,6 +610,9 @@ MOALOBJS += mlinux/moal_proc.o
 MOALOBJS += mlinux/moal_debug.o
 endif
 
+
+
+
 ifeq ($(CONFIG_MAC80211_SUPPORT),y)
 MOALOBJS += mlinux/moal_mac80211.o
 MLANOBJS += mlan/mlan_mac80211.o
@@ -609,11 +620,34 @@ endif
 
 
 
+ifeq ($(CONFIG_SECURE_HOST),y)
+ccflags-y += -I$(src)/nanotls/include
+ccflags-y += -I$(src)/nanotls/lib/include
+ccflags-y += -I$(src)/nanotls/lib/aes/include
 
+ccflags-y += -I$(src)/include
+ccflags-y += -I$(src)/lib/include
+ccflags-y += -I$(src)/lib/aes/include
+ccflags-y += -I$(KERNELDIR)/include/linux
+ccflags-y += -std=gnu99
+ccflags-y += -Wno-format-security -Wno-unused-but-set-variable -Wno-declaration-after-statement
+MLANOBJS += mlan/mlan_shc.o
+MOALOBJS += nanotls/lib/src/blockwise.o \
+            nanotls/lib/src/chash.o \
+            nanotls/lib/src/hmac.o \
+            nanotls/lib/src/p256-m.o \
+            nanotls/lib/src/sha256.o \
+            nanotls/lib/aes/src/aes.o \
+            nanotls/lib/aes/src/gcm.o \
+            nanotls/src/nanotls-common.o \
+            nanotls/src/nanotls-hooks.o \
+            nanotls/src/nanotls-host.o \
+            nanotls/src/nanotls-device.o \
+            nanotls/src/nanotls-data.o \
+            mlinux/moal_shc.o
+endif
 
-
-
-obj-m := mlan.o
+obj-$(CONFIG_NXP_WLAN_DRIVER) := mlan.o
 mlan-objs := $(MLANOBJS)
 
 ifeq ($(CONFIG_MUSB),y)
@@ -625,7 +659,7 @@ endif
 ifeq ($(CONFIG_PCIE),y)
 MOALOBJS += mlinux/moal_pcie.o
 endif
-obj-m += moal.o
+obj-$(CONFIG_NXP_WLAN_DRIVER) += moal.o
 moal-objs := $(MOALOBJS)
 
 # Otherwise we were called directly from the command line; invoke the kernel build system.

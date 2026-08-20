@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file mlan_11n.c
  *
  *  @brief This file contains functions for 11n handling.
  *
  *
- *  Copyright 2008-2021, 2024 NXP
+ *  Copyright 2008-2021, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -21,9 +22,10 @@
  */
 
 /********************************************************
-Change log:
-    11/10/2008: initial version
-********************************************************/
+ * Change log:
+ * 11/10/2008: initial version
+ * ******************************************************
+ */
 
 #include "mlan.h"
 #include "mlan_join.h"
@@ -36,16 +38,19 @@ Change log:
 #include "mlan_11ax.h"
 
 /********************************************************
-			Local Variables
-********************************************************/
+ * Local Variables
+ * ******************************************************
+ */
 
 /********************************************************
-			Global Variables
-********************************************************/
+ * Global Variables
+ * ******************************************************
+ */
 
 /********************************************************
-			Local Functions
-********************************************************/
+ * Local Functions
+ * ******************************************************
+ */
 
 /**
  *
@@ -215,14 +220,25 @@ static mlan_status wlan_11n_ioctl_httxcfg(pmlan_adapter pmadapter,
 	mlan_private *pmpriv = pmadapter->priv[pioctl_req->bss_index];
 	mlan_ds_11n_cfg *cfg = MNULL;
 	t_u16 cmd_action = 0;
+	t_u32 cfg_value = 0;
+	t_u32 hw_value = 0;
 
 	ENTER();
 
 	cfg = (mlan_ds_11n_cfg *)pioctl_req->pbuf;
-	if (pioctl_req->action == MLAN_ACT_SET)
+	if (pioctl_req->action == MLAN_ACT_SET) {
+		RESETHT_MAXAMSDU(cfg->param.tx_cfg.httxcap);
+		cfg_value = GETHT_MAXAMSDU(cfg->param.tx_cfg.httxcap);
+		hw_value = ISSUPP_MAXAMSDU(pmadapter->hw_dot_11n_dev_cap);
+		if (cfg_value && hw_value &&
+		    (pmpriv->adapter->rx_buf_size >=
+		     MLAN_RX_DATA_BUF_SIZE_8K)) {
+			SETHT_MAXAMSDU(cfg->param.tx_cfg.httxcap);
+		}
 		cmd_action = HostCmd_ACT_GEN_SET;
-	else
+	} else {
 		cmd_action = HostCmd_ACT_GEN_GET;
+	}
 
 	/* Send request to firmware */
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_11N_CFG, cmd_action, 0,
@@ -511,12 +527,14 @@ static mlan_status wlan_11n_ioctl_addba_param(pmlan_adapter pmadapter,
 		cfg->param.addba_param.rxamsdu = pmpriv->add_ba_param.rx_amsdu;
 	} else {
 		timeout = pmpriv->add_ba_param.timeout;
-		if (pmadapter->tx_ba_timeout_support) {
+		/* WACP supports the MAX TX ba timeout */
+		if (pmadapter->tx_ba_timeout_support ||
+		    pmadapter->init_para.wacp_mode)
 			pmpriv->add_ba_param.timeout =
 				cfg->param.addba_param.timeout;
-		} else {
+		else
 			pmpriv->add_ba_param.timeout = 0;
-		}
+
 		pmpriv->add_ba_param.tx_win_size =
 			cfg->param.addba_param.txwinsize;
 
@@ -642,6 +660,7 @@ wlan_11n_ioctl_min_ba_threshold_cfg(pmlan_adapter pmadapter,
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 	mlan_ds_11n_cfg *cfg = MNULL;
+
 	ENTER();
 	cfg = (mlan_ds_11n_cfg *)pioctl_req->pbuf;
 	if (pioctl_req->action == MLAN_ACT_GET)
@@ -984,7 +1003,7 @@ static void wlan_send_delba_txbastream_tbl(pmlan_private priv, t_u8 tid)
 /**
  *  @brief update station list for the new aggr_prio_tbl setting
  *
- *  @param priv 	A pointer to mlan_private structure
+ *  @param priv	A pointer to mlan_private structure
  *
  *
  *  @return		N/A
@@ -1276,8 +1295,9 @@ static TxBAStreamTbl *wlan_11n_get_txbastream_status(mlan_private *priv,
 }
 
 /********************************************************
-			Global Functions
-********************************************************/
+ * Global Functions
+ * ******************************************************
+ */
 
 #ifdef STA_SUPPORT
 /**
@@ -1292,6 +1312,7 @@ static TxBAStreamTbl *wlan_11n_get_txbastream_status(mlan_private *priv,
 static void wlan_fill_cap_info(mlan_private *priv, HTCap_t *ht_cap, t_u16 bands)
 {
 	t_u32 usr_dot_11n_dev_cap;
+	t_u32 cfg_value = 0;
 
 	ENTER();
 
@@ -1353,6 +1374,11 @@ static void wlan_fill_cap_info(mlan_private *priv, HTCap_t *ht_cap, t_u16 bands)
 
 	/* Need change to support 8k AMSDU receive */
 	RESETHT_MAXAMSDU(ht_cap->ht_cap_info);
+	cfg_value = ISSUPP_MAXAMSDU(usr_dot_11n_dev_cap);
+	if (cfg_value &&
+	    (priv->adapter->rx_buf_size >= MLAN_RX_DATA_BUF_SIZE_8K)) {
+		SETHT_MAXAMSDU(ht_cap->ht_cap_info);
+	}
 
 	/* SM power save */
 	RESETHT_SM_POWERSAVE(ht_cap->ht_cap_info); /* Clear to HT SMPS static
@@ -1426,7 +1452,8 @@ static void wlan_reset_cap_info(mlan_private *priv, HTCap_t *ht_cap,
 	RESETHT_DELAYEDBACK(ht_cap->ht_cap_info);
 
 	/* Need change to support 8k AMSDU receive */
-	RESETHT_MAXAMSDU(ht_cap->ht_cap_info);
+	if (!ISSUPP_MAXAMSDU(usr_dot_11n_dev_cap))
+		RESETHT_MAXAMSDU(ht_cap->ht_cap_info);
 	/* SM power save */
 	if (!ISSUPP_MIMOPS(usr_dot_11n_dev_cap))
 		SETHT_SMPS_DISABLE(ht_cap->ht_cap_info); /* Disable HT SMPS */
@@ -1500,7 +1527,8 @@ void wlan_fill_ht_cap_tlv(mlan_private *priv, MrvlIETypes_HTCap_t *pht_cap,
 	       NUM_MCS_FIELD - rx_mcs_supp);
 	/* Set MCS32 with 40MHz support */
 	/* if current channel only support 20MHz, we should not set 40Mz
-	 * supprot*/
+	 * supprot
+	 */
 	if (ISSUPP_CHANWIDTH40(usr_dot_11n_dev_cap) &&
 	    !(priv->curr_chan_flags & CHAN_FLAGS_NO_HT40PLUS &&
 	      priv->curr_chan_flags & CHAN_FLAGS_NO_HT40MINUS) &&
@@ -1579,7 +1607,8 @@ void wlan_fill_ht_cap_ie(mlan_private *priv, IEEEtypes_HTCap_t *pht_cap,
 	       NUM_MCS_FIELD - rx_mcs_supp);
 	/* Set MCS32 with 40MHz support */
 	/* if current channel only support 20MHz, we should not set 40Mz
-	 * supprot*/
+	 * supprot
+	 */
 	if (ISSUPP_CHANWIDTH40(usr_dot_11n_dev_cap) &&
 	    !(priv->curr_chan_flags & CHAN_FLAGS_NO_HT40PLUS &&
 	      priv->curr_chan_flags & CHAN_FLAGS_NO_HT40MINUS) &&
@@ -1772,6 +1801,11 @@ mlan_status wlan_ret_11n_addba_req(mlan_private *priv, HostCmd_DS_COMMAND *resp)
 
 	tid = (padd_ba_rsp->block_ack_param_set & BLOCKACKPARAM_TID_MASK) >>
 	      BLOCKACKPARAM_TID_POS;
+	if (tid >= 8) {
+		PRINTM(MERROR, "Invalid TID value: %d\n", tid);
+		LEAVE();
+		return MLAN_STATUS_FAILURE;
+	}
 	tid_down = wlan_get_wmm_tid_down(priv, tid);
 	ra_list = wlan_wmm_get_ralist_node(priv, tid_down,
 					   padd_ba_rsp->peer_mac_addr);
@@ -1830,6 +1864,7 @@ mlan_status wlan_ret_11n_addba_req(mlan_private *priv, HostCmd_DS_COMMAND *resp)
 			mlan_event *pevent = (mlan_event *)event_buf;
 			addba_timeout_event *evtbuf =
 				(addba_timeout_event *)pevent->event_buf;
+
 			if (ra_list) {
 				ra_list->packet_count = 0;
 				ra_list->ba_packet_threshold =
@@ -1866,6 +1901,7 @@ void wlan_set_tx_pause_flag(mlan_private *priv, t_u8 flag)
 {
 	mlan_private *pmpriv = MNULL;
 	t_u8 i;
+
 	for (i = 0; i < priv->adapter->priv_num; i++) {
 		pmpriv = priv->adapter->priv[i];
 		if (pmpriv)
@@ -1888,7 +1924,7 @@ mlan_status wlan_cmd_recfg_tx_buf(mlan_private *priv, HostCmd_DS_COMMAND *cmd,
 {
 	HostCmd_DS_TXBUF_CFG *ptx_buf = &cmd->params.tx_buf;
 	t_u16 action = (t_u16)cmd_action;
-	t_u16 buf_size = *((t_u16 *)pdata_buf);
+	t_u16 buf_size = read_u16_unaligned(priv->adapter, pdata_buf);
 
 	ENTER();
 	cmd->command = wlan_cpu_to_le16(HostCmd_CMD_RECONFIGURE_TX_BUFF);
@@ -2550,7 +2586,8 @@ int wlan_cmd_append_11n_tlv(mlan_private *pmpriv, BSSDescriptor_t *pbss_desc,
 		pchan_list->chan_scan_param[0].bandcfg.chanBand =
 			wlan_band_to_radio_type(pbss_desc->bss_band);
 		/* support the VHT if the network to be join has the VHT
-		 * operation */
+		 * operation
+		 */
 		if (ISSUPP_11ACENABLED(pmadapter->fw_cap_info) &&
 		    (usr_dot_11ac_bw == BW_FOLLOW_VHTCAP) &&
 		    (!(pmpriv->curr_chan_flags & CHAN_FLAGS_NO_80MHZ)) &&
@@ -2966,6 +3003,10 @@ int wlan_send_addba(mlan_private *priv, int tid, t_u8 *peer_mac)
 
 	ENTER();
 
+	if (tid < 0) {
+		LEAVE();
+		return MLAN_STATUS_FAILURE;
+	}
 	PRINTM(MCMND, "Send addba: TID %d, " MACSTR "\n", tid,
 	       MAC2STR(peer_mac));
 
@@ -3083,6 +3124,7 @@ int wlan_get_rxreorder_tbl(mlan_private *priv, rx_reorder_tbl *buf)
 	rx_reorder_tbl *ptbl = buf;
 	RxReorderTbl *rx_reorder_tbl_ptr;
 	int count = 0;
+
 	ENTER();
 	priv->adapter->callbacks.moal_spin_lock(priv->adapter->pmoal_handle,
 						priv->rx_reorder_tbl_ptr.plock);
@@ -3180,6 +3222,9 @@ int wlan_get_txbastream_tbl(mlan_private *priv, tx_ba_stream_tbl *buf)
  */
 t_u8 wlan_11n_bandconfig_allowed(mlan_private *pmpriv, t_u16 bss_band)
 {
+	if (bss_band & BAND_6G)
+		return 0;
+
 	{
 		if (bss_band & BAND_G)
 			return (pmpriv->config_bands & BAND_GN);
@@ -3200,6 +3245,7 @@ void wlan_11n_cleanup_txbastream_tbl(mlan_private *priv, t_u8 *ra)
 {
 	TxBAStreamTbl *ptx_tbl = MNULL;
 	t_u8 i;
+
 	ENTER();
 
 	wlan_request_ralist_lock(priv);

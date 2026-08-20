@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file mlan_11n.h
  *
  *  @brief Interface for the 802.11n mlan_11n module implemented in mlan_11n.c
@@ -6,7 +7,7 @@
  *    implemented in mlan_11n.c.
  *
  *
- *  Copyright 2008-2021 NXP
+ *  Copyright 2008-2021, 2025-2026 NXP
  *
  *  This software file (the File) is distributed by NXP
  *  under the terms of the GNU General Public License Version 2, June 1991
@@ -24,9 +25,10 @@
  */
 
 /********************************************************
-Change log:
-    12/01/2008: initial version
-********************************************************/
+ * Change log:
+ * 12/01/2008: initial version
+ * ******************************************************
+ */
 
 #ifndef _MLAN_11N_H_
 #define _MLAN_11N_H_
@@ -143,6 +145,7 @@ void wlan_11n_cleanup_txbastream_tbl(mlan_private *priv, t_u8 *ra);
 static INLINE t_u8 is_station_11n_enabled(mlan_private *priv, t_u8 *mac)
 {
 	sta_node *sta_ptr = MNULL;
+
 	sta_ptr = wlan_get_station_entry(priv, mac);
 	if (sta_ptr)
 		return (sta_ptr->is_11n_enabled) ? MTRUE : MFALSE;
@@ -159,6 +162,7 @@ static INLINE t_u8 is_station_11n_enabled(mlan_private *priv, t_u8 *mac)
 static INLINE t_u16 get_station_max_amsdu_size(mlan_private *priv, t_u8 *mac)
 {
 	sta_node *sta_ptr = MNULL;
+
 	sta_ptr = wlan_get_station_entry(priv, mac);
 	if (sta_ptr)
 		return sta_ptr->max_amsdu;
@@ -177,7 +181,11 @@ static INLINE t_u8 is_station_ampdu_allowed(mlan_private *priv, raListTbl *ptr,
 					    int tid)
 {
 	sta_node *sta_ptr = MNULL;
+
 	sta_ptr = wlan_get_station_entry(priv, ptr->ra);
+	if (tid < 0 || tid >= MAX_NUM_TID) {
+		return MFALSE;
+	}
 	if (sta_ptr) {
 		if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_UAP) {
 			if (priv->sec_info.wapi_enabled &&
@@ -202,6 +210,7 @@ static INLINE t_u8 is_station_ampdu_allowed(mlan_private *priv, raListTbl *ptr,
 static INLINE void disable_station_ampdu(mlan_private *priv, t_u8 tid, t_u8 *ra)
 {
 	sta_node *sta_ptr = MNULL;
+
 	sta_ptr = wlan_get_station_entry(priv, ra);
 	if (sta_ptr)
 		sta_ptr->ampdu_sta[tid] = BA_STREAM_NOT_ALLOWED;
@@ -219,6 +228,7 @@ static INLINE void disable_station_ampdu(mlan_private *priv, t_u8 tid, t_u8 *ra)
 static INLINE void reset_station_ampdu(mlan_private *priv, t_u8 tid, t_u8 *ra)
 {
 	sta_node *sta_ptr = MNULL;
+
 	sta_ptr = wlan_get_station_entry(priv, ra);
 	if (sta_ptr)
 		sta_ptr->ampdu_sta[tid] = priv->aggr_prio_tbl[tid].ampdu_user;
@@ -238,6 +248,8 @@ static INLINE void reset_station_ampdu(mlan_private *priv, t_u8 tid, t_u8 *ra)
 static INLINE t_u8 wlan_is_ampdu_allowed(mlan_private *priv, raListTbl *ptr,
 					 int tid)
 {
+	if (tid < 0)
+		return MFALSE;
 	if (ptr->is_tdls_link)
 		return is_station_ampdu_allowed(priv, ptr, tid);
 	if (priv->adapter->tdls_status != TDLS_NOT_SETUP && !priv->txaggrctrl)
@@ -263,6 +275,7 @@ static INLINE void wlan_update_station_del_ba_count(mlan_private *priv,
 {
 	sta_node *sta_ptr = MNULL;
 	t_s8 rssi;
+
 	sta_ptr = wlan_get_station_entry(priv, ptr->ra);
 	if (sta_ptr) {
 		rssi = sta_ptr->snr - sta_ptr->nf;
@@ -297,7 +310,7 @@ static INLINE t_u8 wlan_is_amsdu_allowed(mlan_private *priv, raListTbl *ptr,
 #ifdef UAP_SUPPORT
 	sta_node *sta_ptr = MNULL;
 #endif
-	if (priv->amsdu_disable || !ptr->max_amsdu)
+	if (priv->amsdu_disable || !ptr->max_amsdu || tid < 0)
 		return MFALSE;
 #ifdef UAP_SUPPORT
 	if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_UAP) {
@@ -353,6 +366,7 @@ static INLINE t_u8 wlan_is_bastream_avail(mlan_private *priv)
 	t_u8 i = 0;
 	t_u32 bastream_num = 0;
 	t_u32 bastream_max = 0;
+
 	for (i = 0; i < priv->adapter->priv_num; i++) {
 		pmpriv = priv->adapter->priv[i];
 		if (pmpriv)
@@ -389,7 +403,7 @@ static INLINE t_u8 wlan_find_stream_to_delete(mlan_private *priv,
 	ptx_tbl = (TxBAStreamTbl *)util_peek_list(priv->adapter->pmoal_handle,
 						  &priv->tx_ba_stream_tbl_ptr,
 						  MNULL, MNULL);
-	if (!ptx_tbl) {
+	if (!ptx_tbl || ptr_tid < 0) {
 		LEAVE();
 		return ret;
 	}
@@ -398,6 +412,7 @@ static INLINE t_u8 wlan_find_stream_to_delete(mlan_private *priv,
 
 	while (ptx_tbl != (TxBAStreamTbl *)&priv->tx_ba_stream_tbl_ptr) {
 		if ((ptx_tbl->ba_status == BA_STREAM_SETUP_COMPLETE) &&
+		    (ptx_tbl->tid >= 0) &&
 		    (tid > priv->aggr_prio_tbl[ptx_tbl->tid].ampdu_user)) {
 			tid = priv->aggr_prio_tbl[ptx_tbl->tid].ampdu_user;
 			*ptid = ptx_tbl->tid;
@@ -422,6 +437,7 @@ static INLINE t_u8 wlan_find_stream_to_delete(mlan_private *priv,
 static INLINE int wlan_is_11n_enabled(mlan_private *priv, t_u8 *ra)
 {
 	int ret = MFALSE;
+
 	ENTER();
 #ifdef UAP_SUPPORT
 	if (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_UAP) {

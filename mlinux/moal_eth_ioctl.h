@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 
 /** @file moal_eth_ioctl.h
  *
  * @brief This file contains definition for private IOCTL call.
  *
  *
- * Copyright 2008-2024 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -22,9 +23,10 @@
  */
 
 /********************************************************
-Change log:
-    01/05/2012: initial version
-********************************************************/
+ * Change log:
+ * 01/05/2012: initial version
+ * ******************************************************
+ */
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #include "moal_cfg80211.h"
 #endif
@@ -77,10 +79,12 @@ Change log:
 #define PRIV_CMD_GETLOG "getlog"
 #define PRIV_CMD_ESUPPMODE "esuppmode"
 #define PRIV_CMD_PASSPHRASE "passphrase"
+#define PRIV_CMD_SSID_PROTECTION "ssid_protection"
 #define PRIV_CMD_DEAUTH "deauth"
 #ifdef UAP_SUPPORT
 #define PRIV_CMD_AP_DEAUTH "apdeauth"
 #define PRIV_CMD_GET_STA_LIST "getstalist"
+#define PRIV_CMD_PRINT_LINK_STATS "plinkstats"
 #define PRIV_CMD_BSS_CONFIG "bssconfig"
 #endif
 #if defined(UAP_SUPPORT)
@@ -128,6 +132,7 @@ typedef struct _chan_stats {
 #define PRIV_CMD_HSSETPARA "hssetpara"
 #define PRIV_CMD_MGMT_FILTER "mgmtfilter"
 #define PRIV_CMD_SCANCFG "scancfg"
+#define PRIV_CMD_6GSCANCFG "6gscancfg"
 #define PRIV_CMD_GETNLNUM "getnlnum"
 #define PRIV_CMD_AGGRCTRL "aggrctrl"
 #ifdef USB
@@ -233,6 +238,7 @@ typedef struct _chan_stats {
 #define PRIV_CMD_AUTODFS "autodfs"
 #define PRIV_CMD_CFP_CODE "cfpcode"
 #define PRIV_CMD_ANT_CFG "antcfg"
+#define PRIV_CMD_ANT_CFG_NSS "antcfgnss"
 #define PRIV_CMD_SYSCLOCK "sysclock"
 #define PRIV_CMD_GET_KEY "getkey"
 #define PRIV_CMD_ASSOCIATE "associate"
@@ -257,6 +263,7 @@ typedef struct _chan_stats {
 #define PRIV_CMD_TARGET_CHANNEL "targetchan"
 #define PRIV_CMD_BACKUP_CHANNEL "backupchan"
 
+#define PRIV_CMD_LTE_COEX_CFG "ltecoexcfg"
 #define PRIV_CMD_DFS_REPEATER_CFG "dfs_repeater"
 #ifdef WIFI_DIRECT_SUPPORT
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
@@ -311,6 +318,10 @@ typedef struct _chan_stats {
 
 #define PRIV_CMD_ARB_CFG "arb"
 
+#define PRIV_CMD_FOUNDRY_TYPE "foundry_type"
+
+#define PRIV_CMD_DEBUG_TEMPERATURE "set_debug_temperature"
+
 /**Private command to configure static rx abort config */
 #define PRIV_CMD_RX_ABORT_CFG "rx_abort_cfg"
 /**Private command to configure static OFDM DESENSE config */
@@ -319,6 +330,8 @@ typedef struct _chan_stats {
 #define PRIV_CMD_RX_ABORT_CFG_EXT "rx_abort_cfg_ext"
 /** configure NAV mitigation parameters. */
 #define PRIV_CMD_NAV_MITIGATION "nav_mitigation"
+/** configure HW based NAV mitigation parameters. */
+#define PRIV_CMD_NAV_MITIGATION_HW "nav_mitigation_hw"
 #define PRIV_CMD_LED "led"
 #define TX_AMPDU_RTS_CTS 0
 #define TX_AMPDU_CTS_2_SELF 1
@@ -326,6 +339,8 @@ typedef struct _chan_stats {
 #define TX_AMPDU_DYNAMIC_RTS_CTS 3
 /**Private command to set tx ampdu protection mode */
 #define PRIV_CMD_TX_AMPDU_PROT_MODE "tx_ampdu_prot_mode"
+/**Private command to enable preamble pwr boost feature */
+#define PRIV_CMD_PREAMBLE_PWR_BOOST "preamble_pwr_boost"
 /**Private command to configure tx rate adapt config */
 #define PRIV_CMD_RATE_ADAPT_CFG "rate_adapt_cfg"
 #define CCK_DESENSE_MODE_DISABLED 0
@@ -360,6 +375,9 @@ typedef struct _chan_stats {
 
 #define PRIV_CMD_DMCS "dmcs"
 
+/**Private command to configure per_band_txpwr_cap */
+#define PRIV_CMD_PER_BAND_TXPWR_CAP "per_band_txpwr_cap"
+
 #if defined(PCIE)
 #define PRIV_CMD_SSU "ssu"
 /** ssu_params_ctrl */
@@ -381,7 +399,8 @@ typedef struct _ssu_params_cfg {
 	/* 0-1: Enable spectral packet rate reduction in DB output format */
 	t_u32 rate_deduction;
 	/* 0-7: Number of spectral packets over which spectral data is to be
-	 * averaged. */
+	 * averaged.
+	 */
 	t_u32 n_pkt_avg;
 } __attribute__((packed)) ssu_params_cfg;
 #endif
@@ -395,6 +414,21 @@ typedef struct _ssu_params_cfg {
 
 /** Private command to get secure boot uuid */
 #define PRIV_CMD_GET_SB_UUID "getuuid"
+
+#define FILS_IP_CONFIG "FILSIPCONFIG"
+#define FILS_PSK_CONFIG "FILSPSKCONFIG"
+#define FILS_IP_STR "ip"
+#define FILS_MASK_STR "mask"
+#define FILS_BASE_IP_STR "base_ip"
+#define FILS_DNS_STR "dns"
+#define FILS_COUNT_STR "max"
+#define FILS_KEY "key"
+#define FILS_BSSID "bssid"
+
+mlan_status woal_set_fils_psk(moal_private *priv, char *data);
+#ifdef UAP_SUPPORT
+mlan_status woal_set_fils_ip_cfg(moal_private *priv, char *data);
+#endif
 
 /** Private command: 11AX Cfg */
 #define PRIV_CMD_11AXCFG "11axcfg"
@@ -504,6 +538,112 @@ typedef struct _android_wifi_priv_cmd {
 #define MW_AUTH_ALG_OPEN_SYSTEM 0x00000001
 #define MW_AUTH_ALG_SHARED_KEY 0x00000002
 #define MW_AUTH_ALG_LEAP 0x00000004
+
+#define RMODE_PWR_DOWN 0
+#define RMODE_2x2_5G_BCA1 1
+#define RMODE_1x2_5G_BCA1 2
+#define RMODE_1x1A_5G_BCA1 3
+#define RMODE_1x1B_5G_BCA1 4
+#define RMODE_2x2_5G_8080_BCA1 5
+#define RMODE_1x1_5G_0DFS_BCA1 6
+#define RMODE_1x1A_5G_BCA2 7
+#define RMODE_1x1B_5G_BCA2 8
+#define RMODE_2x2_2G_BCA1 9
+#define RMODE_1x2_2G_BCA1 10
+#define RMODE_2x2_2G_BCA2 9
+#define RMODE_1x2_2G_BCA2 10
+#define RMODE_1x1A_2G_BCA1 11
+#define RMODE_1x1A_2G_BCA2 11
+#define RMODE_1x1B_5G_11P_BCA1 12
+#define RMODE_2x2_5G_11P_BCA1 13
+#define RMODE_1x1B_2G_BCA1 14
+#define RMODE_1x1B_2G_BCA2 14
+#define RMODE_1x1_2G_0DFS_BCA1 15
+#define RMODE_2x2_6G_BCA1 16
+#define RMODE_1x2_6G_BCA1 17
+#define RMODE_1x1A_6G_BCA1 18
+#define RMODE_1x1B_6G_BCA1 19
+#define RMODE_1x1_6G_0DFS_BCA1 20
+#define RMODE_1x1C_2G_BCA2 21
+#define RMODE_1x1_2G_ANYBAND_BCA1 22
+#define RMODE_1x1_5G_ANYBAND_BCA1 23
+#define RMODE_1x1_6G_ANYBAND_BCA1 24
+
+#define SELECT_BAND(data1)                                                     \
+	do {                                                                   \
+		if ((data1) == RMODE_2x2_2G_BCA1 ||                            \
+		    (data1) == RMODE_1x2_2G_BCA1 ||                            \
+		    (data1) == RMODE_2x2_2G_BCA2 ||                            \
+		    (data1) == RMODE_1x2_2G_BCA2 ||                            \
+		    (data1) == RMODE_1x1A_2G_BCA1 ||                           \
+		    (data1) == RMODE_1x1A_2G_BCA2 ||                           \
+		    (data1) == RMODE_1x1B_2G_BCA1 ||                           \
+		    (data1) == RMODE_1x1B_2G_BCA2 ||                           \
+		    (data1) == RMODE_1x1_2G_0DFS_BCA1 ||                       \
+		    (data1) == RMODE_1x1C_2G_BCA2 ||                           \
+		    (data1) == RMODE_1x1_2G_ANYBAND_BCA1) {                    \
+			handle->rf_data->band = BAND_2GHZ;                     \
+		} else if ((data1) == RMODE_2x2_5G_BCA1 ||                     \
+			   (data1) == RMODE_1x2_5G_BCA1 ||                     \
+			   (data1) == RMODE_1x1A_5G_BCA1 ||                    \
+			   (data1) == RMODE_1x1B_5G_BCA1 ||                    \
+			   (data1) == RMODE_2x2_5G_8080_BCA1 ||                \
+			   (data1) == RMODE_1x1_5G_0DFS_BCA1 ||                \
+			   (data1) == RMODE_1x1A_5G_BCA2 ||                    \
+			   (data1) == RMODE_1x1B_5G_BCA2 ||                    \
+			   (data1) == RMODE_1x1B_5G_11P_BCA1 ||                \
+			   (data1) == RMODE_2x2_5G_11P_BCA1 ||                 \
+			   (data1) == RMODE_1x1_5G_ANYBAND_BCA1) {             \
+			handle->rf_data->band = BAND_5GHZ;                     \
+		} else if ((data1) == RMODE_2x2_6G_BCA1 ||                     \
+			   (data1) == RMODE_1x2_6G_BCA1 ||                     \
+			   (data1) == RMODE_1x1A_6G_BCA1 ||                    \
+			   (data1) == RMODE_1x1B_6G_BCA1 ||                    \
+			   (data1) == RMODE_1x1_6G_0DFS_BCA1 ||                \
+			   (data1) == RMODE_1x1_6G_ANYBAND_BCA1) {             \
+			handle->rf_data->band = BAND_6GHZ;                     \
+		}                                                              \
+	} while (0)
+
+#define SELECT_ANT_CFG(data1)                                                  \
+	do {                                                                   \
+		if ((data1) == RMODE_2x2_5G_BCA1 ||                            \
+		    (data1) == RMODE_2x2_5G_8080_BCA1 ||                       \
+		    (data1) == RMODE_2x2_2G_BCA1 ||                            \
+		    (data1) == RMODE_2x2_2G_BCA2 ||                            \
+		    (data1) == RMODE_2x2_5G_11P_BCA1 ||                        \
+		    (data1) == RMODE_2x2_6G_BCA1) {                            \
+			handle->rf_data->tx_antenna = 3;                       \
+			handle->rf_data->rx_antenna = 3;                       \
+		} else if ((data1) == RMODE_1x1A_5G_BCA1 ||                    \
+			   (data1) == RMODE_1x1A_5G_BCA2 ||                    \
+			   (data1) == RMODE_1x1A_2G_BCA1 ||                    \
+			   (data1) == RMODE_1x1A_2G_BCA2 ||                    \
+			   (data1) == RMODE_1x1A_6G_BCA1) {                    \
+			handle->rf_data->tx_antenna = 1;                       \
+			handle->rf_data->rx_antenna = 1;                       \
+		} else if ((data1) == RMODE_1x1B_5G_BCA1 ||                    \
+			   (data1) == RMODE_1x1B_5G_BCA2 ||                    \
+			   (data1) == RMODE_1x1B_5G_11P_BCA1 ||                \
+			   (data1) == RMODE_1x1B_2G_BCA1 ||                    \
+			   (data1) == RMODE_1x1B_2G_BCA2 ||                    \
+			   (data1) == RMODE_1x1B_6G_BCA1) {                    \
+			handle->rf_data->tx_antenna = 2;                       \
+			handle->rf_data->rx_antenna = 2;                       \
+		} else if ((data1) == RMODE_1x2_2G_BCA1 ||                     \
+			   (data1) == RMODE_1x2_5G_BCA1 ||                     \
+			   (data1) == RMODE_1x2_2G_BCA2 ||                     \
+			   (data1) == RMODE_1x2_6G_BCA1 ||                     \
+			   (data1) == RMODE_1x1_5G_0DFS_BCA1 ||                \
+			   (data1) == RMODE_1x1_2G_0DFS_BCA1 ||                \
+			   (data1) == RMODE_1x1_6G_0DFS_BCA1) {                \
+			handle->rf_data->tx_antenna = 1;                       \
+			handle->rf_data->rx_antenna = 2;                       \
+		} else {                                                       \
+			handle->rf_data->tx_antenna = 1;                       \
+			handle->rf_data->rx_antenna = 1;                       \
+		}                                                              \
+	} while (0)
 
 /* Generic format for most parameters that fit in an int */
 struct mw_param {
@@ -649,10 +789,10 @@ typedef struct _txrate_setting {
 	t_u16 dcm : 1; // BIT8, 0: no DCM; 1: DCM used.
 	t_u16 adv_coding : 1; // BIT9, 0: BCC; 1: LDPC.
 	t_u16 doppler : 2; /* BIT11-BIT10,
-			      00: Doppler0
-			      01: Doppler 1 with Mma =10
-			      10: Doppler 1 with Mma =20
-			   */
+00: Doppler0
+01: Doppler 1 with Mma =10
+10: Doppler 1 with Mma =20
+			    */
 	t_u16 max_pktext : 2; /*BIT12-BIT13:
 			       * Max packet extension
 			       *  0 - 0 usec
@@ -777,4 +917,11 @@ typedef struct {
 } __ATTRIB_PACK__ wlan_ieee80211_chan_list;
 
 #define PRIV_CMD_TP_STATE "tp_state"
+
+#ifdef UAP_SUPPORT
+#define PRIV_CMD_AGCS "agcs"
+#endif
+
+#define PRIV_CMD_ECSA_CNT_CFG "ecsacntcfg"
+
 #endif /* _WOAL_ETH_PRIV_H_ */

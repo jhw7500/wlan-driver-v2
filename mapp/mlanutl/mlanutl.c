@@ -159,6 +159,7 @@ static int process_ratebitmapcfg(int argc, char *argv[]);
 static int process_ratemaxcfg(int argc, char *argv[]);
 static int process_mcstiercfg(int argc, char *argv[]);
 /* Prints the antcfg derived NSS limit (user_htstream) in one line. */
+static int get_user_htstream(t_u32 *out);
 static void print_nss_intent(const char *indent, t_u32 uh);
 static int process_httxcfg(int argc, char *argv[]);
 static int process_htcapinfo(int argc, char *argv[]);
@@ -20981,6 +20982,7 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 {
 	int ret = 0;
 	int data[4] = {0};
+	t_u32 user_htstream;
 	t_u8 *buffer = NULL;
 	struct eth_priv_cmd *cmd = NULL;
 	struct ifreq ifr;
@@ -21031,17 +21033,12 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 		goto done;
 	}
 	if (argc == 3) {
-		/* Reply layouts, told apart by length. The driver only ever
-		 * emits 4, 8, 12 or 16 bytes, so these ranges cannot overlap:
-		 *   16B = 2x2 with NSS intent (tx, rx, user_htstream, rsvd)
-		 *  <12B = 2x2 from an older driver (tx [, rx])
-		 *   12B = 1x1 (antenna, evaluate_time, current_antenna)
-		 */
 		if (cmd->used_len == (int)(sizeof(int) * 4)) {
 			memcpy(data, buffer, sizeof(data));
 			printf("Mode of Tx path is 0x%x\n", data[0]);
 			printf("Mode of Rx path is 0x%x\n", data[1]);
-			print_nss_intent("", (t_u32)data[2]);
+			printf("Mode of Tx path for 6G is 0x%x\n", data[2]);
+			printf("Mode of Rx path for 6G is 0x%x\n", data[3]);
 		} else if (cmd->used_len < (int)(sizeof(int) * 3)) {
 			if (cmd->used_len > 0) {
 				memcpy(data, buffer, cmd->used_len);
@@ -21060,9 +21057,11 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 				 * invalid value*/
 				if (data[2] > 0)
 					printf("Current antenna is %d\n",
-					       data[2]);
+						       data[2]);
 			}
 		}
+		if (get_user_htstream(&user_htstream) == 0)
+			print_nss_intent("", user_htstream);
 	}
 
 done:
@@ -25511,14 +25510,14 @@ static int get_user_htstream(t_u32 *out)
 	t_u8 *buffer = NULL;
 	struct eth_priv_cmd *cmd = NULL;
 	struct ifreq ifr;
-	t_u32 data[4] = {0};
+	t_u32 data = 0;
 	int ret = -1;
 
 	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
 	if (!buffer)
 		return -1;
 
-	prepare_buffer(buffer, "antcfg", 0, NULL);
+	prepare_buffer(buffer, "antcfgnss", 0, NULL);
 	cmd = (struct eth_priv_cmd *)malloc(sizeof(struct eth_priv_cmd));
 	if (!cmd) {
 		free(buffer);
@@ -25540,9 +25539,9 @@ static int get_user_htstream(t_u32 *out)
 	ifr.ifr_ifru.ifru_data = (void *)cmd;
 
 	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr) == 0 &&
-	    cmd->used_len == (int)(sizeof(int) * 4)) {
-		memcpy(data, buffer, sizeof(data));
-		*out = data[2];
+	    cmd->used_len == (int)sizeof(data)) {
+		memcpy(&data, buffer, sizeof(data));
+		*out = data;
 		ret = 0;
 	}
 

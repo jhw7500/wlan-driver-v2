@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file moal_ioctl.c
  *
  * @brief This file contains ioctl function to MLAN
  *
  *
- * Copyright 2008-2024 NXP
+ * Copyright 2008-2026 NXP
  *
  * This software file (the File) is distributed by NXP
  * under the terms of the GNU General Public License Version 2, June 1991
@@ -21,9 +22,10 @@
  */
 
 /********************************************************
-Change log:
-    10/21/2008: initial version
-********************************************************/
+ * Change log:
+ * 10/21/2008: initial version
+ * ******************************************************
+ */
 
 #include "moal_main.h"
 #include "moal_eth_ioctl.h"
@@ -45,9 +47,11 @@ Change log:
 #endif
 
 /********************************************************
-			Local Variables
-********************************************************/
+ * Local Variables
+ * ******************************************************
+ */
 #define MRVL_TLV_HEADER_SIZE 4
+
 /* NXP Channel config TLV ID */
 #define MRVL_CHANNELCONFIG_TLV_ID (0x0100 + 0x2a) /* 0x012a */
 
@@ -120,8 +124,9 @@ static t_u8 eu_country_code_table[][COUNTRY_CODE_LEN] = {
 	"TZ", "TG", "TN", "AE", "VA", "EH", "YE", "ZM", "ZW"};
 
 /********************************************************
-			Global Variables
-********************************************************/
+ * Global Variables
+ * ******************************************************
+ */
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 29)
 #ifdef UAP_SUPPORT
@@ -135,8 +140,9 @@ extern const struct net_device_ops woal_netdev_ops;
 #endif
 
 /********************************************************
-			Local Functions
-********************************************************/
+ * Local Functions
+ * ******************************************************
+ */
 /**
  *  @brief This function converts region string to region code
  *
@@ -147,6 +153,7 @@ extern const struct net_device_ops woal_netdev_ops;
 static t_bool woal_is_country_code_supported(t_u8 *country_code)
 {
 	t_u8 i;
+
 	ENTER();
 
 	for (i = 0; i < ARRAY_SIZE(region_code_mapping); i++) {
@@ -208,6 +215,7 @@ static t_u8 region_string_2_region_code(char *region_string)
 t_bool woal_is_etsi_country(t_u8 *country_code)
 {
 	t_u8 i;
+
 	ENTER();
 
 	for (i = 0; i < ARRAY_SIZE(eu_country_code_table); i++) {
@@ -269,8 +277,8 @@ t_u8 woal_get_second_channel_offset(moal_private *priv, int chan)
 
 	memset(&bss_info, 0, sizeof(bss_info));
 	/* Special Case: 20Mhz-only Channel */
-	if (MLAN_STATUS_SUCCESS !=
-	    woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &bss_info))
+	if (woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &bss_info) !=
+	    MLAN_STATUS_SUCCESS)
 		return chan2Offset;
 	if (bss_info.region_code != COUNTRY_CODE_US && chan == 165)
 		return chan2Offset;
@@ -324,6 +332,7 @@ static inline void woal_copy_mc_addr(mlan_multicast_list *mlist,
 				     mlan_802_11_mac_addr mac)
 {
 	t_u32 i = 0;
+
 	for (i = 0; i < mlist->num_multicast_addr; i++) {
 		if (!memcmp(&mlist->mac_list[i], mac, ETH_ALEN))
 			return;
@@ -334,6 +343,25 @@ static inline void woal_copy_mc_addr(mlan_multicast_list *mlist,
 				mac, ETH_ALEN, sizeof(mlan_802_11_mac_addr));
 	mlist->num_multicast_addr++;
 	return;
+}
+
+/**
+ *  @brief Copy NAN network mcast addr to multicast table
+ *
+ *  @param mlist    A pointer to mlan_multicast_list structure
+ *
+ *  @return         Number of multicast addresses
+ */
+static inline int woal_copy_nan_mcast_addr(mlan_multicast_list *mlist)
+{
+	t_u8 nan_network_addr[6] = {0x51, 0x6f, 0x9a, 0x01, 0, 0};
+
+	ENTER();
+
+	woal_copy_mc_addr(mlist, nan_network_addr);
+
+	LEAVE();
+	return mlist->num_multicast_addr;
 }
 
 /**
@@ -361,6 +389,8 @@ static inline int woal_copy_mcast_addr(mlan_multicast_list *mlist,
 		mcptr = mcptr->next;
 	}
 #else
+	// Coverity violation raised for kernel's API
+	// coverity[cert_arr39_c_violation:SUPPRESS]
 	netdev_for_each_mc_addr (mcptr, dev)
 		woal_copy_mc_addr(mlist, mcptr->addr);
 #endif /* < 2.6.35 */
@@ -398,6 +428,9 @@ static int woal_copy_all_mc_list(moal_handle *handle,
 					woal_copy_mcast_addr(mlist,
 							     priv->netdev);
 			}
+			// NAN mcast addr supposed to download whatever the
+			// media_connected is
+			woal_copy_nan_mcast_addr(mlist);
 		}
 #endif
 	}
@@ -533,6 +566,7 @@ static inline t_bool woal_cac_period_block_cmd(moal_private *priv,
 #ifdef UAP_SUPPORT
 		else if (sub_command == MLAN_OID_UAP_BSS_CONFIG) {
 			mlan_ds_bss *bss = (mlan_ds_bss *)req->pbuf;
+
 			if (bss->param.bss_config.channel)
 				ret = MTRUE;
 			else
@@ -583,7 +617,8 @@ static inline t_bool woal_cac_period_block_cmd(moal_private *priv,
 					tag = *(t_u16 *)ptlv_buf;
 					length = *(t_u16 *)(ptlv_buf + 2);
 					/* Check Blocking TLV here, should add
-					 * more... */
+					 * more...
+					 */
 					if (tag == MRVL_CHANNELCONFIG_TLV_ID) {
 						ret = MTRUE;
 						break;
@@ -610,8 +645,9 @@ done:
 }
 
 /********************************************************
-			Global Functions
-********************************************************/
+ * Global Functions
+ * ******************************************************
+ */
 
 /**
  *  @brief Send ioctl request to MLAN
@@ -630,6 +666,7 @@ mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req,
 	mlan_status status;
 	unsigned long flags;
 	t_u32 sub_command = 0;
+	long wait_rv;
 
 	ENTER();
 
@@ -665,7 +702,8 @@ mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req,
 #endif
 	}
 	/* For MLAN_OID_MISC_HOST_CMD, action is 0, "action set" is checked
-	 * later */
+	 * later
+	 */
 	if ((req->action == MLAN_ACT_SET || req->action == 0) &&
 	    priv->phandle->cac_period == MTRUE) {
 		/* CAC checking period left to complete jiffies */
@@ -688,11 +726,11 @@ mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req,
 			cac_left_jiffies = DEF_CAC_DWELL_TIME * HZ / 1000;
 		if (cac_left_jiffies < 0) {
 			/* Avoid driver hang in FW died during CAC measure
-			 * period */
+			 * period
+			 */
 			priv->phandle->cac_period = MFALSE;
 			PRINTM(MERROR,
-			       "CAC measure period spends longer than scheduled time "
-			       "or meas done event never received\n");
+			       "CAC measure period spends longer than scheduled time or meas done event never received\n");
 			status = MLAN_STATUS_FAILURE;
 #ifdef UAP_SUPPORT
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
@@ -712,6 +750,7 @@ mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req,
 		/* Check BSS START first */
 		if (sub_command == MLAN_OID_BSS_START) {
 			mlan_ds_bss *bss;
+
 			bss = (mlan_ds_bss *)req->pbuf;
 			/*
 			 * Bss delay start after channel report received,
@@ -750,11 +789,22 @@ mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req,
 			       "CAC check is on going... Blocking Command %ld seconds\n",
 			       cac_left_jiffies / HZ);
 			/* blocking timeout set to 1.5 * CAC checking period
-			 * left time */
-			wait_event_interruptible_timeout(
+			 * left time
+			 */
+			// coverity error raised for kernel's API
+			// coverity[check_return:SUPPRESS]
+			wait_rv = wait_event_interruptible_timeout(
 				priv->phandle->meas_wait_q,
 				priv->phandle->meas_wait_q_woken,
 				cac_left_jiffies * 3 / 2);
+			if (wait_rv == 0) {
+				PRINTM(MMSG, "meas_wait_q timeout occurred\n");
+			} else if (wait_rv < 0) {
+				PRINTM(MERROR,
+				       "meas_wait_q interrupted by signal\n");
+				status = MLAN_STATUS_FAILURE;
+				goto done;
+			}
 		}
 	}
 #ifdef UAP_CFG80211
@@ -836,6 +886,7 @@ mlan_status woal_request_set_mac_address(moal_private *priv, t_u8 wait_option)
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_bss *bss = NULL;
 	mlan_status status;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -870,6 +921,70 @@ mlan_status woal_request_set_mac_address(moal_private *priv, t_u8 wait_option)
 		HEXDUMP("priv->MacAddr:", priv->current_addr, ETH_ALEN);
 	}
 done:
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+	LEAVE();
+	return status;
+}
+
+/**
+ *  @brief Set PSK
+ *
+ *  @param priv                 A pointer to moal_private structure
+ *  @param wait_option          Wait option
+ *  @param ssid_bssid           A pointer to mlan_ssid_bssid structure
+ *
+ *  @return                     MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING --
+ * success, otherwise fail
+ */
+
+mlan_status woal_set_psk_11ai(moal_private *priv, t_u8 wait_option,
+			      const t_u8 *addr, const t_u8 *key, int key_len)
+{
+	mlan_ioctl_req *req = NULL;
+	mlan_ds_sec_cfg *sec = NULL;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+
+	ENTER();
+
+	if (key_len) {
+		/* Allocate an IOCTL request buffer */
+		req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_sec_cfg));
+		if (req == NULL) {
+			status = MLAN_STATUS_FAILURE;
+			goto error;
+		}
+		/* Fill request buffer */
+		sec = (mlan_ds_sec_cfg *)req->pbuf;
+		sec->sub_command = MLAN_OID_SEC_CFG_PASSPHRASE;
+		req->req_id = MLAN_IOCTL_SEC_CFG;
+		req->action = MLAN_ACT_SET;
+
+		/* Try Get All */
+		memset(&sec->param.passphrase, 0, sizeof(mlan_ds_passphrase));
+
+		if (addr)
+			moal_memcpy_ext(priv->phandle,
+					&sec->param.passphrase.bssid, addr,
+					MLAN_MAC_ADDR_LENGTH,
+					sizeof(mlan_802_11_mac_addr));
+
+		sec->param.passphrase.psk_type = MLAN_PSK_PMK;
+
+		moal_memcpy_ext(priv->phandle,
+				&(sec->param.passphrase.psk.pmk.pmk), key,
+				MLAN_MAX_KEY_LENGTH,
+				sizeof(sec->param.passphrase.psk.pmk.pmk));
+
+		/* Send IOCTL request to MLAN */
+		status = woal_request_ioctl(priv, req, wait_option);
+		if (status != MLAN_STATUS_SUCCESS) {
+			PRINTM(MERROR, "11AI: Failed to set PSK\n");
+			goto error;
+		}
+	}
+
+error:
 	if (status != MLAN_STATUS_PENDING)
 		kfree(req);
 	LEAVE();
@@ -1058,11 +1173,11 @@ static void woal_check_uap_dfs_status(moal_private *priv, t_u8 wait_option,
 #endif
 
 	/* Get BSS information */
-	if (MLAN_STATUS_SUCCESS !=
-	    woal_get_bss_info(priv, wait_option, &bss_info))
+	if (woal_get_bss_info(priv, wait_option, &bss_info) !=
+	    MLAN_STATUS_SUCCESS)
 		goto done;
-	if (MLAN_STATUS_SUCCESS !=
-	    woal_set_get_ap_channel(priv, MLAN_ACT_GET, wait_option, &channel))
+	if (woal_set_get_ap_channel(priv, MLAN_ACT_GET, wait_option,
+				    &channel) != MLAN_STATUS_SUCCESS)
 		goto done;
 	PRINTM(MCMND, "is_11h_active=%d dfs_check_channel=%d\n",
 	       bss_info.is_11h_active, bss_info.dfs_check_channel);
@@ -1073,9 +1188,9 @@ static void woal_check_uap_dfs_status(moal_private *priv, t_u8 wait_option,
 		goto done;
 	if (bss_info.is_11h_active &&
 	    (bss_info.dfs_check_channel == channel.channel)) {
-		if (new_channel < MAX_BG_CHANNEL) {
+		if (new_channel < MAX_BG_CHANNEL)
 			bw = 20;
-		} else {
+		else {
 			switch (channel.bandcfg.chanWidth) {
 			case CHAN_BW_20MHZ:
 				bw = 20;
@@ -1179,9 +1294,8 @@ static void woal_check_uap_dfs_status(moal_private *priv, t_u8 wait_option,
 				MLAN_CUSTOM_IE_DELETE_MASK;
 			status = woal_request_ioctl(priv, ioctl_req,
 						    MOAL_IOCTL_WAIT);
-			if (status != MLAN_STATUS_SUCCESS) {
+			if (status != MLAN_STATUS_SUCCESS)
 				PRINTM(MERROR, "Failed to clear CSA/ECSA IE\n");
-			}
 		}
 	}
 #endif
@@ -1210,19 +1324,20 @@ void woal_check_mc_connection(moal_private *priv, t_u8 wait_option,
 	int i;
 #endif
 	t_u16 enable = 0;
+
 	if (priv->phandle->card_info->drcs &&
 	    moal_extflg_isset(priv->phandle, EXT_CFG80211_DRCS)) {
 		if (woal_mc_policy_cfg(priv, &enable, wait_option,
-				       MLAN_ACT_GET)) {
+				       MLAN_ACT_GET))
 			PRINTM(MERROR, "Get multi-channel policy failed\n");
-		}
 	}
 
 	if (!enable)
 		return;
 #ifdef UAP_SUPPORT
 	for (i = 0; i < handle->priv_num; i++) {
-		if (GET_BSS_ROLE(handle->priv[i]) == MLAN_BSS_ROLE_UAP) {
+		if (handle->priv[i] &&
+		    GET_BSS_ROLE(handle->priv[i]) == MLAN_BSS_ROLE_UAP) {
 			if (handle->priv[i]->bss_started == MTRUE)
 				woal_check_uap_dfs_status(handle->priv[i],
 							  wait_option,
@@ -1276,8 +1391,8 @@ mlan_status woal_bss_start(moal_private *priv, t_u8 wait_option,
 
 	moal_memcpy_ext(priv->phandle, temp_ssid_bssid, ssid_bssid,
 			sizeof(mlan_ssid_bssid), sizeof(mlan_ssid_bssid));
-	if (MLAN_STATUS_SUCCESS ==
-	    woal_find_best_network(priv, wait_option, temp_ssid_bssid))
+	if (woal_find_best_network(priv, wait_option, temp_ssid_bssid) ==
+	    MLAN_STATUS_SUCCESS)
 		woal_check_mc_connection(priv, wait_option,
 					 temp_ssid_bssid->channel);
 	kfree(temp_ssid_bssid);
@@ -1341,6 +1456,7 @@ mlan_status woal_get_bss_info(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_get_info *info = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -1379,14 +1495,16 @@ done:
  *
  *  @param priv         A pointer to moal_private structure
  *  @param action       Action set or get
- *  @param ie           Information element
+ *  @param ie           Information element to set
+ *  @param get_ie       Information element to get
  *  @param ie_len       Length of the IE
  *  @param wait_option  wait option
  *
  *  @return             MLAN_STATUS_SUCCESS -- success, otherwise fail
  */
-mlan_status woal_set_get_gen_ie(moal_private *priv, t_u32 action, t_u8 *ie,
-				int *ie_len, t_u8 wait_option)
+mlan_status woal_set_get_gen_ie(moal_private *priv, t_u32 action,
+				const t_u8 *ie, t_u8 *get_ie, int *ie_len,
+				t_u8 wait_option)
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
 	mlan_ds_misc_cfg *misc = NULL;
@@ -1394,7 +1512,7 @@ mlan_status woal_set_get_gen_ie(moal_private *priv, t_u32 action, t_u8 *ie,
 
 	ENTER();
 
-	if ((action == MLAN_ACT_GET) && (ie == NULL || ie_len == NULL)) {
+	if ((action == MLAN_ACT_GET) && (get_ie == NULL || ie_len == NULL)) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -1431,7 +1549,7 @@ mlan_status woal_set_get_gen_ie(moal_private *priv, t_u32 action, t_u8 *ie,
 	if (action == MLAN_ACT_GET) {
 		*ie_len = misc->param.gen_ie.len;
 		if (*ie_len)
-			moal_memcpy_ext(priv->phandle, ie,
+			moal_memcpy_ext(priv->phandle, get_ie,
 					misc->param.gen_ie.ie_data, *ie_len,
 					*ie_len);
 	}
@@ -1491,7 +1609,8 @@ mlan_status woal_set_get_retry(moal_private *priv, t_u32 action,
 		*value = mib->param.retry_count;
 #ifdef STA_CFG80211
 	/* If set is invoked from other than iw i.e iwconfig,
-	 * wiphy retry count should be updated as well */
+	 * wiphy retry count should be updated as well
+	 */
 	if (IS_STA_CFG80211(priv->phandle->params.cfg80211_wext) &&
 	    priv->wdev && priv->wdev->wiphy &&
 	    (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) &&
@@ -1544,6 +1663,9 @@ int woal_pre_warmreset(moal_private *priv)
 	woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE);
 	/* Initialize private structures */
 	for (intf_num = 0; intf_num < handle->priv_num; intf_num++) {
+		if (!handle->priv[intf_num])
+			continue;
+
 		woal_init_priv(handle->priv[intf_num], MOAL_IOCTL_WAIT);
 #ifdef WIFI_DIRECT_SUPPORT
 #if defined(STA_SUPPORT) && defined(UAP_SUPPORT)
@@ -1552,10 +1674,10 @@ int woal_pre_warmreset(moal_private *priv)
 		     MLAN_BSS_TYPE_WIFIDIRECT) &&
 		    (GET_BSS_ROLE(handle->priv[intf_num]) ==
 		     MLAN_BSS_ROLE_UAP)) {
-			if (MLAN_STATUS_SUCCESS !=
-			    woal_bss_role_cfg(handle->priv[intf_num],
+			if (woal_bss_role_cfg(handle->priv[intf_num],
 					      MLAN_ACT_SET, MOAL_IOCTL_WAIT,
-					      &bss_role)) {
+					      &bss_role) !=
+			    MLAN_STATUS_SUCCESS) {
 				ret = -EFAULT;
 				goto done;
 			}
@@ -1632,8 +1754,10 @@ int woal_warmreset(moal_private *priv)
 
 	/* Enable interfaces */
 	for (intf_num = 0; intf_num < handle->priv_num; intf_num++) {
-		netif_device_attach(handle->priv[intf_num]->netdev);
-		woal_start_queue(handle->priv[intf_num]->netdev);
+		if (handle->priv[intf_num]) {
+			netif_device_attach(handle->priv[intf_num]->netdev);
+			woal_start_queue(handle->priv[intf_num]->netdev);
+		}
 	}
 done:
 	LEAVE();
@@ -1688,7 +1812,8 @@ mlan_status woal_set_get_rts(moal_private *priv, t_u32 action, t_u8 wait_option,
 		*value = mib->param.rts_threshold;
 #ifdef STA_CFG80211
 	/* If set is invoked from other than iw i.e iwconfig,
-	 * wiphy RTS threshold should be updated as well */
+	 * wiphy RTS threshold should be updated as well
+	 */
 	if (IS_STA_CFG80211(priv->phandle->params.cfg80211_wext) &&
 	    priv->wdev && priv->wdev->wiphy &&
 	    (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) &&
@@ -1751,7 +1876,8 @@ mlan_status woal_set_get_frag(moal_private *priv, t_u32 action,
 		*value = mib->param.frag_threshold;
 #ifdef STA_CFG80211
 	/* If set is invoked from other than iw i.e iwconfig,
-	 * wiphy fragment threshold should be updated as well */
+	 * wiphy fragment threshold should be updated as well
+	 */
 	if (IS_STA_CFG80211(priv->phandle->params.cfg80211_wext) &&
 	    priv->wdev && priv->wdev->wiphy &&
 	    (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) &&
@@ -1782,6 +1908,7 @@ mlan_status woal_set_get_tx_power(moal_private *priv, t_u32 action,
 	mlan_ds_power_cfg *pcfg = NULL;
 	mlan_ioctl_req *req = NULL;
 	mlan_status ret = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_power_cfg));
@@ -1879,7 +2006,8 @@ mlan_status woal_set_get_power_mgmt(moal_private *priv, t_u32 action,
 
 #ifdef STA_CFG80211
 	/* If set is invoked from other than iw i.e iwconfig,
-	 * wiphy IEEE power save mode should be updated */
+	 * wiphy IEEE power save mode should be updated
+	 */
 	if (IS_STA_CFG80211(priv->phandle->params.cfg80211_wext) &&
 	    priv->wdev && (GET_BSS_ROLE(priv) == MLAN_BSS_ROLE_STA) &&
 	    (action == MLAN_ACT_SET)) {
@@ -2125,6 +2253,51 @@ done:
 	return ret;
 }
 
+/**
+ *  @brief Get previous AP's assoc_info
+ *
+ *  @param priv                 A pointer to moal_private structure
+ *  @param assoc_info            A pointer to mlan_ds_assoc_info structure
+ *  @param wait_option          wait option
+ *
+ *  @return                     MLAN_STATUS_SUCCESS -- success, otherwise fail
+ */
+mlan_status woal_get_prev_assoc_info(moal_private *priv,
+				     mlan_ds_assoc_info *assoc_info,
+				     t_u8 wait_option)
+{
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	mlan_ds_misc_cfg *misc = NULL;
+	mlan_ioctl_req *req = NULL;
+
+	ENTER();
+
+	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
+	if (req == NULL) {
+		PRINTM(MERROR,
+		       "Fail to allocate buffer for get assoc info request\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	req->req_id = MLAN_IOCTL_MISC_CFG;
+	misc = (pmlan_ds_misc_cfg)req->pbuf;
+	misc->sub_command = MLAN_OID_MISC_PREV_ASSOC_INFO;
+	req->action = MLAN_ACT_GET;
+
+	ret = woal_request_ioctl(priv, req, wait_option);
+	if (ret == MLAN_STATUS_SUCCESS && assoc_info)
+		moal_memcpy_ext(priv->phandle, assoc_info,
+				&misc->param.assoc_info,
+				sizeof(mlan_ds_assoc_info),
+				sizeof(mlan_ds_assoc_info));
+
+done:
+	if (ret != MLAN_STATUS_PENDING)
+		kfree(req);
+	LEAVE();
+	return ret;
+}
 #endif
 
 /**
@@ -2143,6 +2316,7 @@ mlan_status woal_request_get_fw_info(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_get_info *info;
 	mlan_status status;
+
 	ENTER();
 	memset(priv->current_addr, 0xff, ETH_ALEN);
 
@@ -2163,7 +2337,27 @@ mlan_status woal_request_get_fw_info(moal_private *priv, t_u8 wait_option,
 	/* Send IOCTL request to MLAN */
 	status = woal_request_ioctl(priv, req, wait_option);
 	if (status == MLAN_STATUS_SUCCESS) {
-		priv->phandle->fw_release_number = info->param.fw_info.fw_ver;
+		moal_memcpy_ext(priv->phandle,
+				&priv->phandle->fw_release_number,
+				&info->param.fw_info.fw_ver,
+				sizeof(info->param.fw_info.fw_ver),
+				sizeof(priv->phandle->fw_release_number));
+		strncpy(priv->phandle->fw_ver_milestone,
+			info->param.fw_info.fw_ver_milestone,
+			sizeof(priv->phandle->fw_ver_milestone) - 1);
+		priv->phandle->fw_ver_milestone
+			[sizeof(priv->phandle->fw_ver_milestone) - 1] = '\0';
+		strncpy(priv->phandle->fw_ver_buildtype,
+			info->param.fw_info.fw_ver_buildtype,
+			sizeof(priv->phandle->fw_ver_buildtype) - 1);
+		priv->phandle->fw_ver_buildtype
+			[sizeof(priv->phandle->fw_ver_buildtype) - 1] = '\0';
+		strncpy(priv->phandle->fw_ver_data,
+			info->param.fw_info.fw_ver_data,
+			sizeof(priv->phandle->fw_ver_data) - 1);
+		priv->phandle
+			->fw_ver_data[sizeof(priv->phandle->fw_ver_data) - 1] =
+			'\0';
 		priv->phandle->fw_hotfix_version =
 			info->param.fw_info.hotfix_version;
 		priv->phandle->fw_ecsa_enable = info->param.fw_info.ecsa_enable;
@@ -2172,8 +2366,6 @@ mlan_status woal_request_get_fw_info(moal_private *priv, t_u8 wait_option,
 		priv->phandle->sec_rgpower = info->param.fw_info.sec_rgpower;
 		priv->phandle->fw_getlog_enable =
 			info->param.fw_info.getlog_enable;
-		priv->phandle->fw_roaming_support =
-			info->param.fw_info.fw_roaming_support;
 		if (priv->current_addr[0] == 0xff)
 			moal_memcpy_ext(priv->phandle, priv->current_addr,
 					&info->param.fw_info.mac_addr,
@@ -2207,7 +2399,7 @@ done:
  *  @brief Get current channel of active interface
  *
  *  @param priv        A pointer to moal_private
- *  @param channel 	   A pointer to chan_band_info structure
+ *  @param channel	   A pointer to chan_band_info structure
  *
  *  @return            MLAN_STATUS_SUCCESS or MLAN_STATUS_FAILURE
  */
@@ -2216,7 +2408,10 @@ mlan_status woal_get_active_intf_channel(moal_private *priv,
 {
 	moal_handle *handle = priv->phandle;
 	int i;
+
 	for (i = 0; i < handle->priv_num; i++) {
+		if (!handle->priv[i])
+			continue;
 #ifdef STA_SUPPORT
 		if (GET_BSS_ROLE(handle->priv[i]) == MLAN_BSS_ROLE_STA) {
 			if (handle->priv[i]->media_connected == MTRUE)
@@ -2303,6 +2498,7 @@ mlan_status woal_get_debug_info(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_get_info *info = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -2459,7 +2655,8 @@ int woal_hostcmd_ioctl(struct net_device *dev, struct ifreq *req)
 	memset(&cmd_header, 0, sizeof(cmd_header));
 
 	/* get command header */
-	if (copy_from_user(&cmd_header, req->ifr_data + sizeof(buf_len),
+	if (copy_from_user(&cmd_header,
+			   (void *)((t_u8 *)(req->ifr_data) + sizeof(buf_len)),
 			   sizeof(HostCmd_Header))) {
 		PRINTM(MERROR, "Copy from user failed\n");
 		ret = -EFAULT;
@@ -2485,7 +2682,7 @@ int woal_hostcmd_ioctl(struct net_device *dev, struct ifreq *req)
 
 	/* get the whole command from user */
 	if (copy_from_user(misc->param.hostcmd.cmd,
-			   req->ifr_data + sizeof(buf_len),
+			   (void *)((t_u8 *)(req->ifr_data) + sizeof(buf_len)),
 			   misc->param.hostcmd.len)) {
 		PRINTM(MERROR, "copy from user failed\n");
 		ret = -EFAULT;
@@ -2506,7 +2703,7 @@ int woal_hostcmd_ioctl(struct net_device *dev, struct ifreq *req)
 		ret = -EFAULT;
 		goto done;
 	}
-	if (copy_to_user(req->ifr_data + sizeof(buf_len),
+	if (copy_to_user((void *)((t_u8 *)(req->ifr_data) + sizeof(buf_len)),
 			 (t_u8 *)misc->param.hostcmd.cmd,
 			 misc->param.hostcmd.len)) {
 		ret = -EFAULT;
@@ -2617,6 +2814,7 @@ static mlan_status woal_send_mgmt_packet(moal_private *priv, pmlan_buffer pmbuf)
 	mlan_ioctl_req *ioctl_req = NULL;
 	mlan_ds_misc_cfg *misc = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 	ioctl_req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
 	if (ioctl_req == NULL)
@@ -2640,6 +2838,85 @@ done:
 		kfree(ioctl_req);
 	LEAVE();
 	return status;
+}
+
+/**
+ *  @brief function to send raw data packet from monitor mode interface
+ *
+ *  @param dev      A pointer to net_device structure
+ *  @param req      A pointer to ifreq structure
+ *  @return         0 --success, otherwise fail
+ */
+int woal_send_mon_if_packet(struct net_device *dev, struct ifreq *req)
+{
+	moal_private *priv = (moal_private *)netdev_priv(dev);
+	t_u32 packet_len = 0;
+	int ret = 0;
+	pmlan_buffer pmbuf = NULL;
+	mlan_status status;
+
+	ENTER();
+
+	if (!priv || !priv->phandle) {
+		PRINTM(MERROR, "priv or handle is NULL\n");
+		ret = -EFAULT;
+		goto done;
+	}
+
+	/* Sanity check */
+	if (req->ifr_data == NULL) {
+		PRINTM(MERROR, "woal_send_mon_if_packet() corrupt data\n");
+		ret = -EFAULT;
+		goto done;
+	}
+
+	moal_memcpy_ext(NULL, &packet_len, req->ifr_data, sizeof(packet_len),
+			sizeof(packet_len));
+#define PACKET_HEADER_LEN 8
+#define FRAME_LEN 2
+#define MV_ETH_FRAME_LEN 1514
+	if (packet_len > MV_ETH_FRAME_LEN) {
+		PRINTM(MERROR, "Invalid packet length %d\n", packet_len);
+		ret = -EFAULT;
+		goto done;
+	}
+	pmbuf = woal_alloc_mlan_buffer(
+		priv->phandle, (int)(MLAN_MIN_DATA_HEADER_LEN +
+				     (int)packet_len + PACKET_HEADER_LEN));
+	if (!pmbuf) {
+		PRINTM(MERROR, "Fail to allocate mlan_buffer\n");
+		ret = -ENOMEM;
+		goto done;
+	}
+	pmbuf->data_offset = MLAN_MIN_DATA_HEADER_LEN;
+
+	moal_memcpy_ext(NULL, pmbuf->pbuf + pmbuf->data_offset,
+			(void *)((t_u8 *)(req->ifr_data) + sizeof(packet_len)),
+			PACKET_HEADER_LEN + packet_len,
+			PACKET_HEADER_LEN + packet_len);
+
+	pmbuf->data_len = PACKET_HEADER_LEN + packet_len;
+	pmbuf->buf_type = MLAN_BUF_TYPE_RAW_DATA;
+	pmbuf->bss_index = priv->bss_index;
+
+	status = mlan_send_packet(priv->phandle->pmlan_adapter, pmbuf);
+	switch (status) {
+	case MLAN_STATUS_PENDING:
+		atomic_inc(&priv->phandle->tx_pending);
+		queue_work(priv->phandle->workqueue, &priv->phandle->main_work);
+		break;
+	case MLAN_STATUS_SUCCESS:
+		woal_free_mlan_buffer(priv->phandle, pmbuf);
+		break;
+	case MLAN_STATUS_FAILURE:
+	default:
+		woal_free_mlan_buffer(priv->phandle, pmbuf);
+		ret = -EFAULT;
+		break;
+	}
+done:
+	LEAVE();
+	return ret;
 }
 
 /**
@@ -2697,9 +2974,10 @@ int woal_send_host_packet(struct net_device *dev, struct ifreq *req)
 	pmbuf->data_offset = MLAN_MIN_DATA_HEADER_LEN;
 
 	/* get whole packet and header */
-	if (copy_from_user(pmbuf->pbuf + pmbuf->data_offset,
-			   req->ifr_data + sizeof(packet_len),
-			   PACKET_HEADER_LEN + packet_len)) {
+	if (copy_from_user(
+		    pmbuf->pbuf + pmbuf->data_offset,
+		    (void *)((t_u8 *)(req->ifr_data) + sizeof(packet_len)),
+		    PACKET_HEADER_LEN + packet_len)) {
 		PRINTM(MERROR, "Copy from user failed\n");
 		ret = -EFAULT;
 		woal_free_mlan_buffer(priv->phandle, pmbuf);
@@ -2711,9 +2989,13 @@ int woal_send_host_packet(struct net_device *dev, struct ifreq *req)
 
 	mgmt = (IEEE80211_MGMT *)(pmbuf->pbuf + pmbuf->data_offset +
 				  PACKET_HEADER_LEN + FRAME_LEN);
-
 	if (priv->phandle->cmd_tx_data &&
-	    ((mgmt->frame_control & IEEE80211_FC_MGMT_FRAME_TYPE_MASK) == 0)) {
+	    (((mgmt->frame_control & IEEE80211_FC_MGMT_FRAME_TYPE_MASK) == 0)
+// Nighthawk CSI need to send qos null packets via cmd 0x283
+#if defined(SDIW610) || defined(USBIW610)
+	     || (mgmt->frame_control == 0xc8)
+#endif
+		     )) {
 		status = woal_send_mgmt_packet(priv, pmbuf);
 		woal_free_mlan_buffer(priv->phandle, pmbuf);
 		goto done;
@@ -2969,9 +3251,11 @@ mlan_status woal_bss_role_cfg(moal_private *priv, t_u8 action, t_u8 wait_option,
 				dev->get_wireless_stats =
 					woal_get_uap_wireless_stats;
 #endif
+#ifdef CONFIG_WIRELESS_EXT
 				dev->wireless_handlers =
 					(struct iw_handler_def
 						 *)&woal_uap_handler_def;
+#endif
 			}
 #endif /* UAP_WEXT */
 		} else if (*bss_role == MLAN_BSS_ROLE_STA) {
@@ -2989,9 +3273,11 @@ mlan_status woal_bss_role_cfg(moal_private *priv, t_u8 action, t_u8 wait_option,
 				dev->get_wireless_stats =
 					woal_get_wireless_stats;
 #endif
+#ifdef CONFIG_WIRELESS_EXT
 				dev->wireless_handlers =
 					(struct iw_handler_def
 						 *)&woal_handler_def;
+#endif
 			}
 #endif /* STA_WEXT */
 		}
@@ -3016,7 +3302,7 @@ done:
 int woal_set_get_bss_role(moal_private *priv, struct iwreq *wrq)
 {
 	int ret = 0;
-	int bss_role = 0;
+	t_u32 bss_role = 0;
 	t_u8 action = MLAN_ACT_GET;
 
 	ENTER();
@@ -3038,24 +3324,23 @@ int woal_set_get_bss_role(moal_private *priv, struct iwreq *wrq)
 			ret = -EINVAL;
 			goto done;
 		}
-		if (bss_role == (int)GET_BSS_ROLE(priv)) {
+		if (bss_role == GET_BSS_ROLE(priv)) {
 			PRINTM(MWARN, "Already BSS is in desired role\n");
 			ret = -EINVAL;
 			goto done;
 		}
 		action = MLAN_ACT_SET;
 		/* Reset interface */
-		if (MLAN_STATUS_SUCCESS !=
-		    woal_reset_intf(priv, MOAL_IOCTL_WAIT, MFALSE)) {
-			PRINTM(MERROR, "%s: reset_intf failed \n", __func__);
+		if (woal_reset_intf(priv, MOAL_IOCTL_WAIT, MFALSE) !=
+		    MLAN_STATUS_SUCCESS) {
+			PRINTM(MERROR, "%s: reset_intf failed\n", __func__);
 			ret = -EFAULT;
 			goto done;
 		}
 	}
 
-	if (MLAN_STATUS_SUCCESS != woal_bss_role_cfg(priv, action,
-						     MOAL_IOCTL_WAIT,
-						     (t_u8 *)&bss_role)) {
+	if (woal_bss_role_cfg(priv, action, MOAL_IOCTL_WAIT,
+			      (t_u8 *)&bss_role) != MLAN_STATUS_SUCCESS) {
 		ret = -EFAULT;
 		goto done;
 	}
@@ -3134,6 +3419,8 @@ static mlan_status woal_set_ipv6_ra_offload(moal_handle *handle, t_u8 enable)
 	misc->param.ipv6_ra_offload.ipv6_addrs_count = priv->ipv6count;
 	spin_lock_irqsave(&priv->ipv6addr_lock, flags);
 	ipv6_ra = misc->param.ipv6_ra_offload.ipv6_addrs;
+	// Coverity violation raised for kernel's API
+	// coverity[cert_arr39_c_violation:SUPPRESS]
 	list_for_each_entry (ipv6_entry, &priv->ipv6_addrses, link) {
 		moal_memcpy_ext(priv->phandle, ipv6_ra, ipv6_entry->ipv6_addr,
 				IPADDR_LEN, IPADDR_LEN);
@@ -3177,7 +3464,7 @@ static mlan_status woal_set_wake_on_mdns(moal_handle *handle, t_u8 enable)
 	req->action = MLAN_ACT_SET;
 
 	mef_cfg = (mlan_ds_misc_mef_flt_cfg *)(&misc->param.mef_flt_cfg);
-	mef_cfg->mef_act_type = MEF_ACT_WOWLAN;
+	mef_cfg->mef_act_type = MEF_ACT_MDNS;
 	mef_cfg->criteria = MBIT(3);
 
 	entry = (mef_entry_t *)&mef_cfg->mef_entry;
@@ -3201,7 +3488,7 @@ static mlan_status woal_set_wake_on_mdns(moal_handle *handle, t_u8 enable)
 	filter->type = TYPE_BYTE_EQ;
 	filter->repeat = 1;
 	filter->offset = 38;
-	filter->num_bytes = 4;
+	filter->num_byte_seq = 4;
 	moal_memcpy_ext(handle, filter->byte_seq, "\xe0\x00\x00\xfb", 4,
 			sizeof(filter->byte_seq));
 	entry->rpn[2] = RPN_TYPE_AND;
@@ -3728,33 +4015,16 @@ mlan_status woal_cancel_hs(moal_private *priv, t_u8 wait_option)
 	hscfg.is_invoke_hostcmd = MTRUE;
 	ret = woal_set_get_hs_params(priv, MLAN_ACT_SET, wait_option, &hscfg);
 	if (ret != MLAN_STATUS_SUCCESS && ret != MLAN_STATUS_PENDING) {
-		PRINTM(MERROR, "%s: woal_set_get_hs_params failed \n",
-		       __func__);
+		PRINTM(MERROR, "%s: woal_set_get_hs_params failed\n", __func__);
 		LEAVE();
 		return ret;
 	}
-	if (moal_extflg_isset(priv->phandle, EXT_ROAMOFFLOAD_IN_HS)) {
-		/*Disable firmware roaming*/
-		woal_enable_fw_roaming(priv, 0);
-	}
-	if (priv->phandle->fw_roam_enable == ROAM_OFFLOAD_WITH_BSSID ||
-	    priv->phandle->fw_roam_enable == ROAM_OFFLOAD_WITH_SSID ||
-	    priv->phandle->fw_roam_enable == AUTO_RECONNECT)
-		if (woal_config_fw_roaming(priv, ROAM_OFFLOAD_RESUME_CFG, NULL))
-			PRINTM(MERROR,
-			       "config fw roaming ROAM_OFFLOAD_RESUME_CFG failed\n");
-#ifdef STA_CFG80211
-	if (priv->phandle->fw_roam_enable == AUTO_RECONNECT)
-		woal_set_clear_pmk(priv, MLAN_ACT_CLEAR);
-#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
 #if IS_ENABLED(CONFIG_IPV6)
-	if (priv->phandle->hs_auto_arp) {
-		PRINTM(MIOCTL, "Cancel Host Sleep... remove ipv6 offload\n");
-		/** Set ipv6 router advertisement message offload */
-		woal_set_ipv6_ra_offload(priv->phandle, MFALSE);
-	}
+	PRINTM(MIOCTL, "Cancel Host Sleep... remove ipv6 offload\n");
+	/** Set ipv6 router advertisement message offload */
+	woal_set_ipv6_ra_offload(priv->phandle, MFALSE);
 	/** Set Neighbor Solitation message offload */
 	woal_set_ipv6_ns_offload(priv->phandle, MFALSE);
 #endif
@@ -3777,180 +4047,25 @@ mlan_status woal_cancel_hs(moal_private *priv, t_u8 wait_option)
 #ifdef STA_CFG80211
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
 	handle = priv->phandle;
-	if (GTK_REKEY_OFFLOAD_SUSPEND == handle->params.gtk_rekey_offload) {
+	if (handle->params.gtk_rekey_offload == GTK_REKEY_OFFLOAD_SUSPEND) {
 		PRINTM(MIOCTL,
 		       "Cancel Host Sleep... clear gtk rekey offload of FW\n");
 		for (i = 0; i < handle->priv_num; i++) {
 			if (handle->priv[i] &&
 			    handle->priv[i]->gtk_data_ready) {
 				PRINTM(MCMND, "clear GTK in resume\n");
-				if (MLAN_STATUS_SUCCESS !=
-				    woal_set_rekey_data(handle->priv[i], NULL,
+				if (woal_set_rekey_data(handle->priv[i], NULL,
 							MLAN_ACT_CLEAR,
-							wait_option))
+							wait_option) !=
+				    MLAN_STATUS_SUCCESS)
 					PRINTM(MERROR,
-					       "%s: clear GTK in resume failed \n",
+					       "%s: clear GTK in resume failed\n",
 					       __func__);
 			}
 		}
 	}
 #endif
 #endif
-
-	LEAVE();
-	return ret;
-}
-
-/**  @brief This function config fw roaming parameters
- *
- *  @param priv     A Pointer to the moal_private structure
- *  @return         MTRUE or MFALSE
- */
-static int woal_set_fw_roaming_params(moal_private *priv)
-{
-	int ret = 0;
-	mlan_status status = MLAN_STATUS_SUCCESS;
-	mlan_ioctl_req *req = NULL;
-	mlan_ds_sec_cfg *sec = NULL;
-	woal_roam_offload_cfg roam_offload_cfg;
-#ifdef STA_CFG80211
-	t_u8 zero[MLAN_MAX_KEY_LENGTH] = {0};
-#endif
-
-	/*Enable fw roaming*/
-	if (woal_config_fw_roaming(priv, ROAM_OFFLOAD_ENABLE, NULL))
-		PRINTM(MERROR,
-		       "config fw roaming ROAM_OFFLOAD_ENABLE failed\n");
-	/*Download fw roaming parameters*/
-	if (woal_config_fw_roaming(priv, ROAM_OFFLOAD_PARAM_CFG,
-				   &priv->phandle->fw_roam_params))
-		PRINTM(MERROR,
-		       "config fw roaming ROAM_OFFLOAD_PARAM_CFG failed\n");
-
-		/*Download userset passphrase key and current connection's PMK*/
-#ifdef STA_CFG80211
-	if (!priv->phandle->fw_roam_params.userset_passphrase) {
-		woal_set_clear_pmk(priv, MLAN_ACT_SET);
-		goto done;
-	}
-#endif
-
-	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_sec_cfg));
-	if (req == NULL) {
-		ret = -ENOMEM;
-		goto done;
-	}
-
-	req->req_id = MLAN_IOCTL_SEC_CFG;
-	sec = (mlan_ds_sec_cfg *)req->pbuf;
-	sec->sub_command = MLAN_OID_SEC_CFG_PASSPHRASE;
-	sec->multi_passphrase = 1;
-	req->action = MLAN_ACT_SET;
-
-	/*Copy user set passphrase*/
-	moal_memcpy_ext(priv->phandle, (char *)sec->param.roam_passphrase,
-			(char *)priv->phandle->ssid_passphrase,
-			MAX_SEC_SSID_NUM * sizeof(mlan_ds_passphrase),
-			MAX_SEC_SSID_NUM * sizeof(mlan_ds_passphrase));
-	roam_offload_cfg.userset_passphrase =
-		priv->phandle->fw_roam_params.userset_passphrase;
-#ifdef STA_CFG80211
-	if (memcmp(priv->pmk.pmk, zero, MLAN_MAX_KEY_LENGTH)) {
-		/*Download current connection PMK*/
-		if (priv->pmk_saved) {
-			woal_set_clear_pmk(priv, MLAN_ACT_SET);
-			priv->pmk_saved = false;
-		}
-	}
-#endif
-	/*Set userset to mlan adapter*/
-	if (woal_config_fw_roaming(priv, ROAM_OFFLOAD_ENABLE,
-				   &roam_offload_cfg))
-		PRINTM(MERROR,
-		       "config fw roaming ROAM_OFFLOAD_ENABLE failed\n");
-
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS) {
-		ret = -EFAULT;
-		goto done;
-	}
-done:
-	if (status != MLAN_STATUS_PENDING)
-		kfree(req);
-	LEAVE();
-	return ret;
-}
-
-/**  @brief This function enable/disable fw roaming
- *
- *  @param priv     A Pointer to the moal_private structure
- *  @param enable   Enable/disable fw roaming
- *  @return         MTRUE or MFALSE
- */
-int woal_enable_fw_roaming(moal_private *priv, int data)
-{
-	mlan_ioctl_req *ioctl_req = NULL;
-	mlan_ds_misc_cfg *misc = NULL;
-	mlan_ds_misc_roam_offload *roam = NULL;
-	mlan_status status = MLAN_STATUS_SUCCESS;
-	int ret = 0;
-
-	ENTER();
-
-	if (!priv || !priv->phandle) {
-		PRINTM(MERROR, "priv or handle is null\n");
-		ret = -EFAULT;
-		goto done;
-	}
-
-	ioctl_req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
-	if (ioctl_req == NULL) {
-		ret = -ENOMEM;
-		goto done;
-	}
-
-	if (!data && !priv->phandle->fw_roam_enable) {
-		PRINTM(MIOCTL, "Fw roaming already disabled\n");
-		goto done;
-	}
-
-	misc = (mlan_ds_misc_cfg *)ioctl_req->pbuf;
-	misc->sub_command = MLAN_OID_MISC_ROAM_OFFLOAD;
-	ioctl_req->req_id = MLAN_IOCTL_MISC_CFG;
-
-	roam = (mlan_ds_misc_roam_offload *)&misc->param.roam_offload;
-	roam->aplist.ap_num = 0;
-	/* SET operation */
-	ioctl_req->action = MLAN_ACT_SET;
-	roam->enable = data;
-	roam->config_mode = ROAM_OFFLOAD_ENABLE;
-
-	if (moal_extflg_isset(priv->phandle, EXT_ROAMOFFLOAD_IN_HS) && data) {
-		priv->phandle->fw_roam_enable = data;
-		goto done;
-	}
-
-	status = woal_request_ioctl(priv, ioctl_req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS) {
-		ret = -EFAULT;
-		goto done;
-	}
-	priv->phandle->fw_roam_enable = data;
-	if (!data) {
-		memset((char *)&priv->phandle->fw_roam_params, 0,
-		       sizeof(woal_roam_offload_cfg));
-		memset((char *)&priv->phandle->ssid_passphrase, 0,
-		       MAX_SEC_SSID_NUM * sizeof(mlan_ds_passphrase));
-	}
-#ifdef STA_CFG80211
-	else if (priv->media_connected && priv->pmk_saved) {
-		woal_set_clear_pmk(priv, MLAN_ACT_SET);
-		priv->pmk_saved = false;
-	}
-#endif
-done:
-	if (status != MLAN_STATUS_PENDING)
-		kfree(ioctl_req);
 
 	LEAVE();
 	return ret;
@@ -4022,10 +4137,10 @@ int woal_enable_hs(moal_private *priv)
 					      EXT_DISCONNECT_ON_SUSPEND) &&
 			    handle->priv[i]->media_connected == MTRUE) {
 				PRINTM(MIOCTL, "disconnect on suspend\n");
-				if (MLAN_STATUS_SUCCESS !=
-				    woal_disconnect(handle->priv[i],
+				if (woal_disconnect(handle->priv[i],
 						    MOAL_NO_WAIT, NULL,
-						    DEF_DEAUTH_REASON_CODE)) {
+						    DEF_DEAUTH_REASON_CODE) !=
+				    MLAN_STATUS_SUCCESS) {
 					PRINTM(MIOCTL,
 					       "disconnect on suspend failed\n");
 				}
@@ -4080,29 +4195,15 @@ int woal_enable_hs(moal_private *priv)
 	woal_reconfig_bgscan(priv->phandle);
 #endif
 
-	if (moal_extflg_isset(priv->phandle, EXT_ROAMOFFLOAD_IN_HS) &&
-	    handle->fw_roam_enable) {
-		woal_set_fw_roaming_params(priv);
-	}
-	if (handle->fw_roam_enable == ROAM_OFFLOAD_WITH_BSSID ||
-	    handle->fw_roam_enable == ROAM_OFFLOAD_WITH_SSID ||
-	    handle->fw_roam_enable == AUTO_RECONNECT) {
-		if (woal_config_fw_roaming(priv, ROAM_OFFLOAD_SUSPEND_CFG,
-					   NULL))
-			PRINTM(MERROR,
-			       "config fw roaming ROAM_OFFLOAD_SUSPEND_CFG failed\n");
-#ifdef STA_CFG80211
-		if (priv->phandle->fw_roam_enable == AUTO_RECONNECT)
-			woal_set_clear_pmk(priv, MLAN_ACT_SET);
-#endif
-	}
 	media_connected = woal_check_media_connected(handle);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
 #if IS_ENABLED(CONFIG_IPV6)
-	if (handle->hs_auto_arp && media_connected) {
+	if (media_connected) {
 		PRINTM(MIOCTL, "Host Sleep enabled... set ipv6 offload\n");
 		/** Set ipv6 router advertisement message offload */
 		woal_set_ipv6_ra_offload(handle, MTRUE);
+	}
+	if (handle->hs_auto_arp && media_connected) {
 		/** Set Neighbor Solitation message offload */
 		woal_set_ipv6_ns_offload(handle, MTRUE);
 	}
@@ -4125,20 +4226,20 @@ int woal_enable_hs(moal_private *priv)
 
 #ifdef STA_CFG80211
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
-	if (GTK_REKEY_OFFLOAD_SUSPEND == handle->params.gtk_rekey_offload) {
+	if (handle->params.gtk_rekey_offload == GTK_REKEY_OFFLOAD_SUSPEND) {
 		PRINTM(MIOCTL,
 		       "Host Sleep enabled... set gtk rekey offload to FW\n");
 		for (i = 0; i < handle->priv_num; i++) {
 			if (handle->priv[i] &&
 			    handle->priv[i]->gtk_data_ready) {
 				PRINTM(MCMND, "set GTK before suspend\n");
-				if (MLAN_STATUS_SUCCESS !=
-				    woal_set_rekey_data(
+				if (woal_set_rekey_data(
 					    handle->priv[i],
 					    &handle->priv[i]->gtk_rekey_data,
-					    MLAN_ACT_SET, MOAL_NO_WAIT))
+					    MLAN_ACT_SET, MOAL_NO_WAIT) !=
+				    MLAN_STATUS_SUCCESS)
 					PRINTM(MERROR,
-					       "%s: set GTR before suspend failed \n",
+					       "%s: set GTR before suspend failed\n",
 					       __func__);
 			}
 		}
@@ -4189,9 +4290,8 @@ int woal_enable_hs(moal_private *priv)
 				     handle->hs_activate_wait_q_woken,
 				     HS_ACTIVE_TIMEOUT);
 #ifdef SDIO_MMC
-	if (IS_SD(handle->card_type)) {
+	if (IS_SD(handle->card_type))
 		sdio_claim_host(((sdio_mmc_card *)handle->card)->func);
-	}
 #endif
 
 #ifdef SDIO_SUSPEND_RESUME
@@ -4220,9 +4320,8 @@ int woal_enable_hs(moal_private *priv)
 	}
 #endif /* SDIO_SUSPEND_RESUME*/
 #ifdef SDIO_MMC
-	if (IS_SD(handle->card_type)) {
+	if (IS_SD(handle->card_type))
 		sdio_release_host(((sdio_mmc_card *)handle->card)->func);
-	}
 #endif
 	if (hs_actived != MTRUE) {
 		handle->hs_skip_count++;
@@ -4295,6 +4394,7 @@ mlan_status woal_set_wapi_enable(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_sec_cfg *sec = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -4331,28 +4431,62 @@ done:
  */
 void woal_get_version(moal_handle *handle, char *version, int max_len)
 {
-	t_u8 hotfix_ver = 0;
-	union {
-		t_u32 l;
-		t_u8 c[4];
-	} ver;
-	char fw_ver[32];
+	t_u16 hotfix_ver = 0, copied_len = 0;
+	char fw_ver[100];
 
 	ENTER();
 
+	memset(fw_ver, 0, sizeof(fw_ver));
 	hotfix_ver = handle->fw_hotfix_version;
-	ver.l = handle->fw_release_number;
 
-	if (hotfix_ver) {
-		snprintf(fw_ver, sizeof(fw_ver), "%u.%u.%u.p%u.%u", ver.c[2],
-			 ver.c[1], ver.c[0], ver.c[3], hotfix_ver);
-
-	} else {
-		snprintf(fw_ver, sizeof(fw_ver), "%u.%u.%u.p%u", ver.c[2],
-			 ver.c[1], ver.c[0], ver.c[3]);
+	if (strlen(handle->fw_ver_milestone) != 0) {
+		if (snprintf(fw_ver, sizeof(fw_ver), "%s-",
+			     handle->fw_ver_milestone) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print fw version milestone in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
 	}
 
-	snprintf(version, max_len, handle->driver_version, fw_ver);
+	if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+		     "%u.%u.%u.p%u", handle->fw_release_number.majorRevNum,
+		     handle->fw_release_number.minorRevNum,
+		     handle->fw_release_number.releaseNum,
+		     handle->fw_release_number.patchLevel) <= 0)
+		PRINTM(MERROR, "Failed to print fw version in buffer\n");
+	else
+		copied_len = strlen(fw_ver);
+
+	if (hotfix_ver) {
+		if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+			     ".%u", hotfix_ver) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print hotfix fw version in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
+	}
+
+	if (strlen(handle->fw_ver_data) != 0) {
+		if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+			     ", %s", handle->fw_ver_data) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print fw version data in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
+	}
+
+	if (strlen(handle->fw_ver_buildtype) != 0) {
+		if (snprintf(fw_ver + copied_len, sizeof(fw_ver) - copied_len,
+			     "-%s", handle->fw_ver_buildtype) <= 0)
+			PRINTM(MERROR,
+			       "Failed to print fw version buildtype in buffer\n");
+		else
+			copied_len = strlen(fw_ver);
+	}
+
+	if (snprintf(version, max_len, handle->driver_version, fw_ver,
+		     REL_MILESTONE) <= 0)
+		PRINTM(MERROR, "Failed to print driver version in buffer\n");
 
 	LEAVE();
 }
@@ -4371,6 +4505,7 @@ int woal_get_driver_version(moal_private *priv, struct ifreq *req)
 	struct iwreq *wrq = (struct iwreq *)req;
 	int len;
 	char buf[MLAN_MAX_VER_STR_LEN];
+
 	ENTER();
 
 	woal_get_version(priv->phandle, buf, sizeof(buf) - 1);
@@ -4476,6 +4611,7 @@ done:
  *
  *  @return             0 --success, otherwise fail
  */
+// coverity[HIS_CALLING:SUPPRESS]
 int woal_set_drvdbg(moal_private *priv, t_u32 drv_dbg)
 {
 	mlan_ioctl_req *req = NULL;
@@ -4522,7 +4658,9 @@ int woal_reg_rx_mgmt_ind(moal_private *priv, t_u16 action,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_misc_cfg *misc = NULL;
 	int ret = 0;
+#ifdef JHW_TEST
 	printk("JHW_TEST %s\n", __FUNCTION__);
+#endif
 
 	ENTER();
 
@@ -4598,9 +4736,8 @@ mlan_status woal_set_get_tx_bf_cap(moal_private *priv, t_u16 action,
 
 	/* Send IOCTL request to MLAN */
 	ret = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (ret != MLAN_STATUS_SUCCESS) {
+	if (ret != MLAN_STATUS_SUCCESS)
 		goto done;
-	}
 
 	if (action == MLAN_ACT_GET)
 		*tx_bf_cap = bf_cfg->param.tx_bf_cap;
@@ -4888,7 +5025,7 @@ void woal_cancel_cac_block(moal_private *priv)
 		/* Make sure Chan Report is cancelled */
 		if (woal_11h_cancel_chan_report_ioctl(priv, MOAL_IOCTL_WAIT))
 			PRINTM(MERROR,
-			       "%s: Cancelling CAC chan report in FW failed \n",
+			       "%s: Cancelling CAC chan report in FW failed\n",
 			       __func__);
 		priv->phandle->meas_start_jiffies = 0;
 		if (priv->phandle->delay_bss_start == MTRUE)
@@ -4953,8 +5090,10 @@ int woal_11h_channel_check_ioctl(moal_private *priv, t_u8 wait_option)
 	if (woal_is_any_interface_active(priv->phandle)) {
 #ifdef UAP_SUPPORT
 		/* When any other interface is active
-		 * Get rid of CAC timer when drcs is disabled */
+		 * Get rid of CAC timer when drcs is disabled
+		 */
 		t_u16 enable = 0;
+
 		if (priv->phandle->card_info->drcs)
 			ret = woal_mc_policy_cfg(priv, &enable, wait_option,
 						 MLAN_ACT_GET);
@@ -5001,9 +5140,8 @@ int woal_11h_channel_check_ioctl(moal_private *priv, t_u8 wait_option)
 	req->action = MLAN_ACT_SET;
 	/* Send Channel Check command and wait until the report is ready */
 	status = woal_request_ioctl(priv, req, wait_option);
-	if (status != MLAN_STATUS_SUCCESS) {
+	if (status != MLAN_STATUS_SUCCESS)
 		goto done;
-	}
 
 	/* set flag from here */
 	priv->phandle->cac_period = MTRUE;
@@ -5225,6 +5363,7 @@ mlan_status woal_get_sta_channel(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_bss *bss = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -5330,6 +5469,7 @@ mlan_status woal_get_scan_table(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_scan *scan = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	if (!scan_resp) {
@@ -5388,6 +5528,7 @@ mlan_status woal_request_scan(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *ioctl_req = NULL;
 	mlan_ds_scan *scan = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	if (MOAL_ACQ_SEMAPHORE_BLOCK(&handle->async_sem)) {
@@ -5509,7 +5650,7 @@ done:
  *  @brief Find the best network to associate
  *
  *  @param priv             A pointer to moal_private structure
- *  @param bssid       		A pointer to bssid
+ *  @param bssid		A pointer to bssid
  *
  *  @return                     MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING --
  * success, otherwise fail
@@ -5616,6 +5757,7 @@ mlan_status woal_get_auth_mode(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_sec_cfg *sec = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -5744,6 +5886,7 @@ mlan_status woal_set_auth_mode(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_sec_cfg *sec = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -5785,6 +5928,7 @@ mlan_status woal_set_encrypt_mode(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_sec_cfg *sec = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -5826,6 +5970,7 @@ mlan_status woal_set_wpa_enable(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_sec_cfg *sec = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -5865,6 +6010,7 @@ mlan_status woal_enable_wep_key(moal_private *priv, t_u8 wait_option)
 	mlan_ioctl_req *req = NULL;
 	mlan_ds_sec_cfg *sec = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -5909,6 +6055,7 @@ mlan_status woal_request_userscan(moal_private *priv, t_u8 wait_option,
 	mlan_ds_scan *scan = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
 	moal_handle *handle = priv->phandle;
+
 	ENTER();
 
 	if (MOAL_ACQ_SEMAPHORE_BLOCK(&handle->async_sem)) {
@@ -6016,7 +6163,7 @@ mlan_status woal_set_scan_time(moal_private *priv, t_u16 active_scan_time,
 	ENTER();
 
 	memset(&scan_cfg, 0, sizeof(scan_cfg));
-	if (MLAN_STATUS_SUCCESS != woal_get_scan_config(priv, &scan_cfg)) {
+	if (woal_get_scan_config(priv, &scan_cfg) != MLAN_STATUS_SUCCESS) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -6155,8 +6302,13 @@ mlan_status woal_cancel_scan(moal_private *priv, t_u8 wait_option)
 	spin_unlock_irqrestore(&handle->scan_req_lock, flags);
 #endif
 	/* add 300ms delay, incase firmware delay 0x7f event after scan cancel
-	 * command response */
+	 * command response
+	 */
 	woal_sched_timeout(300);
+	/* scan_priv is cleared after scan completion in a controlled context
+	 * where concurrent access is not expected
+	 */
+	// coverity[LOCK_EVASION:SUPPRESS]
 	handle->scan_priv = NULL;
 done:
 	if (ret != MLAN_STATUS_PENDING)
@@ -6179,12 +6331,13 @@ int woal_find_essid(moal_private *priv, mlan_ssid_bssid *ssid_bssid,
 	int ret = 0;
 	mlan_scan_resp scan_resp;
 	wifi_timeval t;
+
 	ENTER();
 
 	memset(&scan_resp, 0, sizeof(scan_resp));
 
-	if (MLAN_STATUS_SUCCESS !=
-	    woal_get_scan_table(priv, wait_option, &scan_resp)) {
+	if (woal_get_scan_table(priv, wait_option, &scan_resp) !=
+	    MLAN_STATUS_SUCCESS) {
 		LEAVE();
 		return MLAN_STATUS_FAILURE;
 	}
@@ -6209,136 +6362,6 @@ int woal_find_essid(moal_private *priv, mlan_ssid_bssid *ssid_bssid,
 }
 
 /**
- * @brief                    auto reconnection configure
- *
- * @param priv               Pointer to moal_private structure
- * @param cfg_mode           configure mode
- * @param roam_offload_cfg   Pointer to woal_roam_offload_cfg structure
- *
- *  @return                  0-success, negative for failure.
- */
-int woal_config_fw_roaming(moal_private *priv, t_u8 cfg_mode,
-			   woal_roam_offload_cfg *roam_offload_cfg)
-{
-	mlan_ioctl_req *ioctl_req = NULL;
-	mlan_ds_misc_cfg *misc = NULL;
-	mlan_ds_misc_roam_offload *roam = NULL;
-	mlan_status status = MLAN_STATUS_SUCCESS;
-	int ret = 0;
-
-	ENTER();
-
-	if (!priv || !priv->phandle) {
-		PRINTM(MERROR, "priv or handle is null\n");
-		ret = -EFAULT;
-		goto done;
-	}
-
-	ioctl_req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
-	if (ioctl_req == NULL) {
-		ret = -ENOMEM;
-		goto done;
-	}
-
-	misc = (mlan_ds_misc_cfg *)ioctl_req->pbuf;
-	misc->sub_command = MLAN_OID_MISC_ROAM_OFFLOAD;
-	ioctl_req->req_id = MLAN_IOCTL_MISC_CFG;
-
-	roam = (mlan_ds_misc_roam_offload *)&misc->param.roam_offload;
-	roam->aplist.ap_num = 0;
-	ioctl_req->action = MLAN_ACT_SET;
-	roam->enable = priv->phandle->fw_roam_enable;
-	roam->config_mode = cfg_mode;
-
-	if ((roam->config_mode == ROAM_OFFLOAD_ENABLE) && roam_offload_cfg) {
-		roam->userset_passphrase = roam_offload_cfg->userset_passphrase;
-		if (roam->userset_passphrase)
-			roam->enable = 0;
-	}
-	if (roam->config_mode == ROAM_OFFLOAD_PARAM_CFG) {
-		moal_memcpy_ext(priv->phandle, (t_u8 *)&roam->bssid_reconnect,
-				(t_u8 *)&roam_offload_cfg->bssid,
-				MLAN_MAC_ADDR_LENGTH,
-				sizeof(roam->bssid_reconnect));
-		if (roam_offload_cfg->ssid_list.ssid_num) {
-			moal_memcpy_ext(priv->phandle, (t_u8 *)&roam->ssid_list,
-					(t_u8 *)&roam_offload_cfg->ssid_list,
-					sizeof(mlan_ds_misc_ssid_list),
-					sizeof(mlan_ds_misc_ssid_list));
-		}
-		if (roam_offload_cfg->black_list.ap_num) {
-			moal_memcpy_ext(
-				priv->phandle, (t_u8 *)&roam->black_list,
-				(t_u8 *)&roam_offload_cfg->black_list,
-				sizeof(mlan_ds_misc_roam_offload_aplist),
-				sizeof(mlan_ds_misc_roam_offload_aplist));
-		}
-		roam->trigger_condition = roam_offload_cfg->trigger_condition;
-		roam->retry_count = roam_offload_cfg->retry_count;
-		if (roam_offload_cfg->rssi_param_set_flag) {
-			roam->para_rssi.set_flag = 1;
-			roam->para_rssi.max_rssi = roam_offload_cfg->max_rssi;
-			roam->para_rssi.min_rssi = roam_offload_cfg->min_rssi;
-			roam->para_rssi.step_rssi = roam_offload_cfg->step_rssi;
-		}
-		if (roam_offload_cfg->band_rssi_flag) {
-			roam->band_rssi_flag = roam_offload_cfg->band_rssi_flag;
-			moal_memcpy_ext(priv->phandle, (t_u8 *)&roam->band_rssi,
-					(t_u8 *)&roam_offload_cfg->band_rssi,
-					sizeof(mlan_ds_misc_band_rssi),
-					sizeof(mlan_ds_misc_band_rssi));
-		}
-		if (roam_offload_cfg->bgscan_set_flag) {
-			roam->bgscan_set_flag =
-				roam_offload_cfg->bgscan_set_flag;
-			moal_memcpy_ext(priv->phandle,
-					(t_u8 *)&roam->bgscan_cfg,
-					(t_u8 *)&roam_offload_cfg->bgscan_cfg,
-					sizeof(mlan_ds_misc_bgscan_cfg),
-					sizeof(mlan_ds_misc_bgscan_cfg));
-		}
-		if (roam_offload_cfg->ees_param_set_flag) {
-			roam->ees_param_set_flag =
-				roam_offload_cfg->ees_param_set_flag;
-			moal_memcpy_ext(priv->phandle, (t_u8 *)&roam->ees_cfg,
-					(t_u8 *)&roam_offload_cfg->ees_cfg,
-					sizeof(mlan_ds_misc_ees_cfg),
-					sizeof(mlan_ds_misc_ees_cfg));
-		}
-		roam->bcn_miss_threshold = roam_offload_cfg->bcn_miss_threshold;
-		roam->pre_bcn_miss_threshold =
-			roam_offload_cfg->pre_bcn_miss_threshold;
-		roam->repeat_count = roam_offload_cfg->repeat_count;
-	}
-	if (roam->config_mode == ROAM_OFFLOAD_SUSPEND_CFG) {
-		moal_memcpy_ext(priv->phandle, roam->bssid_reconnect,
-				priv->phandle->auto_reconnect_bssid,
-				MLAN_MAC_ADDR_LENGTH,
-				sizeof(roam->bssid_reconnect));
-		roam->ssid_list.ssid_num = 1;
-		moal_memcpy_ext(
-			priv->phandle, (t_u8 *)&roam->ssid_list.ssids[0].ssid,
-			(t_u8 *)&priv->phandle->auto_reconnect_ssid.ssid,
-			priv->phandle->auto_reconnect_ssid.ssid_len,
-			MLAN_MAX_SSID_LENGTH);
-		roam->retry_count = priv->phandle->auto_reconnect_retry_count;
-	}
-
-	status = woal_request_ioctl(priv, ioctl_req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS) {
-		ret = -EFAULT;
-		goto done;
-	}
-
-done:
-	if (status != MLAN_STATUS_PENDING)
-		kfree(ioctl_req);
-
-	LEAVE();
-	return ret;
-}
-
-/**
  *  @brief Request user scan
  *
  *  @param priv                 A pointer to moal_private structure
@@ -6354,6 +6377,7 @@ mlan_status woal_request_bgscan(moal_private *priv, t_u8 wait_option,
 	mlan_ioctl_req *ioctl_req = NULL;
 	mlan_ds_scan *scan = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	/* Allocate an IOCTL request buffer */
@@ -6470,7 +6494,7 @@ mlan_status woal_set_bg_scan(moal_private *priv, char *buf, int length)
 	}
 	/** set bgscan when ssid_num > 0 */
 	if (num_ssid) {
-		if (MLAN_STATUS_SUCCESS != woal_get_band(priv, &band)) {
+		if (woal_get_band(priv, &band) != MLAN_STATUS_SUCCESS) {
 			ret = MLAN_STATUS_FAILURE;
 			goto done;
 		}
@@ -6521,8 +6545,8 @@ void woal_config_bgscan_and_rssi(moal_private *priv, t_u8 set_rssi)
 		return;
 	}
 	memset(&bss_info, 0, sizeof(bss_info));
-	if (MLAN_STATUS_SUCCESS !=
-	    woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &bss_info)) {
+	if (woal_get_bss_info(priv, MOAL_IOCTL_WAIT, &bss_info) !=
+	    MLAN_STATUS_SUCCESS) {
 		PRINTM(MIOCTL, "Get BSS Info Failed\n");
 		LEAVE();
 		return;
@@ -6542,7 +6566,7 @@ void woal_config_bgscan_and_rssi(moal_private *priv, t_u8 set_rssi)
 	priv->scan_cfg.rssi_threshold = priv->rssi_low - RSSI_HYSTERESIS;
 	priv->scan_cfg.repeat_count = DEF_REPEAT_COUNT;
 	priv->scan_cfg.scan_interval = MIN_BGSCAN_INTERVAL;
-	if (MLAN_STATUS_SUCCESS != woal_get_band(priv, &band)) {
+	if (woal_get_band(priv, &band) != MLAN_STATUS_SUCCESS) {
 		PRINTM(MERROR, "woal get band fail\n");
 		LEAVE();
 		return;
@@ -6563,8 +6587,8 @@ void woal_config_bgscan_and_rssi(moal_private *priv, t_u8 set_rssi)
 	moal_memcpy_ext(priv->phandle, priv->scan_cfg.random_mac,
 			priv->random_mac, ETH_ALEN,
 			sizeof(priv->scan_cfg.random_mac));
-	if (MLAN_STATUS_FAILURE ==
-	    woal_request_bgscan(priv, MOAL_NO_WAIT, &priv->scan_cfg)) {
+	if (woal_request_bgscan(priv, MOAL_NO_WAIT, &priv->scan_cfg) ==
+	    MLAN_STATUS_FAILURE) {
 		PRINTM(MERROR, "request bgscan fail\n");
 		LEAVE();
 		return;
@@ -6573,8 +6597,8 @@ void woal_config_bgscan_and_rssi(moal_private *priv, t_u8 set_rssi)
 	    ((priv->rssi_low + RSSI_HYSTERESIS) <= LOWEST_RSSI_THRESHOLD)) {
 		priv->rssi_low += RSSI_HYSTERESIS;
 		snprintf(rssi_low, sizeof(rssi_low), "%d", priv->rssi_low);
-		if (MLAN_STATUS_FAILURE ==
-		    woal_set_rssi_low_threshold(priv, rssi_low, MOAL_NO_WAIT))
+		if (woal_set_rssi_low_threshold(priv, rssi_low, MOAL_NO_WAIT) ==
+		    MLAN_STATUS_FAILURE)
 			PRINTM(MERROR, "set_rssi_low_threshold fail\n");
 	}
 	LEAVE();
@@ -6593,6 +6617,7 @@ mlan_status woal_stop_bg_scan(moal_private *priv, t_u8 wait_option)
 {
 	wlan_bgscan_cfg *scan_cfg;
 	mlan_status ret = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 
 	scan_cfg = kmalloc(sizeof(wlan_bgscan_cfg), GFP_KERNEL);
@@ -6619,6 +6644,7 @@ mlan_status woal_stop_bg_scan(moal_private *priv, t_u8 wait_option)
 void woal_reconfig_bgscan(moal_handle *handle)
 {
 	int i;
+
 	for (i = 0; i < MIN(handle->priv_num, MLAN_MAX_BSS_NUM); i++) {
 		if (handle->priv[i] &&
 		    (GET_BSS_ROLE(handle->priv[i]) == MLAN_BSS_ROLE_STA)) {
@@ -6669,7 +6695,7 @@ mlan_status woal_set_rssi_low_threshold(moal_private *priv, char *rssi,
 	misc->param.subscribe_event.evt_bitmap |= SUBSCRIBE_EVT_PRE_BEACON_LOST;
 	misc->param.subscribe_event.pre_beacon_miss = DEFAULT_PRE_BEACON_MISS;
 
-	if (MLAN_STATUS_SUCCESS != woal_atoi(&low_rssi, rssi)) {
+	if (woal_atoi(&low_rssi, rssi) != MLAN_STATUS_SUCCESS) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -6772,9 +6798,8 @@ mlan_status woal_get_powermode(moal_private *priv, int *powermode)
 
 	ENTER();
 
-	if (MLAN_STATUS_SUCCESS != woal_set_get_power_mgmt(priv, MLAN_ACT_GET,
-							   &ps_mode, 0,
-							   MOAL_IOCTL_WAIT)) {
+	if (woal_set_get_power_mgmt(priv, MLAN_ACT_GET, &ps_mode, 0,
+				    MOAL_IOCTL_WAIT) != MLAN_STATUS_SUCCESS) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -6806,7 +6831,7 @@ mlan_status woal_set_scan_type(moal_private *priv, t_u32 scan_type)
 
 	ENTER();
 	memset(&scan_cfg, 0, sizeof(scan_cfg));
-	if (MLAN_STATUS_SUCCESS != woal_get_scan_config(priv, &scan_cfg)) {
+	if (woal_get_scan_config(priv, &scan_cfg) != MLAN_STATUS_SUCCESS) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -6851,7 +6876,7 @@ mlan_status woal_enable_ext_scan(moal_private *priv, t_u8 enable)
 
 	ENTER();
 	memset(&scan_cfg, 0, sizeof(scan_cfg));
-	if (MLAN_STATUS_SUCCESS != woal_get_scan_config(priv, &scan_cfg)) {
+	if (woal_get_scan_config(priv, &scan_cfg) != MLAN_STATUS_SUCCESS) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -6880,6 +6905,155 @@ done:
 }
 
 /**
+ *  @brief Set FILS PSK
+ *
+ *  @param priv                 A pointer to moal_private structure
+ *  @param data		 A pointer to a buffer
+ *
+ *  @return                     MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING --
+ * success, otherwise fail
+ */
+mlan_status woal_set_fils_psk(moal_private *priv, char *data)
+{
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	mlan_802_11_mac_addr mac = {0x00};
+	t_u8 key[MLAN_MAX_KEY_LENGTH] = {0};
+	char *begin, *end, *opt;
+
+	ENTER();
+	begin = data;
+
+	/* Parse command arguments */
+	while (begin) {
+		end = woal_strsep(&begin, ';', '/');
+		if (!end || !end[0])
+			break;
+
+		opt = woal_strsep(&end, '=', '/');
+		if (!opt || !end) {
+			PRINTM(MERROR, "Invalid option\n");
+			LEAVE();
+			return -EINVAL;
+		}
+
+		if (!strncmp(opt, FILS_KEY, strlen(FILS_KEY))) {
+			memset(key, 0, sizeof(key));
+			woal_ascii2hex((t_u8 *)key, end, MLAN_MAX_KEY_LENGTH);
+		} else if (!strncmp(opt, FILS_BSSID, strlen(FILS_BSSID))) {
+			woal_mac2u8(mac, end);
+		}
+	}
+
+	ret = woal_set_psk_11ai(priv, MOAL_IOCTL_WAIT, (t_u8 *)mac, (t_u8 *)key,
+				MLAN_MAX_KEY_LENGTH);
+
+	priv->enable_fils = MTRUE;
+	return ret;
+}
+
+#ifdef UAP_SUPPORT
+/**
+ *  @brief Set FILS IP Config
+ *
+ *  @param priv                 A pointer to moal_private structure
+ *  @param data                 A pointer to a buffer
+ *
+ *  @return                     MLAN_STATUS_SUCCESS on success, otherwise fail
+ */
+mlan_status woal_set_fils_ip_cfg(moal_private *priv, char *data)
+{
+	char *begin, *end, *opt;
+	ip_addr_cfg_t ip_cfg;
+	int maxClients = 0;
+	u8 ip[MAX_IPADDR];
+	u32 ip_address;
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	mlan_ioctl_req *req = NULL;
+	mlan_ds_bss *bss = NULL;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+
+	ENTER();
+	begin = data;
+
+	memset(&ip_cfg, 0, sizeof(ip_cfg));
+
+	/* Parse command arguments */
+	while (begin) {
+		end = woal_strsep(&begin, ';', '/');
+		if (!end || !end[0])
+			break;
+
+		opt = woal_strsep(&end, '=', '/');
+		if (!opt || !end) {
+			PRINTM(MERROR, "Invalid option\n");
+			LEAVE();
+			return -EINVAL;
+		}
+
+		if (!strncmp(opt, FILS_COUNT_STR, strlen(FILS_COUNT_STR))) {
+			maxClients = ip_cfg.maxClients;
+			if (woal_atoi(&maxClients, end) !=
+			    MLAN_STATUS_SUCCESS) {
+				LEAVE();
+				return -EINVAL;
+			}
+			continue;
+		}
+
+		/* Parse and store the IP address */
+		in4_pton(end, strlen(end), ip, ' ', NULL);
+
+		ip_address =
+			ip[3] | (ip[2] << 8) | (ip[1] << 16) | (ip[0] << 24);
+
+		if (!strncmp(opt, FILS_IP_STR, strlen(FILS_IP_STR))) {
+			ip_cfg.ip = ip_address;
+		} else if (!strncmp(opt, FILS_MASK_STR,
+				    strlen(FILS_MASK_STR))) {
+			ip_cfg.subnetMask = ip_address;
+		} else if (!strncmp(opt, FILS_BASE_IP_STR,
+				    strlen(FILS_BASE_IP_STR))) {
+			ip_cfg.baseIp = ip_address;
+		} else if (!strncmp(opt, FILS_DNS_STR, strlen(FILS_DNS_STR))) {
+			ip_cfg.dnsIp = ip_address;
+		}
+	}
+
+	/* Allocate an IOCTL request buffer */
+	req = (mlan_ioctl_req *)woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_bss));
+	if (req == NULL) {
+		ret = -ENOMEM;
+		goto done;
+	}
+
+	/* Fill request buffer */
+	bss = (mlan_ds_bss *)req->pbuf;
+	bss->sub_command = MLAN_OID_FILS_IP_CFG;
+	req->req_id = MLAN_IOCTL_BSS;
+	req->action = MLAN_ACT_SET;
+
+	/* Fill IP configuration */
+	moal_memcpy_ext(priv->phandle, &(bss->param.bss_config.ip_cfg), &ip_cfg,
+			sizeof(ip_cfg), sizeof(bss->param.bss_config.ip_cfg));
+
+	/* Send IOCTL request to MLAN */
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (status != MLAN_STATUS_SUCCESS) {
+		ret = -EFAULT;
+		goto done;
+	}
+
+	priv->enable_fils = MTRUE;
+
+done:
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+	LEAVE();
+	return ret;
+}
+#endif
+
+/**
  *  @brief set power mode
  *
  *  @param priv                 A pointer to moal_private structure
@@ -6906,9 +7080,8 @@ mlan_status woal_set_powermode(moal_private *priv, char *powermode)
 		goto done;
 	}
 
-	if (MLAN_STATUS_SUCCESS != woal_set_get_power_mgmt(priv, MLAN_ACT_SET,
-							   &disabled, 0,
-							   MOAL_IOCTL_WAIT))
+	if (woal_set_get_power_mgmt(priv, MLAN_ACT_SET, &disabled, 0,
+				    MOAL_IOCTL_WAIT) != MLAN_STATUS_SUCCESS)
 		ret = MLAN_STATUS_FAILURE;
 
 done:
@@ -7024,9 +7197,9 @@ int woal_set_combo_scan(moal_private *priv, char *buf, int length)
 		PRINTM(MIOCTL,
 		       "Set passive_scan_time=%d specific_scan_time=%d\n",
 		       passive_scan_time, specific_scan_time);
-		if (MLAN_STATUS_FAILURE ==
-		    woal_set_scan_time(priv, 0, passive_scan_time,
-				       specific_scan_time)) {
+		if (woal_set_scan_time(priv, 0, passive_scan_time,
+				       specific_scan_time) ==
+		    MLAN_STATUS_FAILURE) {
 			ret = -EFAULT;
 			goto done;
 		}
@@ -7038,13 +7211,13 @@ int woal_set_combo_scan(moal_private *priv, char *buf, int length)
 			if (priv->scan_type == MLAN_SCAN_TYPE_PASSIVE)
 				woal_set_scan_type(priv, MLAN_SCAN_TYPE_ACTIVE);
 		}
-		if (MLAN_STATUS_FAILURE == woal_do_scan(priv, scan_cfg))
+		if (woal_do_scan(priv, scan_cfg) == MLAN_STATUS_FAILURE)
 			ret = -EFAULT;
 		if (num_ssid && (priv->scan_type == MLAN_SCAN_TYPE_PASSIVE))
 			woal_set_scan_type(priv, MLAN_SCAN_TYPE_PASSIVE);
 	} else {
 		/* request broadcast scan */
-		if (MLAN_STATUS_FAILURE == woal_do_scan(priv, NULL))
+		if (woal_do_scan(priv, NULL) == MLAN_STATUS_FAILURE)
 			ret = -EFAULT;
 	}
 done:
@@ -7203,6 +7376,180 @@ done:
 }
 
 /**
+ *  @brief set bandctrl
+ *
+ *  @param priv             A pointer to moal_private structure
+ *  @param bandctrl         new bandctrl
+ *
+ *  @return                 MLAN_STATUS_SUCCESS -- success, otherwise fail
+ */
+mlan_status woal_set_bandctrl(moal_private *priv, t_u32 bandctrl)
+{
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	int band = 0;
+	mlan_ioctl_req *req = NULL;
+	mlan_ds_radio_cfg *radio_cfg = NULL;
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+	int cfg80211_wext;
+#endif
+
+	ENTER();
+
+	if (priv == NULL) {
+		ret = MLAN_STATUS_FAILURE;
+		LEAVE();
+		return ret;
+	}
+
+	if (priv->band_ctrl == bandctrl) {
+		LEAVE();
+		return ret;
+	}
+
+	if (bandctrl == BANDCTRL_BLOCK_SCAN) {
+		priv->fake_scan_complete = MTRUE;
+		woal_flush_scan_table(priv, BAND_SELECT_ALL);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+		/* Clear the internal BSS list maintained by the cfg80211
+		 * subsystem */
+		if (priv->wdev && priv->wdev->wiphy)
+			cfg80211_bss_flush(priv->wdev->wiphy);
+#endif
+		/** deauth ext-ap */
+		if (priv->media_connected && !priv->cfg_disconnect) {
+			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
+			       MAC2STR(priv->cfg_bssid));
+			if (woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+					    priv->cfg_bssid,
+					    DEF_DEAUTH_REASON_CODE) !=
+			    MLAN_STATUS_SUCCESS) {
+				PRINTM(MERROR, "%s: woal_disconnect failed\n",
+				       __func__);
+			}
+		}
+	} else if (bandctrl == BANDCTRL_SET_BANDCFG) {
+		priv->fake_scan_complete = MFALSE;
+	} else if (bandctrl == BANDCTRL_2G_ONLY) {
+		/** deauth ext-5g ap */
+		if (priv->media_connected && !priv->cfg_disconnect &&
+		    (priv->channel > 14)) {
+			PRINTM(MMSG, "Disconnect STA " MACSTR "\n",
+			       MAC2STR(priv->cfg_bssid));
+			if (woal_disconnect(priv, MOAL_IOCTL_WAIT_TIMEOUT,
+					    priv->cfg_bssid,
+					    DEF_DEAUTH_REASON_CODE) !=
+			    MLAN_STATUS_SUCCESS) {
+				PRINTM(MERROR, "%s: woal_disconnect failed\n",
+				       __func__);
+			}
+		}
+		woal_flush_scan_table(priv, BAND_SELECT_2G_ONLY);
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+		/* Clear the internal BSS list maintained by the cfg80211
+		 * subsystem */
+		if (priv->wdev && priv->wdev->wiphy)
+			cfg80211_bss_flush(priv->wdev->wiphy);
+#endif
+		priv->fake_scan_complete = MFALSE;
+	}
+	priv->band_ctrl = bandctrl;
+	if (priv->band_ctrl == BANDCTRL_SET_BANDCFG ||
+	    priv->band_ctrl == BANDCTRL_2G_ONLY) {
+		req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_radio_cfg));
+		if (req == NULL) {
+			ret = MLAN_STATUS_FAILURE;
+			goto done;
+		}
+		radio_cfg = (mlan_ds_radio_cfg *)req->pbuf;
+		radio_cfg->sub_command = MLAN_OID_BAND_CFG;
+		req->req_id = MLAN_IOCTL_RADIO_CFG;
+
+		/* Get fw supported values from MLAN */
+		req->action = MLAN_ACT_GET;
+		ret = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+		if (ret != MLAN_STATUS_SUCCESS)
+			goto done;
+		if (priv->band_ctrl == BANDCTRL_SET_BANDCFG) {
+			band = radio_cfg->param.band_cfg.fw_bands;
+		} else {
+			band = BAND_B | BAND_G;
+			band |= BAND_GN;
+			band |= BAND_GAX;
+		}
+
+		/* Set config_bands to MLAN */
+		req->action = MLAN_ACT_SET;
+		memset(&radio_cfg->param.band_cfg, 0, sizeof(mlan_ds_band_cfg));
+		radio_cfg->param.band_cfg.config_bands = band;
+		ret = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	}
+done:
+	if (req && (ret != MLAN_STATUS_PENDING))
+		kfree(req);
+
+	/* Stopping the previous background scan */
+	if (priv->sched_scanning == MTRUE) {
+		PRINTM(MMSG, "wlan: %s %s stop sch scan\n", __func__,
+		       priv->netdev->name);
+		priv->bg_scan_start = MFALSE;
+		priv->bg_scan_reported = MFALSE;
+		woal_stop_bg_scan(priv, MOAL_IOCTL_WAIT);
+#ifdef STA_CFG80211
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
+		cfg80211_wext = priv->phandle->params.cfg80211_wext;
+		if (IS_STA_CFG80211(cfg80211_wext))
+			woal_bgscan_stop_event(priv);
+#endif
+#endif
+	}
+
+	LEAVE();
+	return ret;
+}
+
+/**
+ *  @brief flush scan table
+ *
+ *  @param priv             A pointer to moal_private structure
+ *  @param band_select      BAND_SELECT_2G_ONLY/BAND_SELECT_ALL
+ *
+ *  @return                 MLAN_STATUS_SUCCESS -- success, otherwise fail
+ */
+mlan_status woal_flush_scan_table(moal_private *priv, t_u32 band_select)
+{
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+	mlan_ioctl_req *req = NULL;
+	mlan_ds_scan *scan = NULL;
+
+	ENTER();
+
+	/* Allocate an IOCTL request buffer */
+	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_scan));
+	if (req == NULL) {
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	scan = (mlan_ds_scan *)req->pbuf;
+	if (band_select == BAND_SELECT_2G_ONLY) {
+		scan->sub_command = MLAN_OID_SCAN_TABLE_FLUSH_WITH_BAND;
+		scan->param.band = BAND_A;
+		scan->param.band |= BAND_6G;
+	} else {
+		scan->sub_command = MLAN_OID_SCAN_TABLE_FLUSH;
+	}
+	req->req_id = MLAN_IOCTL_SCAN;
+	req->action = MLAN_ACT_SET;
+	ret = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+done:
+	if (ret != MLAN_STATUS_PENDING)
+		kfree(req);
+
+	LEAVE();
+	return ret;
+}
+
+/**
  *  @brief Add RX Filter
  *
  *  @param priv                 A pointer to moal_private structure
@@ -7213,11 +7560,13 @@ done:
 mlan_status woal_add_rxfilter(moal_private *priv, char *rxfilter)
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 	/*  Android command:
-	    "DRIVER RXFILTER-ADD 0"
-	    "DRIVER RXFILTER-ADD 1"
-	    "DRIVER RXFILTER-ADD 3" */
+	 * "DRIVER RXFILTER-ADD 0"
+	 * "DRIVER RXFILTER-ADD 1"
+	 * "DRIVER RXFILTER-ADD 3"
+	 */
 	if (*rxfilter == '0') {
 		PRINTM(MIOCTL, "Add IPV4 multicast filter\n");
 		priv->rx_filter |= RX_FILTER_IPV4_MULTICAST;
@@ -7251,6 +7600,7 @@ done:
 mlan_status woal_remove_rxfilter(moal_private *priv, char *rxfilter)
 {
 	mlan_status ret = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 	if (*rxfilter == '0') {
 		PRINTM(MIOCTL, "Remove IPV4 multicast filter\n");
@@ -7297,7 +7647,7 @@ mlan_status woal_priv_qos_cfg(moal_private *priv, t_u32 action, char *qos_cfg)
 		return MLAN_STATUS_FAILURE;
 	}
 	if ((action == MLAN_ACT_SET) &&
-	    (MLAN_STATUS_SUCCESS != woal_atoi(&qosinfo, qos_cfg))) {
+	    (woal_atoi(&qosinfo, qos_cfg) != MLAN_STATUS_SUCCESS)) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -7342,7 +7692,7 @@ mlan_status woal_set_sleeppd(moal_private *priv, char *psleeppd)
 
 	ENTER();
 
-	if (MLAN_STATUS_SUCCESS != woal_atoi(&sleeppd, psleeppd)) {
+	if (woal_atoi(&sleeppd, psleeppd) != MLAN_STATUS_SUCCESS) {
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
@@ -7440,9 +7790,9 @@ int woal_set_scan_cfg(moal_private *priv, char *buf, int length)
 		PRINTM(MIOCTL,
 		       "Set active_scan_time= %d passive_scan_time=%d specific_scan_time=%d\n",
 		       active_scan_time, passive_scan_time, specific_scan_time);
-		if (MLAN_STATUS_FAILURE ==
-		    woal_set_scan_time(priv, active_scan_time,
-				       passive_scan_time, specific_scan_time)) {
+		if (woal_set_scan_time(priv, active_scan_time,
+				       passive_scan_time, specific_scan_time) ==
+		    MLAN_STATUS_FAILURE) {
 			ret = -EFAULT;
 		}
 	}
@@ -7465,6 +7815,7 @@ int woal_set_radio(moal_private *priv, t_u8 option)
 	mlan_ds_radio_cfg *radio = NULL;
 	mlan_ioctl_req *req = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
+
 	ENTER();
 	if ((option != 0) && (option != 1)) {
 		ret = -EINVAL;
@@ -7539,8 +7890,7 @@ mlan_status woal_usb_aggr_init(moal_handle *handle)
 		usb_aggr_enable = MTRUE;
 	} else {
 		PRINTM(MWARN,
-		       "Invalid module param (usb_aggr) value %d, "
-		       "using MLAN default\n",
+		       "Invalid module param (usb_aggr) value %d, using MLAN default\n",
 		       handle->params.usb_aggr);
 		handle->params.usb_aggr = 0;
 		usb_aggr_enable = MFALSE;
@@ -7600,7 +7950,8 @@ mlan_status woal_usb_aggr_init(moal_handle *handle)
 		cardp->resubmit_urbs = 1;
 		/* Rx SG feature is disabled due to FW failure/unsupported,
 		 * kill the URBs, they will be resubmitted after saving the
-		 * parameters to USB card */
+		 * parameters to USB card
+		 */
 		if (atomic_read(&cardp->rx_data_urb_pending)) {
 			for (i = 0; i < MVUSB_RX_DATA_URB; i++) {
 				if (cardp->rx_data_list[i].urb) {
@@ -7661,12 +8012,12 @@ mlan_status woal_mc_policy_cfg(moal_private *priv, t_u16 *enable,
 	cfg->sub_command = MLAN_OID_MISC_MULTI_CHAN_POLICY;
 	req->req_id = MLAN_IOCTL_MISC_CFG;
 	req->action = action;
-	if (MLAN_ACT_SET == action)
+	if (action == MLAN_ACT_SET)
 		cfg->param.multi_chan_policy = *enable;
 	status = woal_request_ioctl(priv, req, wait_option);
 	if (status != MLAN_STATUS_SUCCESS)
 		goto done;
-	if (MLAN_ACT_GET == action)
+	if (action == MLAN_ACT_GET)
 		*enable = cfg->param.multi_chan_policy;
 
 done:
@@ -8218,7 +8569,8 @@ void woal_ioctl_get_misc_conf(moal_private *priv, mlan_ds_misc_cfg *info)
 #define HE_TB_TX_STR_LEN 30
 #define MAX_RADIO_MODE 21
 #define OTP_RDWR_LEN 50
-
+#define MAX_THERMAL_SIMULATION_LEN 100
+#define GENERIC_CMD 10
 /*
  *  @brief Parse mfg cmd radio mode string
  *
@@ -8235,6 +8587,7 @@ static int parse_radio_mode_string(const char *s, size_t len,
 	char *tmp = NULL;
 	char *pos = NULL;
 	gfp_t flag;
+	t_u32 copy_len = 0;
 
 	ENTER();
 	if (!s || !d) {
@@ -8242,14 +8595,16 @@ static int parse_radio_mode_string(const char *s, size_t len,
 		return -EINVAL;
 	}
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	string = kzalloc(RADIO_MODE_STR_LEN, flag);
+	string = kzalloc(RADIO_MODE_STR_LEN + 1, flag);
 	if (string == NULL) {
 		LEAVE();
 		return -ENOMEM;
 	}
 
-	moal_memcpy_ext(NULL, string, s + strlen("radio_mode="),
-			len - strlen("radio_mode="), RADIO_MODE_STR_LEN - 1);
+	copy_len = MIN(len - strlen("radio_mode="), RADIO_MODE_STR_LEN - 1);
+	moal_memcpy_ext(NULL, string, s + strlen("radio_mode="), copy_len,
+			copy_len);
+	string[RADIO_MODE_STR_LEN] = '\0';
 
 	tmp = string;
 	string = strstrip(string);
@@ -8319,6 +8674,7 @@ static int parse_tx_pwr_string(moal_handle *handle, const char *s, size_t len,
 	t_u8 pow_conv = MFALSE;
 	t_u32 pow_limit = 24;
 	t_u8 card_type;
+	t_u32 copy_len = 0;
 
 	ENTER();
 	if (!s || !d) {
@@ -8333,14 +8689,16 @@ static int parse_tx_pwr_string(moal_handle *handle, const char *s, size_t len,
 		pow_conv = MTRUE;
 
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	string = kzalloc(TX_PWR_STR_LEN, flag);
+	string = kzalloc(TX_PWR_STR_LEN + 1, flag);
 	if (string == NULL) {
 		LEAVE();
 		return -ENOMEM;
 	}
 
-	moal_memcpy_ext(NULL, string, s + strlen("tx_power="),
-			len - strlen("tx_power="), TX_PWR_STR_LEN - 1);
+	copy_len = MIN(len - strlen("tx_power="), TX_PWR_STR_LEN - 1);
+	moal_memcpy_ext(NULL, string, s + strlen("tx_power="), copy_len,
+			copy_len);
+	string[TX_PWR_STR_LEN] = '\0';
 
 	tmp = string;
 	string = strstrip(string);
@@ -8394,6 +8752,7 @@ static int parse_tx_cont_string(const char *s, size_t len,
 	char *tmp = NULL;
 	char *pos = NULL;
 	gfp_t flag;
+	t_u32 copy_len = 0;
 
 	ENTER();
 	if (!s || !d) {
@@ -8401,14 +8760,16 @@ static int parse_tx_cont_string(const char *s, size_t len,
 		return -EINVAL;
 	}
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	string = kzalloc(TX_CONT_STR_LEN, flag);
+	string = kzalloc(TX_CONT_STR_LEN + 1, flag);
 	if (string == NULL) {
 		LEAVE();
 		return -ENOMEM;
 	}
 
-	moal_memcpy_ext(NULL, string, s + strlen("tx_continuous="),
-			len - strlen("tx_continuous="), TX_CONT_STR_LEN - 1);
+	copy_len = MIN(len - strlen("tx_continuous="), TX_CONT_STR_LEN - 1);
+	moal_memcpy_ext(NULL, string, s + strlen("tx_continuous="), copy_len,
+			copy_len);
+	string[TX_CONT_STR_LEN] = '\0';
 
 	tmp = string;
 	string = strstrip(string);
@@ -8464,6 +8825,7 @@ static int parse_trigger_frame_string(const char *s, size_t len,
 	char *tmp = NULL;
 	char *pos = NULL;
 	gfp_t flag;
+	t_u32 copy_len = 0;
 
 	ENTER();
 	if (!s || !d) {
@@ -8471,13 +8833,15 @@ static int parse_trigger_frame_string(const char *s, size_t len,
 		return -EINVAL;
 	}
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	string = kzalloc(TRIGGER_FRAME_STR_LEN, flag);
+	string = kzalloc(TRIGGER_FRAME_STR_LEN + 1, flag);
 	if (string == NULL)
 		return -ENOMEM;
 
-	moal_memcpy_ext(NULL, string, s + strlen("trigger_frame="),
-			len - strlen("trigger_frame="),
-			TRIGGER_FRAME_STR_LEN - 1);
+	copy_len =
+		MIN(len - strlen("trigger_frame="), TRIGGER_FRAME_STR_LEN - 1);
+	moal_memcpy_ext(NULL, string, s + strlen("trigger_frame="), copy_len,
+			copy_len);
+	string[TRIGGER_FRAME_STR_LEN] = '\0';
 
 	tmp = string;
 	string = strstrip(string);
@@ -8670,6 +9034,7 @@ static int parse_tx_frame_string(moal_handle *handle, const char *s, size_t len,
 	int i;
 	gfp_t flag;
 	t_u8 card_type;
+	t_u32 copy_len = 0;
 	BOOLEAN dot11ax = MFALSE;
 
 	ENTER();
@@ -8678,7 +9043,7 @@ static int parse_tx_frame_string(moal_handle *handle, const char *s, size_t len,
 		return -EINVAL;
 	}
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-	string = kzalloc(TX_FRAME_STR_LEN, flag);
+	string = kzalloc(TX_FRAME_STR_LEN + 1, flag);
 	if (string == NULL)
 		return -ENOMEM;
 
@@ -8708,12 +9073,13 @@ static int parse_tx_frame_string(moal_handle *handle, const char *s, size_t len,
 	d->MidP = -1;
 	d->QNum = -1;
 
-	for (i = 0; i < ETH_ALEN; i++) {
+	for (i = 0; i < ETH_ALEN; i++)
 		d->bssid[i] = 0xff;
-	}
 
-	moal_memcpy_ext(NULL, string, s + strlen("tx_frame="),
-			len - strlen("tx_frame="), TX_FRAME_STR_LEN - 1);
+	copy_len = MIN(len - strlen("tx_frame="), TX_FRAME_STR_LEN - 1);
+	moal_memcpy_ext(NULL, string, s + strlen("tx_frame="), copy_len,
+			copy_len);
+	string[TX_FRAME_STR_LEN] = '\0';
 
 	tmp = string;
 	string = strstrip(string);
@@ -8811,6 +9177,7 @@ static int parse_tx_frame_string(moal_handle *handle, const char *s, size_t len,
 	pos = strsep(&string, " \t");
 	if (pos) {
 		char *begin, *end;
+
 		begin = pos;
 		for (i = 0; i < ETH_ALEN; i++) {
 			end = woal_strsep(&begin, ':', '/');
@@ -8940,9 +9307,8 @@ mlan_status woal_process_rf_test_mode(moal_handle *handle, t_u32 mode)
 			       "Couldn't allocate memory for RF test mode\n");
 		handle->rf_test_mode = MTRUE;
 		if (handle->rf_data) {
-			/* antenna is set to 1 by default */
-			handle->rf_data->tx_antenna = 1;
-			handle->rf_data->rx_antenna = 1;
+			/* default antenna configuration is set */
+			SELECT_ANT_CFG(0);
 		}
 	} else if (mode == MFG_CMD_UNSET_TEST_MODE) {
 		if (handle->rf_data) {
@@ -9003,6 +9369,7 @@ static int parse_otp_mac_addr_rd_wr_string(const char *s, size_t len,
 	pos = strsep(&string, " \t");
 	if (pos) {
 		char *begin, *end;
+
 		begin = pos;
 		for (i = 0; i < MLAN_MAC_ADDR_LENGTH; i++) {
 			end = woal_strsep(&begin, ':', '/');
@@ -9043,7 +9410,8 @@ static int parse_otp_cal_data_rd_wr_string(const char *s, size_t len,
 		LEAVE();
 		return -EINVAL;
 	}
-
+	// Typecasting is done to read the value
+	// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
 	string = (char *)&(s[strlen("otp_cal_data_rd_wr=")]);
 	pos = strsep(&string, " \t");
 	d->action = (t_u16)woal_string_to_number(pos);
@@ -9064,6 +9432,167 @@ done:
 	return ret;
 }
 
+/*
+ *  @brief Parse mfg_CmdDebugTemperature_Cfg_t
+ *
+ *  @param handle   A pointer to moal_handle structure
+ *  @param s        A pointer to user buffer
+ *  @param len      Length of user buffer
+ *  @param d        A pointer to mfg_cmd_generic_cfg struct
+ *  @return         0 on success, -EINVAL otherwise
+ */
+
+static int parse_set_debug_temperature(const char *s, size_t len,
+				       mfg_CmdDebugTemperature_Cfg_t *d)
+{
+	int ret = MLAN_STATUS_SUCCESS;
+	char *string = NULL;
+	char *temp = NULL;
+	char *pos = NULL;
+	t_u8 mac, rpath;
+	gfp_t flag;
+	size_t prefix_len;
+
+	ENTER();
+
+	if (!s || !d) {
+		LEAVE();
+		return -EINVAL;
+	}
+
+	flag = GFP_KERNEL;
+	if (in_atomic())
+		flag = GFP_ATOMIC;
+	else if (irqs_disabled())
+		flag = GFP_ATOMIC;
+
+	string = kzalloc(MAX_THERMAL_SIMULATION_LEN, flag);
+	if (!string) {
+		PRINTM(MERROR, "Memory allocation failed\n");
+		ret = -ENOMEM;
+		goto done;
+	}
+
+	memset(d, 0, sizeof(mfg_CmdDebugTemperature_Cfg_t));
+	// Safely copy the input string, excluding the prefix
+	prefix_len = strlen("set_debug_temperature=");
+	if (len <= prefix_len) {
+		PRINTM(MERROR, "Invalid input string length\n");
+		ret = -EINVAL;
+		goto done;
+	}
+
+	strncpy(string, s + prefix_len, MAX_THERMAL_SIMULATION_LEN - 1);
+	string[MAX_THERMAL_SIMULATION_LEN - 1] = '\0';
+
+	temp = strstrip(string);
+
+	// Parse simulation enable
+	pos = strsep(&temp, " \t");
+	if (!pos) {
+		PRINTM(MERROR, "Missing simulation enable parameter\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	d->simulation_enable = (t_u32)woal_string_to_number(pos);
+	if (d->simulation_enable == MFALSE) {
+		PRINTM(MERROR, "Thermal simulation disabled\n");
+		goto done;
+	}
+
+	// Parse CAU temperature
+	pos = strsep(&temp, " \t");
+	if (!pos) {
+		PRINTM(MERROR, "Missing CAU temperature parameter\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	d->cau_temperature = (t_s32)woal_string_to_number(pos);
+
+	// Parse RFU temperatures
+	for (mac = 0; mac < MAX_RFUS; mac++) {
+		for (rpath = 0; rpath < MAX_PATHS; rpath++) {
+			pos = strsep(&temp, " \t");
+			if (!pos) {
+				PRINTM(MERROR, "Insufficient parameters\n");
+				ret = -EINVAL;
+				goto done;
+			}
+			d->rfu_temperature[mac][rpath] =
+				(t_s32)woal_string_to_number(pos);
+		}
+	}
+
+	// Validate simulation enable
+	if (d->simulation_enable > 1) {
+		PRINTM(MERROR, "Invalid simulation enable value\n");
+		ret = -EINVAL;
+	}
+
+done:
+
+	kfree(string);
+	LEAVE();
+	return ret;
+}
+
+/*
+ *  @brief Parse mfg cmd Generic cmd string
+ *
+ *  @param s        A pointer to user buffer
+ *  @param len      Length of user buffer
+ *  @param d        A pointer to mfg_Cmd_InternalTest_t struct
+ *  @return         0 on success, -EINVAL otherwise
+ */
+static int parse_generic_cmd_string(const char *s, size_t len,
+				    mfg_Cmd_InternalTest_t *d)
+{
+	int ret = MLAN_STATUS_SUCCESS;
+	char *string = NULL;
+	char *pos = NULL;
+	char *tmp = NULL;
+	gfp_t flag;
+	int i;
+	int irqs_are_disabled;
+
+	ENTER();
+	if (!s || !d) {
+		LEAVE();
+		return -EINVAL;
+	}
+	irqs_are_disabled = irqs_disabled();
+	flag = (in_atomic() || irqs_are_disabled) ? GFP_ATOMIC : GFP_KERNEL;
+	string = kzalloc(GENERIC_CMD, flag);
+	if (string == NULL) {
+		LEAVE();
+		return -ENOMEM;
+	}
+
+	moal_memcpy_ext(NULL, string, s + strlen("generic_cmd="),
+			len - strlen("generic_cmd="), GENERIC_CMD - 1);
+
+	tmp = string;
+	pos = strsep(&string, " \t");
+	d->action = (t_u16)woal_string_to_number(pos);
+	if (d->action == MFALSE)
+		goto done;
+	pos = strsep(&string, " \t");
+	if (pos)
+		d->opcode = (t_u32)woal_string_to_number(pos);
+
+	for (i = 0; i < GENERIC_CMD_BUFFER; i++) {
+		pos = strsep(&string, " \t"); // Get next token each iteration
+		if (pos) {
+			d->data[i] = (t_u32)woal_string_to_number(pos);
+		} else
+			break; // No more tokens
+	}
+done:
+	kfree(tmp);
+	LEAVE();
+	return ret;
+}
+
 /**
  *  @brief This function sends RF test mode command in firmware
  *
@@ -9080,6 +9609,7 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 	mlan_ds_misc_cfg *misc = NULL;
 	int err = MFALSE;
 	int i;
+	t_u8 mac, rpath;
 
 	ENTER();
 
@@ -9105,13 +9635,11 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 			err = MTRUE;
 		break;
 	case MFG_CMD_RF_BAND_AG:
-		if (val != 0 && val != 1)
+		if (val != 0 && val != 1 && val != 2)
 			err = MTRUE;
 		break;
 	case MFG_CMD_RF_CHANNELBW:
-		if (val != 0 && val != 1 &&
-		    (val != 4 ||
-		     (val == 4 && handle->rf_data->band == BAND_2GHZ)))
+		if (val != 0 && val != 1 && val != 4)
 			err = MTRUE;
 		break;
 	case MFG_CMD_RF_CHAN:
@@ -9165,6 +9693,20 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 			err = MTRUE;
 		}
 		break;
+	case MFG_CMD_SET_DEBUG_TEMPERATURE:
+		misc->sub_command = MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE;
+		if (parse_set_debug_temperature(buffer, len,
+						&misc->param.mfg_debug_temp)) {
+			err = MTRUE;
+		}
+		break;
+	case MFG_CMD_CONFIG_GENERIC_CMD:
+		misc->sub_command = MLAN_OID_MISC_GENERIC_CMD;
+		if (parse_generic_cmd_string(buffer, len,
+					     &misc->param.mfg_InternalTest_t)) {
+			err = MTRUE;
+		}
+		break;
 	default:
 		err = MTRUE;
 	}
@@ -9194,6 +9736,8 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 			misc->param.mfg_generic_cfg.data1;
 		handle->rf_data->radio_mode[1] =
 			misc->param.mfg_generic_cfg.data2;
+		SELECT_BAND(misc->param.mfg_generic_cfg.data1);
+		SELECT_ANT_CFG(misc->param.mfg_generic_cfg.data1);
 		break;
 	case MFG_CMD_RF_BAND_AG:
 		handle->rf_data->band = misc->param.mfg_generic_cfg.data1;
@@ -9203,6 +9747,8 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 			handle->rf_data->channel = 6;
 		else if (handle->rf_data->band == BAND_5GHZ)
 			handle->rf_data->channel = 36;
+		else if (handle->rf_data->band == BAND_6GHZ)
+			handle->rf_data->channel = 1;
 		break;
 	case MFG_CMD_RF_CHANNELBW:
 		handle->rf_data->bandwidth = misc->param.mfg_generic_cfg.data1;
@@ -9332,6 +9878,29 @@ mlan_status woal_process_rf_test_mode_cmd(moal_handle *handle, t_u32 cmd,
 				misc->param.mfg_otp_cal_data_rd_wr.cal_data[i];
 		}
 		break;
+	case MFG_CMD_SET_DEBUG_TEMPERATURE:
+		handle->rf_data->mfg_debug_temp.action =
+			misc->param.mfg_debug_temp.action;
+		handle->rf_data->mfg_debug_temp.simulation_enable =
+			misc->param.mfg_debug_temp.simulation_enable;
+		handle->rf_data->mfg_debug_temp.cau_temperature =
+			misc->param.mfg_debug_temp.cau_temperature;
+		for (mac = 0; mac < MAX_RFUS; mac++) {
+			for (rpath = 0; (rpath < MAX_PATHS); rpath++)
+				handle->rf_data->mfg_debug_temp
+					.rfu_temperature[mac][rpath] =
+					misc->param.mfg_debug_temp
+						.rfu_temperature[mac][rpath];
+		}
+		break;
+	case MFG_CMD_CONFIG_GENERIC_CMD:
+		handle->rf_data->mfg_InternalTest_t.opcode =
+			misc->param.mfg_InternalTest_t.opcode;
+		for (i = 0; i < GENERIC_CMD_BUFFER; i++) {
+			handle->rf_data->mfg_InternalTest_t.data[i] =
+				misc->param.mfg_InternalTest_t.data[i];
+		}
+		break;
 	}
 done:
 	if (err || ret != MLAN_STATUS_PENDING)
@@ -9359,12 +9928,21 @@ mlan_status woal_edmac_cfg(moal_private *priv, t_u8 *country_code)
 
 	ENTER();
 
-	is_etsi = woal_is_etsi_country(country_code);
-	if (is_etsi == MFALSE && priv->phandle->is_edmac_enabled == MFALSE)
-		return MLAN_STATUS_SUCCESS;
+	/* If WACP enabled, EDMAC / EU Adaptivity enabled (all countries /
+	 * regions) */
+	if (priv->phandle->params.wacp_mode)
+		is_etsi = MTRUE;
+	else {
+		is_etsi = woal_is_etsi_country(country_code);
 
-	if (is_etsi == MTRUE && priv->phandle->is_edmac_enabled == MTRUE)
-		return MLAN_STATUS_SUCCESS;
+		if (is_etsi == MFALSE &&
+		    priv->phandle->is_edmac_enabled == MFALSE)
+			return MLAN_STATUS_SUCCESS;
+
+		if (is_etsi == MTRUE &&
+		    priv->phandle->is_edmac_enabled == MTRUE)
+			return MLAN_STATUS_SUCCESS;
+	}
 
 	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
 	if (req == NULL) {
@@ -9397,3 +9975,206 @@ done:
 	LEAVE();
 	return status;
 }
+
+/**
+ *  @brief Configures htc_cap by hostcmd
+ *
+ *  @param priv         A pointer to moal_private structure
+ *  @param action       MLAN_ACT_SET or MLAN_ACT_GET
+ *  @param enable       A pointer to enable status
+ *  @return             MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING on success,
+ *                      otherwise failure code
+ */
+mlan_status woal_ioctl_hostcmd_htc_cap(moal_private *priv, t_u16 action,
+				       t_u8 *enable)
+{
+	mlan_ioctl_req *req = NULL;
+	mlan_ds_misc_cfg *misc = NULL;
+	HostCmd_DS_802_11_DBGS_CFG *debug_cmd = NULL;
+	mlan_status ret = MLAN_STATUS_SUCCESS;
+
+	ENTER();
+
+	/* Allocate an IOCTL request buffer */
+	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
+	if (req == NULL) {
+		ret = -ENOMEM;
+		goto done;
+	}
+	/* Fill request buffer */
+	misc = (mlan_ds_misc_cfg *)req->pbuf;
+	misc->sub_command = MLAN_OID_MISC_HOST_CMD;
+	req->req_id = MLAN_IOCTL_MISC_CFG;
+	req->action = action;
+
+	debug_cmd = (HostCmd_DS_802_11_DBGS_CFG *)misc->param.hostcmd.cmd;
+	debug_cmd->header.command = HostCmd_CMD_DBGS_CFG;
+	debug_cmd->header.size =
+		sizeof(HostCmd_DS_802_11_DBGS_CFG) + sizeof(t_u8) /* value */;
+	debug_cmd->action = action;
+	debug_cmd->subid = DEBUG_SUBID_ENABLE_HEHTC;
+	misc->param.hostcmd.len = debug_cmd->header.size;
+	if (action == MLAN_ACT_SET)
+		debug_cmd->data[0] = *enable;
+	/* Send IOCTL request to MLAN */
+	ret = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (ret != MLAN_STATUS_SUCCESS)
+		goto done;
+	if (action == MLAN_ACT_GET)
+		*enable = debug_cmd->data[0];
+done:
+	if (ret != MLAN_STATUS_PENDING)
+		kfree(req);
+	LEAVE();
+	return ret;
+}
+
+/**
+ * @brief               get channel load
+ *
+ * @param priv          Pointer to moal_private structure
+ * @param duration      Channel utilization sampling time, the unit is ms
+ *
+ *  @return             MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING on success,
+ *                      otherwise failure code
+ */
+mlan_status woal_get_ch_load(moal_private *priv, t_u16 duration)
+{
+	mlan_ioctl_req *ioctl_req = NULL;
+	mlan_ds_misc_cfg *misc = NULL;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+
+	ENTER();
+
+	if (!priv || !priv->phandle) {
+		PRINTM(MERROR, "priv or handle is null\n");
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	ioctl_req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
+	if (ioctl_req == NULL) {
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	misc = (mlan_ds_misc_cfg *)ioctl_req->pbuf;
+	misc->sub_command = MLAN_OID_MISC_CH_LOAD;
+	ioctl_req->req_id = MLAN_IOCTL_MISC_CFG;
+
+	ioctl_req->action = MLAN_ACT_GET;
+	/* Because the duration unit of fw is 10ms, it must be divided by 10 */
+	misc->param.ch_load.duration = (duration / 10);
+	status = woal_request_ioctl(priv, ioctl_req, MOAL_NO_WAIT);
+	if (status != MLAN_STATUS_SUCCESS && status != MLAN_STATUS_PENDING)
+		goto done;
+
+done:
+	if (status != MLAN_STATUS_PENDING)
+		kfree(ioctl_req);
+
+	LEAVE();
+	return status;
+}
+
+/**
+ * @brief               get channel load results
+ *
+ * @param priv          Pointer to moal_private structure
+ * @param respbuf       Pointer to response buffer
+ * @param resplen       Response buffer length
+ *
+ *  @return             MLAN_STATUS_SUCCESS on success,
+ *                      otherwise failure code
+ */
+mlan_status woal_get_ch_load_results(moal_private *priv, t_u16 *ch_load,
+				     t_s16 *noise)
+{
+	mlan_ioctl_req *ioctl_req = NULL;
+	mlan_ds_misc_cfg *misc = NULL;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+
+	ENTER();
+
+	if (!priv || !priv->phandle) {
+		PRINTM(MERROR, "priv or handle is null\n");
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	ioctl_req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
+	if (ioctl_req == NULL) {
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	misc = (mlan_ds_misc_cfg *)ioctl_req->pbuf;
+	misc->sub_command = MLAN_OID_MISC_CH_LOAD_RESULTS;
+	ioctl_req->req_id = MLAN_IOCTL_MISC_CFG;
+
+	ioctl_req->action = MLAN_ACT_GET;
+	status = woal_request_ioctl(priv, ioctl_req, MOAL_IOCTL_WAIT);
+	if (status != MLAN_STATUS_SUCCESS)
+		goto done;
+
+	*ch_load = misc->param.ch_load.ch_load_param;
+	*noise = misc->param.ch_load.noise;
+
+done:
+	if (status != MLAN_STATUS_PENDING)
+		kfree(ioctl_req);
+
+	LEAVE();
+	return status;
+}
+
+#ifdef UAP_SUPPORT
+/**
+ * @brief uap get station list handler
+ *
+ * @param priv           Pointer to moal_private structure
+ * @param sta_list       A pointer to station list
+ *
+ *  @return             MLAN_STATUS_SUCCESS on success,
+ *                      otherwise failure code
+ */
+mlan_status woal_get_sta_list(moal_private *priv, mlan_ds_sta_list *sta_list)
+{
+	mlan_ds_get_info *info = NULL;
+	mlan_ioctl_req *ioctl_req = NULL;
+	mlan_status status = MLAN_STATUS_SUCCESS;
+
+	ENTER();
+	if (priv->media_connected == MFALSE) {
+		PRINTM(MINFO, "cfg80211: Media not connected!\n");
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+	/* Allocate an IOCTL request buffer */
+	ioctl_req = (mlan_ioctl_req *)woal_alloc_mlan_ioctl_req(
+		sizeof(mlan_ds_get_info) +
+		(MAX_STA_LIST_IE_SIZE * MAX_NUM_CLIENTS));
+	if (ioctl_req == NULL) {
+		status = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+
+	info = (mlan_ds_get_info *)ioctl_req->pbuf;
+	info->sub_command = MLAN_OID_UAP_STA_LIST;
+	ioctl_req->req_id = MLAN_IOCTL_GET_INFO;
+	ioctl_req->action = MLAN_ACT_GET;
+
+	status = woal_request_ioctl(priv, ioctl_req, MOAL_IOCTL_WAIT);
+	if ((status != MLAN_STATUS_SUCCESS) ||
+	    (!info->param.sta_list.sta_count))
+		goto done;
+
+	moal_memcpy_ext(priv->phandle, sta_list, &info->param.sta_list,
+			sizeof(mlan_ds_sta_list), sizeof(mlan_ds_sta_list));
+
+done:
+	if (status != MLAN_STATUS_PENDING)
+		kfree(ioctl_req);
+	return status;
+}
+#endif /* UAP_SUPPORT */
