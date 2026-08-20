@@ -106,25 +106,22 @@ check_bridge_iface_set_contract() {
 
   gate_control="$(extract_guarded_control "$setter" \
     '^[[:space:]]*if \(!READ_ONCE\(bridge_runtime_switch\)\)')" || return 1
-  printf '%s\n' "$gate_control" | grep -Fq 'return -EOPNOTSUPP' || return 1
+  grep -Fq 'return -EOPNOTSUPP' <<< "$gate_control" || return 1
   null_control="$(extract_guarded_control "$setter" \
     '^[[:space:]]*if \(!val\)')" || return 1
-  printf '%s\n' "$null_control" | grep -Fq 'return -EINVAL' || return 1
-  printf '%s\n' "$setter" | \
-    grep -Fq "val[len] != '\\r' && val[len] != '\\n'" || return 1
+  grep -Fq 'return -EINVAL' <<< "$null_control" || return 1
+  grep -Fq "val[len] != '\\r' && val[len] != '\\n'" <<< "$setter" || return 1
   bound_control="$(extract_guarded_control "$setter" \
     '^[[:space:]]*if \(len >= sizeof\(ifname\) - 1\)')" || return 1
-  printf '%s\n' "$bound_control" | grep -Fq 'return -EINVAL' || return 1
-  printf '%s\n' "$setter" | \
-    grep -Fq "while (val[end] == '\\r' || val[end] == '\\n')" || return 1
+  grep -Fq 'return -EINVAL' <<< "$bound_control" || return 1
+  grep -Fq "while (val[end] == '\\r' || val[end] == '\\n')" <<< "$setter" || return 1
   edge_control="$(extract_guarded_control "$setter" \
     '^[[:space:]]*if \(!len \|\| val\[end\]\)')" || return 1
-  printf '%s\n' "$edge_control" | grep -Fq 'return -EINVAL' || return 1
+  grep -Fq 'return -EINVAL' <<< "$edge_control" || return 1
   name_control="$(extract_guarded_control "$setter" \
     '^[[:space:]]*if \(!dev_valid_name\(ifname\)\)')" || return 1
-  printf '%s\n' "$name_control" | grep -Fq 'return -EINVAL' || return 1
-  printf '%s\n' "$setter" | \
-    grep -Fq 'return moal_bridge_switch_iface(ifname);' || return 1
+  grep -Fq 'return -EINVAL' <<< "$name_control" || return 1
+  grep -Fq 'return moal_bridge_switch_iface(ifname);' <<< "$setter" || return 1
   printf '%s\n' "$setter" | awk '
     /if \(!READ_ONCE\(bridge_runtime_switch\)\)/ { gate=NR }
     /if \(!val\)/ { null_check=NR }
@@ -251,8 +248,7 @@ check_pending_worker_contract() {
 check_pending_generation_clear_contract() {
   local worker="$1" clear="$2"
 
-  printf '%s\n' "$worker" |
-    grep -Fq 'moal_bridge_pending_clear_if(ifname, generation)' || return 1
+  grep -Fq 'moal_bridge_pending_clear_if(ifname, generation)' <<< "$worker" || return 1
   printf '%s\n' "$clear" | awk '
     /spin_lock_irqsave\(&bridge_pending_lock/ { lock=NR }
     /strcmp\(bridge_pending.ifname, ifname\)/ { ifname=NR }
@@ -302,14 +298,12 @@ check_pending_admission_cleanup_contract() {
 check_bridge_getter_separation_contract() {
   local active="$1" pending="$2"
 
-  printf '%s\n' "$active" |
-    grep -Fq 'return moal_bridge_get_iface(buf, PAGE_SIZE);' || return 1
-  if printf '%s\n' "$active" | grep -Fq 'moal_bridge_get_pending_iface'; then
+  grep -Fq 'return moal_bridge_get_iface(buf, PAGE_SIZE);' <<< "$active" || return 1
+  if grep -Fq 'moal_bridge_get_pending_iface' <<< "$active"; then
     return 1
   fi
-  printf '%s\n' "$pending" |
-    grep -Fq 'return moal_bridge_get_pending_iface(buf, PAGE_SIZE);' || return 1
-  if printf '%s\n' "$pending" | grep -Fq 'moal_bridge_get_iface(buf, PAGE_SIZE)'; then
+  grep -Fq 'return moal_bridge_get_pending_iface(buf, PAGE_SIZE);' <<< "$pending" || return 1
+  if grep -Fq 'moal_bridge_get_iface(buf, PAGE_SIZE)' <<< "$pending"; then
     return 1
   fi
   return 0
@@ -518,8 +512,7 @@ check_pending_module_notifier_contract() {
     END { exit !(disable && unregister && drain && disable < unregister &&
                  unregister < drain) }
   ' || return 1
-  if printf '%s\n' "$suspend" |
-      grep -Eq 'bridge_pending_nb|bridge_pending_events_enabled'; then
+  if grep -Eq 'bridge_pending_nb|bridge_pending_events_enabled' <<< "$suspend"; then
     return 1
   fi
   return 0
@@ -1002,10 +995,10 @@ check_init_readiness_publication_contract() {
 check_name_sync_contract() {
   local notifier="$1" init="$2" getter="$3" stats="$4"
 
-  printf '%s\n' "$notifier" | grep -Fq 'NETDEV_CHANGENAME' || return 1
-  printf '%s\n' "$notifier" | grep -Fq 'dev == br->wlan_dev' || return 1
-  printf '%s\n' "$notifier" | grep -Fq 'dev != br->peer_dev' || return 1
-  printf '%s\n' "$notifier" | grep -Fq 'spin_lock_irqsave(&br->name_lock' || return 1
+  grep -Fq 'NETDEV_CHANGENAME' <<< "$notifier" || return 1
+  grep -Fq 'dev == br->wlan_dev' <<< "$notifier" || return 1
+  grep -Fq 'dev != br->peer_dev' <<< "$notifier" || return 1
+  grep -Fq 'spin_lock_irqsave(&br->name_lock' <<< "$notifier" || return 1
   printf '%s\n' "$init" | awk '
 	/ret = register_netdevice_notifier/ { notifier=NR }
     notifier && /rtnl_lock\(\)/ && !rtnl { rtnl=NR }
@@ -1014,8 +1007,8 @@ check_name_sync_contract() {
     END { exit !(notifier && rtnl && wlan && peer &&
                  notifier < rtnl && rtnl < wlan && wlan < peer) }
   ' || return 1
-  printf '%s\n' "$getter" | grep -Fq 'spin_lock_irqsave(&br->name_lock' || return 1
-  printf '%s\n' "$stats" | grep -Fq 'spin_lock_irqsave(&br->name_lock' || return 1
+  grep -Fq 'spin_lock_irqsave(&br->name_lock' <<< "$getter" || return 1
+  grep -Fq 'spin_lock_irqsave(&br->name_lock' <<< "$stats" || return 1
 }
 
 check_fw_sem_ownership() {
@@ -1176,11 +1169,11 @@ check_deferred_pending_wire_contract() {
 
   empty="$(extract_c_block "$qa" '^pending_is_empty\(\)')" || return 1
   stats="$(extract_c_block "$qa" '^stats_pending_is_none\(\)')" || return 1
-  printf '%s\n' "$empty" | grep -Fq '[ -z "$pending" ]' || return 1
-  printf '%s\n' "$empty" | grep -Fq '"$pending" = none' && return 1
-  printf '%s\n' "$stats" | grep -Fq 'stats_value pending_iface' || return 1
-  printf '%s\n' "$stats" | grep -Fq 'stats_value pending_state' || return 1
-  printf '%s\n' "$stats" | grep -Fq '= none' || return 1
+  grep -Fq '[ -z "$pending" ]' <<< "$empty" || return 1
+  grep -Fq '"$pending" = none' <<< "$empty" && return 1
+  grep -Fq 'stats_value pending_iface' <<< "$stats" || return 1
+  grep -Fq 'stats_value pending_state' <<< "$stats" || return 1
+  grep -Fq '= none' <<< "$stats" || return 1
   grep -Fq 'pending_is_empty && stats_pending_is_none' <<< "$qa"
 }
 
@@ -2005,35 +1998,35 @@ printf '%s\n' "$REQUEST_RELOAD_BLOCK" | awk '
                lock < member && member < suspend && suspend < destructive &&
                (!companion || lock < companion)) }
 ' || fail "runtime-switch: reload handle/pair is not validated under card lock"
-printf '%s\n' "$REQUEST_RELOAD_BLOCK" | grep -Fq 'WIFI_STATUS_FW_RECOVERY_FAIL' || \
+grep -Fq 'WIFI_STATUS_FW_RECOVERY_FAIL' <<< "$REQUEST_RELOAD_BLOCK" || \
   fail "runtime-switch: reload failure status missing"
-printf '%s\n' "$POST_RESET_BLOCK" | grep -Fq 'return ret;' || \
+grep -Fq 'return ret;' <<< "$POST_RESET_BLOCK" || \
   fail "runtime-switch: post-reset status not propagated"
-printf '%s\n' "$POST_RESET_BLOCK" | grep -Eq 'MOAL_ACQ_SEMAPHORE|down\(&AddRemoveCardSem\)|MOAL_REL_SEMAPHORE' && \
+grep -Eq 'MOAL_ACQ_SEMAPHORE|down\(&AddRemoveCardSem\)|MOAL_REL_SEMAPHORE' <<< "$POST_RESET_BLOCK" && \
   fail "runtime-switch: post-reset recursively owns card semaphore"
-printf '%s\n' "$MAIN_WORK_BLOCK" | grep -Eq 'fw_reload|fw_reseting' && \
+grep -Eq 'fw_reload|fw_reseting' <<< "$MAIN_WORK_BLOCK" && \
   fail "runtime-switch: unsafe blanket main_work reset guard added"
-printf '%s\n' "$MAIN_WORK_BLOCK" | grep -Fq 'handle->surprise_removed == MTRUE' || \
+grep -Fq 'handle->surprise_removed == MTRUE' <<< "$MAIN_WORK_BLOCK" || \
   fail "runtime-switch: main_work removal guard missing"
 check_fw_sem_ownership "$FW_DPC_BLOCK" "$INIT_FW_BLOCK" || \
   fail "runtime-switch: synchronous firmware-init semaphore ownership ambiguous"
 for flr in "$PCIE_FLR_BLOCK" "$SDIO_FLR_BLOCK"; do
-  printf '%s\n' "$flr" | grep -Fq 'down(&AddRemoveCardSem)' || \
+  grep -Fq 'down(&AddRemoveCardSem)' <<< "$flr" || \
     fail "runtime-switch: destructive FLR lock is interruptible/missing"
-  printf '%s\n' "$flr" | grep -Fq 'status = MLAN_STATUS_FAILURE' || \
+  grep -Fq 'status = MLAN_STATUS_FAILURE' <<< "$flr" || \
     fail "runtime-switch: FLR failure propagation missing"
 done
-printf '%s\n' "$DRV_MODE_BLOCK" | grep -Fq 'mlan_status status = MLAN_STATUS_FAILURE' || \
+grep -Fq 'mlan_status status = MLAN_STATUS_FAILURE' <<< "$DRV_MODE_BLOCK" || \
   fail "runtime-switch: driver-mode defaults to false success"
 printf '%s\n' "$DRV_MODE_BLOCK" | grep -c 'status = MLAN_STATUS_FAILURE' |
   awk '$1 >= 3 { ok=1 } END { exit !ok }' ||
   fail "runtime-switch: driver-mode init failures can return stale success"
-printf '%s\n' "$DRV_MODE_BLOCK" | grep -Fq 'moal_bridge_suspend_owner_for(handle)' || \
+grep -Fq 'moal_bridge_suspend_owner_for(handle)' <<< "$DRV_MODE_BLOCK" || \
   fail "runtime-switch: driver-mode does not snapshot only its effective owner"
 for outer in "$PCIE_DONE_BLOCK" "$PCIE_NOTIFY_BLOCK" "$PCIE_WORK_BLOCK" "$SDIO_WORK_BLOCK"; do
-  printf '%s\n' "$outer" | grep -Fq 'WIFI_STATUS_FW_RECOVERY_FAIL' || \
+  grep -Fq 'WIFI_STATUS_FW_RECOVERY_FAIL' <<< "$outer" || \
     fail "runtime-switch: reset outer path lacks recovery-failure terminal state"
-	printf '%s\n' "$outer" | grep -Fq 'moal_bridge_resume_owner()' || \
+	grep -Fq 'moal_bridge_resume_owner()' <<< "$outer" || \
     fail "runtime-switch: reset outer path does not restore owner after participants"
 	printf '%s\n' "$outer" | awk '
 	  /down\(&AddRemoveCardSem\)/ { lock=NR }
@@ -2042,11 +2035,11 @@ for outer in "$PCIE_DONE_BLOCK" "$PCIE_NOTIFY_BLOCK" "$PCIE_WORK_BLOCK" "$SDIO_W
 	  END { exit !(lock && resume && unlock && lock < resume && resume < unlock) }
 	' || fail "runtime-switch: reset outer path does not pin pair lifetime"
 done
-printf '%s\n' "$PCIE_PREP_BLOCK" | grep -Fq 'fw_reset_prepare_failed' || \
+grep -Fq 'fw_reset_prepare_failed' <<< "$PCIE_PREP_BLOCK" || \
   fail "runtime-switch: void PCIe prepare failure is not carried to post"
-printf '%s\n' "$PCIE_WORK_BLOCK" | grep -Fq 'card->work_flags = MFALSE' || \
+grep -Fq 'card->work_flags = MFALSE' <<< "$PCIE_WORK_BLOCK" || \
   fail "runtime-switch: PCIe reset work flag not cleared on terminal path"
-printf '%s\n' "$SDIO_WORK_BLOCK" | grep -Fq 'card->work_flags = MFALSE' || \
+grep -Fq 'card->work_flags = MFALSE' <<< "$SDIO_WORK_BLOCK" || \
   fail "runtime-switch: SDIO reset work flag not cleared on terminal path"
 printf '%s\n' "$SDIO_REMOVE_BLOCK" | awk '
   /cancel_work_sync\(&card->reset_work\)/ { cancel=NR }
@@ -2077,7 +2070,7 @@ printf 'PASS: runtime-switch unload ordering mutation rejected\n'
 for token in 'surprise_removed' 'fw_reseting' 'fw_reload' 'driver_status' \
              'HardwareStatusReady' 'NETREG_REGISTERED' \
              'netif_device_present' 'moal_bridge_dev_ready' 'peer_released'; do
-  printf '%s\n' "$VALIDATE_BLOCK" | grep -Fq "$token" || \
+  grep -Fq "$token" <<< "$VALIDATE_BLOCK" || \
     fail "runtime-switch: terminal validator missing $token"
 done
 check_target_readiness_split_contract "$FIND_TARGET_BLOCK" "$LINK_STATUS_BLOCK" \
@@ -2162,11 +2155,11 @@ printf '%s\n' "$BRIDGE_INIT_BLOCK" | awk '
                unlock && unwind && notifier < released && released < publish &&
                publish < active && active < unlock && unlock < unwind) }
 ' || fail "runtime-switch: init can publish after peer/WLAN unregister"
-printf '%s\n' "$SWITCH_BLOCK" | grep -Eq 'params\.bridge_(mode|peer|wlan_idx|keepalive)' && \
+grep -Eq 'params\.bridge_(mode|peer|wlan_idx|keepalive)' <<< "$SWITCH_BLOCK" && \
   fail "runtime-switch: effective switch mutates configured bridge policy"
-printf '%s\n' "$LIFECYCLE_DEINIT_BLOCK" | grep -Fq 'bridge_effective_wlan_idx = -1' || \
+grep -Fq 'bridge_effective_wlan_idx = -1' <<< "$LIFECYCLE_DEINIT_BLOCK" || \
   fail "runtime-switch: effective BSS is not cleared on deinit"
-printf '%s\n' "$SUSPEND_OWNER_BLOCK" | grep -Fq 'dev_hold(bridge_suspended_owner.peer_dev)' || \
+grep -Fq 'dev_hold(bridge_suspended_owner.peer_dev)' <<< "$SUSPEND_OWNER_BLOCK" || \
   fail "runtime-switch: reset snapshot does not pin exact peer identity"
 printf '%s\n' "$REMOVE_CARD_BLOCK" | awk '
   /moal_bridge_forget_handle\(handle\)/ { forget=NR }
@@ -2174,7 +2167,7 @@ printf '%s\n' "$REMOVE_CARD_BLOCK" | awk '
   /woal_free_moal_handle\(handle\)/ { free=NR }
   END { exit !(forget && remove && free && forget < remove && remove < free) }
 ' || fail "runtime-switch: remove does not invalidate effective/suspended owner before free"
-printf '%s\n' "$REMOVE_CARD_BLOCK" | grep -Fq 'bridge_runtime_switch' && \
+grep -Fq 'bridge_runtime_switch' <<< "$REMOVE_CARD_BLOCK" && \
   fail "runtime-switch: destruction safety was incorrectly gated off"
 grep -Fq 'bridge_runtime_switch' "$SHIM_C" && \
   fail "runtime-switch: opt-in gate leaked into normal forwarding"
@@ -2267,12 +2260,12 @@ printf 'PASS: runtime-switch rename-window mutation rejected\n'
 
 # G: inactive counters persist for module life; QA covers every target-only
 # matrix entry and its EXIT path captures failure evidence before safe restore.
-printf '%s\n' "$STATS_SHOW_BLOCK" | grep -Fq 'bridge: inactive' || \
+grep -Fq 'bridge: inactive' <<< "$STATS_SHOW_BLOCK" || \
   fail "runtime-switch: inactive stats state missing"
-printf '%s\n' "$STATS_SHOW_BLOCK" | grep -Fq 'iface=none peer=none' || \
+grep -Fq 'iface=none peer=none' <<< "$STATS_SHOW_BLOCK" || \
   fail "runtime-switch: inactive identity stats missing"
 for counter in bridge_switch_ok bridge_switch_fail bridge_rollback_ok bridge_rollback_fail; do
-  printf '%s\n' "$STATS_SHOW_BLOCK" | grep -Fq "atomic_long_read(&$counter)" || \
+  grep -Fq "atomic_long_read(&$counter)" <<< "$STATS_SHOW_BLOCK" || \
     fail "runtime-switch: stats does not read $counter while module lives"
   grep -Fq "atomic_long_set(&$counter" "$BRIDGE_C" && \
     fail "runtime-switch: persistent counter $counter is reset"
@@ -2282,9 +2275,9 @@ printf '%s\n' "$SYSFS_DEINIT_BLOCK" | awk '
   /synchronize_rcu\(\)/ { drain=NR }
   END { exit !(clear && drain && clear < drain) }
 ' || fail "runtime-switch: inactive stats RCU pointer is not drained"
-printf '%s\n' "$SYSFS_DEINIT_BLOCK" | grep -Fq 'sysfs_remove_file' && \
+grep -Fq 'sysfs_remove_file' <<< "$SYSFS_DEINIT_BLOCK" && \
   fail "runtime-switch: per-instance deinit removes module-lifetime stats"
-printf '%s\n' "$STATS_CLEANUP_BLOCK" | grep -Fq 'sysfs_remove_file' || \
+grep -Fq 'sysfs_remove_file' <<< "$STATS_CLEANUP_BLOCK" || \
   fail "runtime-switch: module cleanup does not remove stats"
 printf '%s\n' "$STATS_SHOW_BLOCK" | awk '
   /rcu_read_lock\(\)/ { lock=NR }
@@ -2334,7 +2327,7 @@ grep -q '^ifeq ($(CONFIG_BRIDGE_SWITCH_FAULT_INJECT),y)' "$ROOT/Makefile" || \
   fail "runtime-switch: fault macro is not confined to explicit QA build"
 grep -Fq '#ifdef BRIDGE_SWITCH_FAULT_INJECT' "$INIT_C" || \
   fail "runtime-switch: fault parameter is compiled into production"
-printf '%s\n' "$SWITCH_BLOCK" | grep -Fq '#ifdef BRIDGE_SWITCH_FAULT_INJECT' || \
+grep -Fq '#ifdef BRIDGE_SWITCH_FAULT_INJECT' <<< "$SWITCH_BLOCK" || \
   fail "runtime-switch: fault behavior is compiled into production"
 grep -q 'module_param(bridge_switch_fault_mask, int, 0600)' "$INIT_C" || \
   fail "runtime-switch: QA fault mask is not root-only"
@@ -2546,8 +2539,7 @@ grep -Eq 'atomic_t\s+peer_released' "$ROOT/mlinux/moal_bridge.h" || \
   fail "peer_released must be atomic_t (F1) in struct moal_bridge"
 
 UNREG_BLOCK="$(grep -n -A55 -m1 'case NETDEV_UNREGISTER:' "$BRIDGE_C")"
-printf '%s\n' "$UNREG_BLOCK" | \
-  grep -Eq 'netdev_rx_handler_unregister\(br->peer_dev\)|dev_remove_pack\(&br->peer_pt\)' || \
+grep -Eq 'netdev_rx_handler_unregister\(br->peer_dev\)|dev_remove_pack\(&br->peer_pt\)' <<< "$UNREG_BLOCK" || \
   fail "NETDEV_UNREGISTER branch must unregister handler"
 printf '%s\n' "$UNREG_BLOCK" | grep -q 'dev_set_promiscuity(br->peer_dev, -1)' || \
   fail "NETDEV_UNREGISTER branch must drop promisc"
@@ -2601,16 +2593,13 @@ printf '%s\n' "$DOWN_BLOCK" | grep -q 'atomic_set(&br->.*_qlen, 0)' && \
   fail "NETDEV_DOWN must not race queue accounting with blind reset"
 
 # --- v2 B3: pskb_may_pull guards in rx_fast ---
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -Eq 'pskb_may_pull\(skb,\s*VLAN_ETH_HLEN\)' || \
+grep -Eq 'pskb_may_pull\(skb,\s*VLAN_ETH_HLEN\)' <<< "$W2P_FAST_BLOCK" || \
   fail "rx_fast missing VLAN header pull guard"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -Eq 'pskb_may_pull\(skb,\s*l3_off \+ sizeof\(struct iphdr\)\)' || \
+grep -Eq 'pskb_may_pull\(skb,\s*l3_off \+ sizeof\(struct iphdr\)\)' <<< "$W2P_FAST_BLOCK" || \
   fail "rx_fast missing IPv4 header pull guard"
 
 # --- v2 B7: packet_type fallback skb_share_check ---
-printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
-  grep -Eq 'skb\s*=\s*skb_share_check\(skb,\s*GFP_ATOMIC\)' || \
+grep -Eq 'skb\s*=\s*skb_share_check\(skb,\s*GFP_ATOMIC\)' <<< "$P2W_PACKET_TYPE_BLOCK" || \
   fail "packet_type fallback must unshare via skb_share_check"
 printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
   grep -q 'atomic_long_inc(&br->peer_to_wlan.oom_drops)' || \
@@ -2620,13 +2609,11 @@ printf '%s\n' "$P2W_PACKET_TYPE_BLOCK" | \
 printf '%s\n' "$W2P_FAST_BLOCK" | \
   awk '/ktime_get\(\)/ {found=NR} END {if (found) print found}' | \
   grep -q '.' || fail "ktime_get expected inside rx_fast"
-printf '%s\n' "$W2P_FAST_BLOCK" | \
-  grep -Eq 'if \(bridge_debug\)[[:space:]]*\{' || \
+grep -Eq 'if \(bridge_debug\)[[:space:]]*\{' <<< "$W2P_FAST_BLOCK" || \
   fail "rx_fast timing block must be inside 'if (bridge_debug)'"
 
 # --- v2 A2: non-self unicast consumed without clone ---
-printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
-  grep -Eq 'return[[:space:]]+RX_HANDLER_CONSUMED' || \
+grep -Eq 'return[[:space:]]+RX_HANDLER_CONSUMED' <<< "$P2W_RX_HANDLER_BLOCK" || \
   fail "rx_handler must return RX_HANDLER_CONSUMED for non-self unicast"
 printf '%s\n' "$P2W_RX_HANDLER_BLOCK" | \
   grep -q '\*pskb = NULL;' || \
@@ -2647,8 +2634,7 @@ grep -cE 'handle->bridge(->|\s*\))' "$SHIM_C" | awk '$1 > 0 {
 
 # --- v3 D2: A-MSDU subframe honors rx_fast CONSUMED return ---
 W2P_FAST_BLOCK2="$(grep -n -A170 -m1 '^int moal_bridge_rx_fast' "$BRIDGE_C")"
-printf '%s\n' "$W2P_FAST_BLOCK2" | \
-  grep -Eq 'return[[:space:]]+1;\s*/\*.*consumed' || \
+grep -Eq 'return[[:space:]]+1;\s*/\*.*consumed' <<< "$W2P_FAST_BLOCK2" || \
   fail "rx_fast must return 1 for consumed (non-self unicast)"
 
 # v6 IA-M10: cached pattern 'if (br_amsdu_active && moal_bridge_rx_fast(...)) continue;'
@@ -2684,8 +2670,7 @@ grep -q 'READ_ONCE(((moal_private \*)br->wlan_priv)->media_connected)' "$BRIDGE_
 
 # --- v3 D6: NULL guard in inetaddr notifier ---
 INET_BLOCK="$(grep -n -A25 -m1 'moal_bridge_inetaddr_event' "$BRIDGE_C")"
-printf '%s\n' "$INET_BLOCK" | \
-  grep -Eq 'if \(!ifa \|\| !ifa->ifa_dev' || \
+grep -Eq 'if \(!ifa \|\| !ifa->ifa_dev' <<< "$INET_BLOCK" || \
   fail "inetaddr notifier must guard against NULL ifa/ifa_dev"
 
 # --- v3 D7: EAPOL check must catch VLAN-tagged EAPOL (after VLAN unwrap) ---
