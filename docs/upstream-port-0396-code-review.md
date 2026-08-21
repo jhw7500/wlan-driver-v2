@@ -3,17 +3,17 @@
 ## 판정 범위와 최종 상태
 
 이 문서의 최종 **source/test validation HEAD**는
-`3b9c8f8d7a06552bce3d94aa8b7967be04eb5f18`이다. 이 문서를 갱신하는 후속
+`609749f07d00c49b4659b8cc55e13ff287a8da1a`이다. 이 문서를 갱신하는 후속
 documentation commit은 source/test 파일을 바꾸지 않으므로 코드 판정 기준은 계속
-`3b9c8f8`이다.
+`609749f`이다.
 
-최종 판정은 **host/source validated, architecture WATCH, target-runtime open**이다.
-초기 독립 검토가 BLOCK으로 분류한 source-proven USB submit-after-kill 결함과 후속
-scoped re-review가 찾은 두 source residual은 수정되었다. 따라서 source BLOCK은
-해소되었지만 USB/bridge lifecycle과 firmware/board별 정책은 target에서만 판정할 수
-있으므로 architecture 상태는 CLEAR가 아니라 **WATCH**다. 후속 residual 수정 뒤
-별도의 독립 reviewer가 `APPROVE`를 발행한 것은 아니며, 이 문서는 그런 승인을
-주장하지 않는다.
+최종 판정은 **host/source validated, architecture CLEAR, target-runtime WATCH**다.
+초기 독립 검토가 BLOCK으로 분류한 source-proven USB submit-after-kill 결함, 후속
+scoped residual, 그리고 latest-main reconciliation 뒤 발견된 proc/reset 동시성 결함을
+수정했다. 최종 독립 code reviewer는 `APPROVE`, architecture reviewer는 `CLEAR`를
+발행했다. 다만 USB/PCIe/SDIO lifecycle과 firmware/board별 정책은 실제 target에서만
+판정할 수 있으므로 runtime gate는 계속 열려 있다. 여기서 architecture `CLEAR`는
+hardware pass를 뜻하지 않는다.
 
 | 항목 | 고정 값 |
 |---|---|
@@ -27,11 +27,14 @@ scoped re-review가 찾은 두 source residual은 수정되었다. 따라서 sou
 | primary final-review fixes | `fdba08f1df564c452a3242e65e23e9587487c91e` |
 | scoped residual fixes | `e1fe289ee2d926f61a6384f47505fdb09bcb0466` |
 | deterministic QA fixes | `1dd14bf30093d2232d1a506385ff7d89d7d04b49`, `3b9c8f8d7a06552bce3d94aa8b7967be04eb5f18` |
+| latest main reconciliation | `45f593ef8a51f2c9591cb024d956ce602a89c4f9` (includes `origin/main` `1ba9fd42b40c8f76b207ec391eec77c171cdcc12`) |
+| reconciliation review fixes | `609749f07d00c49b4659b8cc55e13ff287a8da1a` |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
-갖는 non-fast-forward merge다. clean-port first-parent 범위의 integration merge는
-정확히 하나이며, upstream base와 tip 모두 최종 HEAD의 ancestor다. 이 topology는
-release snapshot을 다시 cherry-pick하지 않고 양쪽 history를 보존한다.
+갖는 non-fast-forward merge다. clean-port first-parent 범위의 upstream integration
+merge는 정확히 하나이고, latest-main reconciliation merge까지 포함한 first-parent
+merge는 둘이다. upstream base/tip과 `origin/main` 모두 최종 source HEAD의 ancestor다.
+이 topology는 release snapshot을 다시 cherry-pick하지 않고 양쪽 history를 보존한다.
 
 ## 최종 review chronology
 
@@ -54,9 +57,19 @@ release snapshot을 다시 cherry-pick하지 않고 양쪽 history를 보존한�
 6. `cd6448e`가 내부 SDD report를 잘못 force-track했고 `fb4b288`이 다시 untrack했다.
    이 두 commit은 tracked internal-report 경로에 대해 net-zero이며 production/source
    semantics를 바꾸지 않는다.
+7. `45f593e`가 최신 `origin/main`을 clean-port branch에 merge했다. 이어진 reconciliation
+   review는 config proc writer가 teardown과 공유하는 handle lifetime, hang worker의
+   cleanup-to-reload handoff, 비동기 PCIe mode-4 FLR의 DBDC 중복 admission 및
+   remove/rebind 경쟁을 집중 검토했다.
+8. `609749f`가 `AddRemoveCardSem` 기반 lifetime transaction, ordered hang handoff,
+   canonical DBDC pending gate, 참조 보유된 PCI device work item, remove-time
+   invalidation, kernel-version별 locked FLR, terminal failure publication과 stale-status
+   직렬화를 구현했다. 새 invariant는 각 race의 admission/order/status 조건을
+   고정한다. 이 current tree에 대해 독립 code reviewer가 `APPROVE`, architecture
+   reviewer가 `CLEAR`를 발행했다.
 
-이 chronology는 fresh controller verification을 기록하지만, post-residual 독립
-`APPROVE`로 승격하지 않는다. 최종 architecture 결론은 **WATCH, not BLOCK**이다.
+이 chronology의 source/architecture 판정은 current tree의 fresh review에 근거한다.
+target firmware와 hardware stress 결과는 별도이며 계속 **WATCH/open**이다.
 
 ## Upstream coverage와 손상 branch 배제
 
@@ -134,7 +147,41 @@ ring write는 ring lock으로 직렬화되고, 과거 caller의 768-byte IE scra
 맞춰 `PROC_FS`에 명시적으로 의존한다. active production `[DBG-RXDROP]` print는
 제거되었고 drop counters/default-off debug policy는 유지된다.
 
-### bridge, PCIe/SDIO 및 policy WATCH
+config proc parser는 `soft_reset`, `drv_mode`, `rf_test_mode`, `antcfg` keyword 뒤에
+실제 `=` delimiter가 존재하는지 길이와 함께 확인하고, `copy_from_user()` 실패는
+`-EFAULT`로 반환한다. TP accounting timer는 최종 handle free 전에 취소된다.
+
+### Proc/reload transaction과 deferred PCIe FLR
+
+`woal_config_write()`는 nonblocking `AddRemoveCardSem` 획득에 성공한 writer만 전체
+handle-lifetime transaction으로 admission한다. admission 뒤 global slot identity,
+module exit, surprise removal, firmware reset, driver-init 및 pending PCIe reset을 다시
+검사한다. driver-mode와 firmware-reload 내부 helper는 caller가 semaphore를 이미
+소유한 경우를 명시적으로 전달하여 중첩 획득 없이 동일 lifetime을 유지한다.
+
+hang worker도 semaphore 아래에서 published handle identity를 재검증하고 cleanup부터
+automatic SDIO/PCIe recovery handoff까지 소유권을 유지한다. handoff 실패 시 이미
+canonical deferred recovery가 transaction을 소유하지 않는 한 primary/companion을
+NotReady/terminal recovery-fail 상태로 게시한다. proc mode-4 FLR가 이미 pending이면
+hang cleanup은 같은 adapter를 먼저 파괴하지 않는다.
+
+mode-4 PCIe FLR는 ordered workqueue에서 비동기로 실행한다. work item은 raw
+`moal_handle`/card pointer 대신 target/key/peer `pci_dev` references와 expected
+`pci_driver`를 보유한다. canonical primary `key_pdev`가 DBDC primary/companion proc
+node의 중복 FLR를 차단한다. worker는 publication completion 뒤 cancellation을
+확인하고, peer device lock 다음 target의 full PCI lock을 획득한 뒤 cancellation,
+driver binding과 `pci_get_drvdata()`를 다시 검증하고
+`pci_reset_function_locked()`를 호출한다.
+
+Linux 5.14 이상은 `pci_dev_trylock()`/`pci_dev_unlock()`을 사용하고, 4.13~5.13은
+core와 같은 config-access-then-device lock composition을 사용한다. 4.13 미만은
+mode-4를 event/status publication 전에 `-EOPNOTSUPP`로 거절한다. PCI remove는 reset
+gate 직후와 card removal 뒤에 pending target/key/peer를 모두 invalidate한다.
+invalidation은 실패 상태를 먼저 게시하고 worker의 최종 status write도 같은 pending
+lock 아래에서 cancellation을 재검사하므로 성공한 rebind 상태를 stale worker가
+덮어쓰지 않는다.
+
+### bridge, PCIe/SDIO 및 target policy
 
 `mlinux/moal_bridge.c`는 build object이며 runtime switch, pending identity,
 RX/TX fast path, init/deinit, owner suspend/resume 및 reset cleanup이 하나의 lifecycle을
@@ -145,7 +192,7 @@ PCIe FLR/AER, SDIO in-band/reset 및 generic firmware recovery는 participating
 handle을 재구성한 뒤 bridge owner를 복구한다. destructive recovery 실패는 terminal
 state지만 cold add-card의 bridge init 실패는 WLAN을 계속 허용한다. source에서 두
 정책을 하나로 합쳐야 한다는 target contract는 없으므로 그 차이를 보존했다. 이는
-BLOCK이 아니라 명시적 architecture WATCH다.
+source architecture BLOCK이 아니며, 실제 board/firmware에서 확인할 target WATCH다.
 
 ### UAP/AGCS, VHT/HE, ratebitmap 및 build defaults
 
@@ -181,8 +228,8 @@ bridge suite의 quiet-`grep` nondeterminism은 source assertion 실패가 아니
 결함이었다. `1dd14bf`는 fixed/extended quiet predicates를, `3b9c8f8`은 남은
 plain quiet predicates와 binary `strings` symbol check를 deterministic input
 형태로 바꿨다. assertions/mutations와 full-consuming awk/tr pipelines는 바꾸지
-않았다. 최종 반복 결과는 direct bridge suite **20/20**, aggregate
-`upstream-port-check` **3/3** 연속 성공이다.
+않았다. `609749f`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
+0이었고 `upstream_port_final_checks=PASS`로 종료했다.
 
 초기 build warning 중 다음 source warning은 모두 수정되었다.
 
@@ -204,6 +251,12 @@ warning: the compiler differs from the one used to build the kernel
 host에 `vmlinux`가 없어 두 module의 BTF generation도 skip된다. 이는 compiler
 warning은 아니지만 BTF evidence가 없다는 환경 한계다.
 
+`609749f` production diff를 patch metadata가 아닌 code style 범위로 실행한 kernel
+`checkpatch.pl --no-signoff` 결과는 **0 errors, 14 warnings**다. 14건은 4.13/5.14
+호환 분기를 위한 `LINUX_VERSION_CODE` 전처리 조건에서 발생한
+`LINUX_VERSION_CODE`/`CONSTANT_COMPARISON` warning pair이며, target kernel range를
+유지하기 위해 의도적으로 남겼다.
+
 ## Fresh final validation evidence
 
 ### External modules
@@ -214,7 +267,7 @@ clean external-module build는
 | artifact | bytes | SHA-256 | vermagic |
 |---|---:|---|---|
 | `mlan.ko` | 1,969,752 | `516d4cf1dee073f190d5341f5d26326796bceb76a5ebe2fb8602d99adb0827e0` | `6.8.0-111-generic SMP preempt mod_unload modversions` |
-| `moal.ko` | 3,161,160 | `5099d6d27e069cceec7328af3040427d748864cb11d8577b2a7afc1901ac247f` | `6.8.0-111-generic SMP preempt mod_unload modversions` |
+| `moal.ko` | 3,178,088 | `a3ec4c322e8ea39996a2f72939b52d7ea194595cee15969caf64b79122e935f1` | `6.8.0-111-generic SMP preempt mod_unload modversions` |
 
 이 hash/size/vermagic는 fresh controller artifact evidence이며 module load 또는
 target traffic pass를 뜻하지 않는다.
@@ -237,10 +290,11 @@ fresh `mlanutl` build는 compiler warning 없이 완료되었지만 device ioctl
 ### Topology, markers 및 whitespace
 
 - exact upstream tip/base ancestry: exit 0;
-- clean-port first-parent merge count: `1` (`cc7f79d`);
+- latest `origin/main` ancestry: exit 0;
+- clean-port first-parent merge count: `2` (upstream integration `cc7f79d`, latest-main reconciliation `45f593e`);
 - exact conflict-marker match count: `0`;
-- fix range `760908e..3b9c8f8`의 `git diff --check`: exit 0;
-- documentation commit을 포함한 `760908e..HEAD`도 post-commit check로 확인한다.
+- reconciliation range `45f593e..609749f`의 `git diff --check`: exit 0;
+- documentation commit을 포함한 `45f593e..HEAD`도 post-commit check로 확인한다.
 
 whole local integration range의 default check는 별개다.
 
@@ -272,9 +326,9 @@ pass 또는 유효한 target result로 기록하지 않는다.
 | subsystem | final source policy | residual WATCH | required target validation |
 |---|---|---|---|
 | USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | traffic 중 unplug/unload/suspend, resubmit fault, mode reload, KASAN/lockdep |
-| bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | reset/FLR producer gates와 owner restoration | reset concurrent with PM/unload | PCIe FLR/AER/in-band 및 SDIO/OOB reset stress |
-| management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 | unload/read와 frame-volume/privacy | host-MLME/P2P delivery, wrap/clear, concurrent proc read/unload |
+| bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration | reset concurrent with PM/unbind/rebind | PCIe FLR/AER/in-band 및 SDIO/OOB reset stress |
+| management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600, card-lifetime writer transaction | unload/read와 frame-volume/privacy | host-MLME/P2P delivery, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
 | VHT/HE/rate | stored-map round-trip, HE encode/decode, 26-word bitmap | firmware persistence/power-table variance | association IE, HE groups 0–14, reconnect persistence |
@@ -298,7 +352,8 @@ ABI review 및 target execution evidence가 필요하다.
 
 1. USB disconnect/unplug, unload, suspend traffic, resubmit failure, firmware
    reload/mode rebuild, pending counters, KASAN/lockdep.
-2. PCIe FLR/AER/in-band reset을 bridge active 및 suspend/unload 경쟁과 함께 실행.
+2. PCIe FLR/AER/in-band reset을 bridge active, suspend/unload 및 unbind/rebind 경쟁과
+   함께 실행하고 stale worker가 새 binding/status를 바꾸지 않는지 확인.
 3. SDIO/OOB reset/FLR 및 bridge owner restore.
 4. USB/PCIe/SDIO suspend/resume를 traffic과 pending bridge switch에 결합.
 5. STA/uAP association, roaming, AP start/stop, host-MLME/P2P management masks.
@@ -310,8 +365,8 @@ ABI review 및 target execution evidence가 필요하다.
 9. 26-word ratebitmap GET/SET, HT/VHT/HE ratemax 및 persistence.
 10. management event maximum boundary, frame delivery, ring wrap/clear,
     hex dump, log volume/privacy, concurrent proc read/unload.
-11. bridge runtime switch, DBDC, peer delete/recreate, cold-start/recovery
-    policy, sustained traffic, KASAN/lockdep.
+11. bridge runtime switch, DBDC primary/companion 동시 mode-4 proc write, peer
+    delete/recreate, cold-start/recovery policy, sustained traffic, KASAN/lockdep.
 
 ## 최종 결론
 
@@ -321,6 +376,6 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 최종 상태는 **source/test validation complete at `3b9c8f8`, architecture
-WATCH, target-runtime gates open**이다. 독립 post-residual APPROVE나 hardware pass로
-해석하지 않는다.
+따라서 최종 상태는 **source/test validation complete at `609749f`, architecture
+CLEAR, target-runtime WATCH/open**이다. 독립 code-review `APPROVE`와 architecture
+`CLEAR`는 current source tree에 대한 판정이며 hardware pass로 해석하지 않는다.
