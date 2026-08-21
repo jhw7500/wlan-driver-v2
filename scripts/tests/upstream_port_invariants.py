@@ -105,12 +105,29 @@ queue_deferred_pcie_reset = c_function(
 invalidate_deferred_pcie_reset = c_function(
     main_c, "bool woal_invalidate_deferred_pcie_reset"
 )
+replace_fwdump_fname = c_function(
+    main_c, "void woal_replace_fwdump_fname"
+)
+replace_active_fwdump_fname = c_function(
+    main_c, "static void woal_replace_active_fwdump_fname"
+)
+dup_fwdump_fname = c_function(
+    main_c, "static char *woal_dup_fwdump_fname"
+)
 deferred_pcie_target_trylock = c_function(
     main_c, "static bool woal_deferred_pcie_target_trylock"
 )
 pcie_remove = c_function(pcie_c, "static void woal_pcie_remove")
+add_card = c_function(main_c, "moal_handle *woal_add_card")
 reset_intf = c_function(main_c, "mlan_status woal_reset_intf")
 config_write = c_function(proc_c, "static ssize_t woal_config_write")
+config_cmd_match = c_function(proc_c, "static bool woal_config_cmd_match")
+file_fwdump_start = main_c.rfind("t_void woal_store_firmware_dump")
+file_fwdump_store = (
+    c_function(main_c[file_fwdump_start:], "t_void woal_store_firmware_dump")
+    if file_fwdump_start >= 0 else ""
+)
+print_fwdump = c_function(main_c, "t_void woal_print_firmware_dump")
 
 for path, source in (("mlinux/moal_main.c", main_c),
                      ("mlinux/moal_proc.c", proc_c)):
@@ -185,6 +202,76 @@ require(ordered(config_write, "copy_from_user(databuf, buf, count)",
                 "woal_request_fw_reload_from_proc(handle, config_data)",
                 "MOAL_REL_SEMAPHORE(&AddRemoveCardSem)"),
         "config writes can wait behind or race card teardown")
+require("struct mutex fwdump_fname_lock;" in main_h and
+        "char *fwdump_active_fname;" in main_h and
+        "static char *fwdump_fname;" not in main_c and
+        ordered(add_card, "handle = kzalloc(sizeof(moal_handle)",
+                "mutex_init(&handle->fwdump_fname_lock)",
+                "m_handle[index] = handle") and
+        ordered(replace_fwdump_fname,
+                "mutex_lock(&handle->fwdump_fname_lock)",
+                "old_fname = handle->fwdump_fname",
+                "handle->fwdump_fname = new_fname",
+                "mutex_unlock(&handle->fwdump_fname_lock)",
+                "kfree(old_fname)") and
+        ordered(replace_active_fwdump_fname,
+                "mutex_lock(&handle->fwdump_fname_lock)",
+                "old_fname = handle->fwdump_active_fname",
+                "handle->fwdump_active_fname = new_fname",
+                "mutex_unlock(&handle->fwdump_fname_lock)",
+                "kfree(old_fname)") and
+        ordered(dup_fwdump_fname,
+                "mutex_lock(&handle->fwdump_fname_lock)",
+                "handle->fwdump_active_fname",
+                "handle->fwdump_fname", "kstrdup(",
+                "mutex_unlock(&handle->fwdump_fname_lock)") and
+        "woal_replace_fwdump_fname(handle, new_fwdump_fname)" in
+        config_write and
+        ordered(file_fwdump_store,
+                "seqnum = woal_le16_to_cpu(",
+                "type = woal_le16_to_cpu(", "if (seqnum == 1)",
+                "woal_replace_active_fwdump_fname(phandle, NULL)",
+                "woal_dup_fwdump_fname(phandle, false, flag)",
+                "filp_open(dump_fname",
+                "woal_replace_active_fwdump_fname(phandle, dump_fname)",
+                "woal_dup_fwdump_fname(phandle, true, flag)",
+                "if (type == DUMP_TYPE_ENDE)",
+                "woal_replace_active_fwdump_fname(phandle, NULL)") and
+        ordered(free_handle, "woal_replace_fwdump_fname(handle, NULL)",
+                "woal_replace_active_fwdump_fname(handle, NULL)"),
+        "firmware-dump pathname lifetime or per-handle dump identity is not serialized")
+require(re.search(r"#ifndef DUMP_TO_PROC\s+static char \*"
+                  r"woal_dup_fwdump_fname", main_c) is not None,
+        "DUMP_TO_PROC builds retain an unused file-path snapshot helper")
+require("snapshot = ERR_PTR(-ENOMEM)" in dup_fwdump_fname and
+        ordered(file_fwdump_store,
+                "woal_dup_fwdump_fname(phandle, false, flag)",
+                "if (IS_ERR(dump_fname))", "if (!dump_fname)") and
+        ordered(file_fwdump_store,
+                "woal_dup_fwdump_fname(phandle, true, flag)",
+                "if (IS_ERR(dump_fname))"),
+        "firmware-dump pathname snapshot OOM is confused with an unset path")
+require("ssize_t read_ret" in print_fwdump and
+        ordered(print_fwdump, "pfile_fwdump = filp_open(",
+                "if (IS_ERR(pfile_fwdump))", "PTR_ERR(pfile_fwdump)",
+                "goto done;", "read_ret =") and
+        "read_ret = vfs_read(" in print_fwdump and
+        "read_ret = kernel_read(" in print_fwdump and
+        ordered(print_fwdump, "if (read_ret <= 0)",
+                "filp_close(pfile_fwdump, NULL)", "done:",
+                "moal_vfree(phandle, pbuf)"),
+        "firmware-dump console read can dereference an ERR_PTR file")
+require('count >= strlen("fwdump_file=")' in config_write and
+        ordered(config_write, '"fwdump_file="',
+                "while (fwdump_name_len &&",
+                "fwdump_name[fwdump_name_len - 1] == '\\n'",
+                "fwdump_name[fwdump_name_len - 1] == '\\r'",
+                "if (!fwdump_name_len ||",
+                "memchr(fwdump_name, '\\0', fwdump_name_len)",
+                "new_fwdump_fname = kzalloc(fwdump_name_len + 1, flag)",
+                "memcpy(new_fwdump_fname, fwdump_name, fwdump_name_len)",
+                "woal_replace_fwdump_fname(handle, new_fwdump_fname)"),
+        "firmware-dump pathname parsing does not trim line endings, reject malformed input, or keep it bounded and NUL terminated")
 require(switch_drv_mode_locked and
         "MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)" not in
         switch_drv_mode_locked,
@@ -212,6 +299,17 @@ require(ordered(deferred_pcie_reset, "wait_for_completion(&reset->published)",
                 "pci_dev_put(reset->peer_pdev)",
                 "pci_dev_put(reset->pdev)", "kfree(reset)"),
         "proc-triggered PCIe FLR is not deferred beyond proc callback rundown")
+require("WOAL_PCIE_RESET_LOCK_RETRIES" in main_c and
+        ordered(deferred_pcie_reset,
+                "for (lock_attempt = 0;",
+                "cancelled = reset->cancelled", "if (cancelled)",
+                "device_trylock(&reset->peer_pdev->dev)",
+                "woal_deferred_pcie_target_trylock(reset->pdev)",
+                "if (peer_locked)",
+                "device_unlock(&reset->peer_pdev->dev)",
+                "usleep_range(", "if (!target_locked)",
+                "ret = -EAGAIN"),
+        "transient PCIe device-lock contention terminates recovery without a bounded retry")
 require("struct pci_driver *driver;" in main_c and
         "bool cancelled;" in main_c and
         all(needle in invalidate_deferred_pcie_reset for needle in
@@ -311,24 +409,28 @@ for keyword in ("soft_reset", "drv_mode", "rf_test_mode", "antcfg"):
     )
     require(delimited_parser is not None,
             f"exact or malformed {keyword} write can advance beyond its value buffer")
-for keyword, minimum in (("tx_antenna", "tx_antenna"),
-                         ("rx_antenna", "rx_antenna"),
-                         ("radio_mode", "radio_mode="),
-                         ("channel", "channel"),
-                         ("band", "band"),
-                         ("bw", "bw")):
+for keyword in ("tx_antenna", "rx_antenna", "radio_mode", "channel",
+                "band", "bw"):
     guarded_parser = re.search(
-        rf'if\s*\(\s*!strncmp\(databuf,\s*"{keyword}",\s*'
-        rf'strlen\("{keyword}"\)\)\s*&&\s*count\s*>\s*'
-        rf'strlen\("{minimum}"\)\s*\)',
+        rf'if\s*\(\s*count\s*>\s*strlen\("{keyword}"\)\s*&&\s*'
+        rf'!strncmp\(databuf,\s*"{keyword}",\s*strlen\("{keyword}"\)\)\s*'
+        rf'&&\s*databuf\[strlen\("{keyword}"\)\]\s*==\s*\'=\'\s*\)',
         config_write,
     )
     require(guarded_parser is not None,
-            f"config parser can advance past a short {keyword} write")
+            f"config parser accepts a malformed {keyword} delimiter")
+require(config_cmd_match and
+        ordered(config_cmd_match, "count >= cmd_len",
+                "!strncmp(databuf, cmd, cmd_len)", "count == cmd_len") and
+        "databuf[cmd_len] == '\\n'" in config_cmd_match and
+        all(f'woal_config_cmd_match(databuf, count, "{keyword}")' in
+            config_write for keyword in
+            ("debug_dump", "fw_reload", "get_and_reset_per")),
+        "bare config commands accept the wrong command content or trailing garbage")
 require("proc_create_data(STATUS_PROC, 0444" in proc_c,
         "wifi_status proc entry is still writable")
 require("proc_create_data(config_proc_dir, 0644" in proc_c,
-        "config proc entry remains world-writable")
+        "config proc owner-write/read ABI changed unexpectedly")
 
 for bus, source, signature in (
         ("PCIe", pcie_c, "static mlan_status __woal_do_flr"),

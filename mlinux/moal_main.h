@@ -3536,7 +3536,12 @@ struct _moal_handle {
 	card_info *card_info;
 	/** Card specific driver version */
 	t_s8 driver_version[MLAN_MAX_VER_STR_LEN];
+	/** Serializes configured and active firmware-dump pathnames */
+	struct mutex fwdump_fname_lock;
+	/** User-configured firmware-dump pathname */
 	char *fwdump_fname;
+	/** Per-dump pathname snapshot, valid from sequence 1 through ENDE */
+	char *fwdump_active_fname;
 #ifdef ANDROID_KERNEL
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 	struct wakeup_source *ws;
@@ -4528,6 +4533,8 @@ void woal_dump_firmware_info_v3(moal_handle *phandle);
 /* Print FW dumps in kernel(dmesg) log */
 t_void woal_print_firmware_dump(moal_handle *phandle, char *fwdp_fname);
 #endif /*FWDUMP_VIA_PRINT*/
+/* Replace the per-handle firmware-dump pathname; consumes new_fname. */
+void woal_replace_fwdump_fname(moal_handle *handle, char *new_fname);
 /* Store the FW dumps received from events in a file */
 void woal_store_firmware_dump(moal_handle *phandle, pmlan_event pmevent);
 void woal_send_fw_dump_complete_event(moal_private *priv);

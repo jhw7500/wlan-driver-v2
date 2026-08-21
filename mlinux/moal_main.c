@@ -95,8 +95,6 @@
  * Global Variables
  * ******************************************************
  */
-/** the pointer of new fwdump fname for each dump**/
-static char *fwdump_fname;
 /** Semaphore for add/remove card */
 struct semaphore AddRemoveCardSem;
 /**
@@ -107,6 +105,55 @@ moal_handle *m_handle[MAX_MLAN_ADAPTER];
 static int reg_work;
 /** bridge_debug (moal_init.c): gates the RX deliver-leg latency accounting. */
 extern int bridge_debug;
+
+/* Takes ownership of new_fname.  An in-progress dump keeps its own active
+ * snapshot, so changing the configured pathname affects only the next dump.
+ */
+void woal_replace_fwdump_fname(moal_handle *handle, char *new_fname)
+{
+	char *old_fname;
+
+	if (!handle) {
+		kfree(new_fname);
+		return;
+	}
+	mutex_lock(&handle->fwdump_fname_lock);
+	old_fname = handle->fwdump_fname;
+	handle->fwdump_fname = new_fname;
+	mutex_unlock(&handle->fwdump_fname_lock);
+	kfree(old_fname);
+}
+
+static void woal_replace_active_fwdump_fname(moal_handle *handle,
+					      char *new_fname)
+{
+	char *old_fname;
+
+	mutex_lock(&handle->fwdump_fname_lock);
+	old_fname = handle->fwdump_active_fname;
+	handle->fwdump_active_fname = new_fname;
+	mutex_unlock(&handle->fwdump_fname_lock);
+	kfree(old_fname);
+}
+
+#ifndef DUMP_TO_PROC
+static char *woal_dup_fwdump_fname(moal_handle *handle, bool active,
+				    gfp_t flag)
+{
+	const char *fname;
+	char *snapshot = NULL;
+
+	mutex_lock(&handle->fwdump_fname_lock);
+	fname = active ? handle->fwdump_active_fname : handle->fwdump_fname;
+	if (fname) {
+		snapshot = kstrdup(fname, flag);
+		if (!snapshot)
+			snapshot = ERR_PTR(-ENOMEM);
+	}
+	mutex_unlock(&handle->fwdump_fname_lock);
+	return snapshot;
+}
+#endif
 /********************************************************
 		Local Variables
 ********************************************************/
@@ -1040,6 +1087,9 @@ struct woal_deferred_pcie_reset {
 };
 static LIST_HEAD(deferred_pcie_resets);
 static DEFINE_SPINLOCK(deferred_pcie_reset_lock);
+#define WOAL_PCIE_RESET_LOCK_RETRIES 20
+#define WOAL_PCIE_RESET_LOCK_MIN_US 1000
+#define WOAL_PCIE_RESET_LOCK_MAX_US 2000
 
 /* The caller supplies a currently live callback handle.  Pending entries own
  * all pci_dev references, so pointer comparison remains valid under the list
@@ -1130,6 +1180,7 @@ static void woal_deferred_pcie_reset(struct work_struct *work)
 	bool stale = false;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
 	bool target_locked = false;
+	unsigned int lock_attempt;
 #endif
 	int ret;
 
@@ -1142,19 +1193,39 @@ static void woal_deferred_pcie_reset(struct work_struct *work)
 		ret = -ECANCELED;
 		goto done;
 	}
-	if (reset->peer_pdev && reset->peer_pdev != reset->pdev) {
-		if (!device_trylock(&reset->peer_pdev->dev)) {
-			ret = -EAGAIN;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
+	for (lock_attempt = 0;
+	     lock_attempt < WOAL_PCIE_RESET_LOCK_RETRIES; lock_attempt++) {
+		spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+		cancelled = reset->cancelled;
+		spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+		if (cancelled) {
+			stale = true;
+			ret = -ECANCELED;
 			goto done;
 		}
-		peer_locked = true;
+		if (reset->peer_pdev && reset->peer_pdev != reset->pdev) {
+			if (!device_trylock(&reset->peer_pdev->dev))
+				goto retry_lock;
+			peer_locked = true;
+		}
+		if (woal_deferred_pcie_target_trylock(reset->pdev)) {
+			target_locked = true;
+			break;
+		}
+		if (peer_locked) {
+			device_unlock(&reset->peer_pdev->dev);
+			peer_locked = false;
+		}
+retry_lock:
+		if (lock_attempt + 1 < WOAL_PCIE_RESET_LOCK_RETRIES)
+			usleep_range(WOAL_PCIE_RESET_LOCK_MIN_US,
+				     WOAL_PCIE_RESET_LOCK_MAX_US);
 	}
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
-	if (!woal_deferred_pcie_target_trylock(reset->pdev)) {
+	if (!target_locked) {
 		ret = -EAGAIN;
 		goto done;
 	}
-	target_locked = true;
 	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
 	cancelled = reset->cancelled;
 	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
@@ -3237,12 +3308,11 @@ void woal_free_moal_handle(moal_handle *handle)
 		woal_cancel_timer(&handle->fw_dump_timer);
 		handle->is_fw_dump_timer_set = MFALSE;
 	}
-	/* Free allocated memory for fwdump filename */
-	kfree(handle->fwdump_fname);
-	if (fwdump_fname) {
-		kfree(fwdump_fname);
-		fwdump_fname = NULL;
-	}
+	/* Free allocated firmware-dump pathnames after any event-side pathname
+	 * consumption has left the shared lock.
+	 */
+	woal_replace_fwdump_fname(handle, NULL);
+	woal_replace_active_fwdump_fname(handle, NULL);
 
 #ifdef SECURE_HOST
 	if (handle->params.secure_host) {
@@ -12175,29 +12245,36 @@ t_void woal_print_firmware_dump(moal_handle *phandle, char *fwdp_fname)
 	struct file *pfile_fwdump = NULL;
 	loff_t pos = 0;
 	t_u8 *pbuf = NULL;
-	t_u32 i = 0, count = 0, fwdump_len = 0, ret = 0;
+	t_u32 i = 0, count = 0, fwdump_len = 0;
+	mlan_status status;
+	ssize_t read_ret;
 
 	ENTER();
 
 	pos = 0;
 	fwdump_len = (t_u32)phandle->fw_dump_len;
 
-	ret = moal_vmalloc(phandle, fwdump_len, &pbuf);
-	if (ret != MLAN_STATUS_SUCCESS || !pbuf) {
+	status = moal_vmalloc(phandle, fwdump_len, &pbuf);
+	if (status != MLAN_STATUS_SUCCESS || !pbuf) {
 		PRINTM(MFWDP_D, " moal_vmalloc failed\n");
 	} else {
 		memset(pbuf, 0, fwdump_len);
 		pfile_fwdump = filp_open(fwdp_fname, O_RDONLY, 0644);
+		if (IS_ERR(pfile_fwdump)) {
+			PRINTM(MFWDP_D, "filp_open failed %ld\n",
+			       PTR_ERR(pfile_fwdump));
+			goto done;
+		}
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-		ret = vfs_read(pfile_fwdump, pbuf, (long)phandle->fw_dump_len,
-			       &pos);
+		read_ret = vfs_read(pfile_fwdump, pbuf,
+				    (long)phandle->fw_dump_len, &pos);
 #else
-		ret = kernel_read(pfile_fwdump, pbuf,
-				  (long)phandle->fw_dump_len, &pos);
+		read_ret = kernel_read(pfile_fwdump, pbuf,
+				       (long)phandle->fw_dump_len, &pos);
 #endif
 
-		if (ret <= 0) {
-			PRINTM(MFWDP_D, "kernel_read failed %d\n", ret);
+		if (read_ret <= 0) {
+			PRINTM(MFWDP_D, "kernel_read failed %zd\n", read_ret);
 		} else {
 			PRINTM(MFWDP_D,
 			       "===== FW Dump To Console START=====\n");
@@ -12230,6 +12307,7 @@ t_void woal_print_firmware_dump(moal_handle *phandle, char *fwdp_fname)
 		filp_close(pfile_fwdump, NULL);
 	}
 
+done:
 	if (pbuf)
 		moal_vfree(phandle, pbuf);
 }
@@ -12243,93 +12321,106 @@ t_void woal_store_firmware_dump(moal_handle *phandle, mlan_event *pmevent)
 	t_u16 type = 0;
 	t_u8 path_name[64];
 	moal_handle *ref_handle = NULL;
+	char *dump_fname = NULL;
+	gfp_t flag = GFP_KERNEL;
+#ifdef FWDUMP_VIA_PRINT
+	char *print_fname = NULL;
+#endif
 
 	ENTER();
-	if (phandle->fwdump_fname)
-		pfile_fwdump = filp_open(phandle->fwdump_fname,
-					 O_CREAT | O_WRONLY | O_APPEND, 0644);
-	else {
-		seqnum = woal_le16_to_cpu(
-			*(t_u16 *)(pmevent->event_buf + OFFSET_SEQNUM));
-		type = woal_le16_to_cpu(
-			*(t_u16 *)(pmevent->event_buf + OFFSET_TYPE));
-
-		if (seqnum == 1) {
+	seqnum = woal_le16_to_cpu(
+		*(t_u16 *)(pmevent->event_buf + OFFSET_SEQNUM));
+	type = woal_le16_to_cpu(
+		*(t_u16 *)(pmevent->event_buf + OFFSET_TYPE));
+	if (seqnum == 1) {
+		/* A new dump owns one immutable per-handle pathname through ENDE. */
+		woal_replace_active_fwdump_fname(phandle, NULL);
 #ifdef DEBUG_LEVEL1
-			if (drvdbg & MFW_D) {
-				phandle->fw_dump_status = MTRUE;
-				drvdbg &= ~MFW_D;
-			}
+		if (drvdbg & MFW_D) {
+			phandle->fw_dump_status = MTRUE;
+			drvdbg &= ~MFW_D;
+		}
 #endif
-			if (phandle->fw_dump == MFALSE) {
+		if (phandle->fw_dump == MFALSE) {
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 0, 0)
-				/*stop cfg80211 iface*/
-				woal_cfg80211_stop_iface(phandle);
-				if (phandle->pref_mac)
-					woal_cfg80211_stop_iface(
-						phandle->pref_mac);
+			/*stop cfg80211 iface*/
+			woal_cfg80211_stop_iface(phandle);
+			if (phandle->pref_mac)
+				woal_cfg80211_stop_iface(phandle->pref_mac);
 #endif
 #endif
 
-				PRINTM(MMSG, "=====FW trigger dump====\n");
-				phandle->fw_dump = MTRUE;
-				phandle->is_fw_dump_timer_set = MTRUE;
-				woal_mod_timer(&phandle->fw_dump_timer,
-					       MOAL_FW_DUMP_TIMER);
-			}
-			phandle->fw_dump_len = 0;
-			PRINTM(MMSG,
-			       "==== Start Receive FW dump event  ====\n");
+			PRINTM(MMSG, "=====FW trigger dump====\n");
+			phandle->fw_dump = MTRUE;
+			phandle->is_fw_dump_timer_set = MTRUE;
+			woal_mod_timer(&phandle->fw_dump_timer,
+				       MOAL_FW_DUMP_TIMER);
+		}
+		phandle->fw_dump_len = 0;
+		PRINTM(MMSG, "==== Start Receive FW dump event  ====\n");
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 1, 0)
-			/** Create dump directort*/
-			woal_create_dump_dir(phandle, path_name,
-					     sizeof(path_name));
+		/** Create dump directort*/
+		woal_create_dump_dir(phandle, path_name, sizeof(path_name));
 #else
-			memset(path_name, 0, sizeof(path_name));
-			strncpy(path_name, "/data", sizeof(path_name));
+		memset(path_name, 0, sizeof(path_name));
+		memcpy(path_name, "/data", sizeof("/data"));
 #endif
-			PRINTM(MMSG, "Firmware Dump directory name is %s\n",
-			       path_name);
-			ref_handle = (moal_handle *)phandle->pref_mac;
-			if (ref_handle)
-				woal_dump_drv_info(ref_handle, path_name);
-			woal_dump_drv_info(phandle, path_name);
-			if (fwdump_fname) {
-				memset(fwdump_fname, 0, 64);
-			} else {
-				gfp_t flag;
+		PRINTM(MMSG, "Firmware Dump directory name is %s\n", path_name);
+		ref_handle = (moal_handle *)phandle->pref_mac;
+		if (ref_handle)
+			woal_dump_drv_info(ref_handle, path_name);
+		woal_dump_drv_info(phandle, path_name);
 
-				flag = (in_atomic() || irqs_disabled()) ?
-					       GFP_ATOMIC :
-					       GFP_KERNEL;
-				fwdump_fname = kzalloc(64, flag);
-				if (!fwdump_fname) {
-					PRINTM(MERROR,
-					       "Failed to allocate memory for fwdump fname\n");
-					LEAVE();
-					return;
-				}
+		dump_fname = woal_dup_fwdump_fname(phandle, false, flag);
+		if (IS_ERR(dump_fname)) {
+			PRINTM(MERROR,
+			       "Failed to snapshot configured fwdump fname: %ld\n",
+			       PTR_ERR(dump_fname));
+			LEAVE();
+			return;
+		}
+		if (!dump_fname) {
+			dump_fname = kzalloc(sizeof(path_name), flag);
+			if (!dump_fname) {
+				PRINTM(MERROR,
+				       "Failed to allocate memory for fwdump fname\n");
+				LEAVE();
+				return;
 			}
-			snprintf(fwdump_fname, MAX_BUF_LEN, "%s/file_fwdump",
+			snprintf(dump_fname, sizeof(path_name), "%s/file_fwdump",
 				 path_name);
-			pfile_fwdump =
-				filp_open(fwdump_fname,
-					  O_CREAT | O_WRONLY | O_APPEND, 0644);
+			pfile_fwdump = filp_open(dump_fname,
+					 O_CREAT | O_WRONLY | O_APPEND, 0644);
 			if (IS_ERR(pfile_fwdump)) {
-				memset(fwdump_fname, 0, 64);
-				snprintf(fwdump_fname, MAX_BUF_LEN, "%s/%s",
+				memset(dump_fname, 0, sizeof(path_name));
+				snprintf(dump_fname, sizeof(path_name), "%s/%s",
 					 "/var", "file_fwdump");
-				pfile_fwdump =
-					filp_open(fwdump_fname,
-						  O_CREAT | O_WRONLY | O_APPEND,
-						  0644);
+				pfile_fwdump = filp_open(
+					dump_fname,
+					O_CREAT | O_WRONLY | O_APPEND, 0644);
 			}
-		} else
-			pfile_fwdump =
-				filp_open(fwdump_fname,
-					  O_CREAT | O_WRONLY | O_APPEND, 0644);
+		} else {
+			pfile_fwdump = filp_open(
+				dump_fname, O_CREAT | O_WRONLY | O_APPEND, 0644);
+		}
+		if (!IS_ERR(pfile_fwdump)) {
+			woal_replace_active_fwdump_fname(phandle, dump_fname);
+			dump_fname = NULL;
+		}
+	} else {
+		dump_fname = woal_dup_fwdump_fname(phandle, true, flag);
+		if (IS_ERR(dump_fname)) {
+			pfile_fwdump = ERR_PTR(PTR_ERR(dump_fname));
+			dump_fname = NULL;
+		} else if (dump_fname) {
+			pfile_fwdump = filp_open(
+				dump_fname, O_CREAT | O_WRONLY | O_APPEND, 0644);
+		} else {
+			pfile_fwdump = ERR_PTR(-ENOENT);
+		}
 	}
+	kfree(dump_fname);
 	if (IS_ERR(pfile_fwdump)) {
 		PRINTM(MERROR, "Cannot create firmware dump file\n");
 		LEAVE();
@@ -12347,11 +12438,17 @@ t_void woal_store_firmware_dump(moal_handle *phandle, mlan_event *pmevent)
 	filp_close(pfile_fwdump, NULL);
 	if (type == DUMP_TYPE_ENDE) {
 #ifdef FWDUMP_VIA_PRINT
-		woal_print_firmware_dump(phandle,
-					 (phandle->fwdump_fname ?
-						  phandle->fwdump_fname :
-						  fwdump_fname));
+		print_fname = woal_dup_fwdump_fname(phandle, true, flag);
+		if (IS_ERR(print_fname)) {
+			PRINTM(MERROR,
+			       "Failed to snapshot active fwdump fname: %ld\n",
+			       PTR_ERR(print_fname));
+		} else if (print_fname) {
+			woal_print_firmware_dump(phandle, print_fname);
+			kfree(print_fname);
+		}
 #endif /*FWDUMP_VIA_PRINT*/
+		woal_replace_active_fwdump_fname(phandle, NULL);
 		PRINTM(MMSG, "==== FW DUMP END: %ld bytes ====\n",
 		       (long int)phandle->fw_dump_len);
 		phandle->fw_dump = MFALSE;
@@ -15434,6 +15531,7 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 		PRINTM(MERROR, "Allocate buffer for moal_handle failed!\n");
 		goto err_handle;
 	}
+	mutex_init(&handle->fwdump_fname_lock);
 	handle->bridge_effective_wlan_idx = -1;
 
 	/* Init moal_handle */

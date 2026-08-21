@@ -909,6 +909,16 @@ static mlan_status woal_priv_set_tx_rx_ant(moal_handle *handle, char *line)
 	return status;
 }
 
+static bool woal_config_cmd_match(const char *databuf, size_t count,
+				  const char *cmd)
+{
+	size_t cmd_len = strlen(cmd);
+
+	return count >= cmd_len && !strncmp(databuf, cmd, cmd_len) &&
+	       (count == cmd_len ||
+		(count == cmd_len + 1 && databuf[cmd_len] == '\n'));
+}
+
 /**
  *  @brief config proc write function
  *
@@ -938,7 +948,6 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 #endif
 	moal_handle *ref_handle = NULL;
 	t_u32 cmd = 0;
-	int copy_len;
 	moal_private *priv = NULL;
 
 	ENTER();
@@ -961,7 +970,6 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		return -ENOMEM;
 	}
 
-	copy_len = count;
 	if (copy_from_user(databuf, buf, count)) {
 		MODULE_PUT;
 		kfree(databuf);
@@ -1035,7 +1043,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		}
 	}
 #endif /* SD */
-	if (!strncmp(databuf, "debug_dump", strlen("debug_dump"))) {
+	if (woal_config_cmd_match(databuf, count, "debug_dump")) {
 		PRINTM(MERROR, "Recevie debug_dump command\n");
 #ifdef USB
 		if (!IS_USB(handle->card_type))
@@ -1064,23 +1072,33 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		}
 	}
 
-	if (!strncmp(databuf, "fwdump_file=", strlen("fwdump_file="))) {
-		int len = copy_len - strlen("fwdump_file=");
-		gfp_t flag;
+	if (count >= strlen("fwdump_file=") &&
+	    !strncmp(databuf, "fwdump_file=", strlen("fwdump_file="))) {
+		const char *fwdump_name = databuf + strlen("fwdump_file=");
+		size_t fwdump_name_len = count - strlen("fwdump_file=");
+		char *new_fwdump_fname;
 
-		if (len > 0) {
-			kfree(handle->fwdump_fname);
-			flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC :
-								  GFP_KERNEL;
-			handle->fwdump_fname = kzalloc(len, flag);
-			if (handle->fwdump_fname)
-				moal_memcpy_ext(handle, handle->fwdump_fname,
-						databuf +
-							strlen("fwdump_file="),
-						len - 1, len - 1);
+		while (fwdump_name_len &&
+		       (fwdump_name[fwdump_name_len - 1] == '\n' ||
+			fwdump_name[fwdump_name_len - 1] == '\r'))
+			fwdump_name_len--;
+		if (!fwdump_name_len ||
+		    memchr(fwdump_name, '\0', fwdump_name_len)) {
+			ret = -EINVAL;
+			goto done;
 		}
+		new_fwdump_fname = kzalloc(fwdump_name_len + 1, flag);
+		if (!new_fwdump_fname) {
+			ret = -ENOMEM;
+			goto done;
+		}
+		memcpy(new_fwdump_fname, fwdump_name, fwdump_name_len);
+		woal_replace_fwdump_fname(handle, new_fwdump_fname);
 	}
-	if (!strncmp(databuf, "fw_reload", strlen("fw_reload"))) {
+	if (woal_config_cmd_match(databuf, count, "fw_reload") ||
+	    (count > strlen("fw_reload") &&
+	     !strncmp(databuf, "fw_reload", strlen("fw_reload")) &&
+	     databuf[strlen("fw_reload")] == '=')) {
 		if (!strncmp(databuf, "fw_reload=", strlen("fw_reload="))) {
 			line += strlen("fw_reload") + 1;
 			config_data = (t_u32)woal_string_to_number(line);
@@ -1140,43 +1158,49 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 			    MLAN_STATUS_SUCCESS)
 				PRINTM(MERROR, "Could not set RF test mode\n");
 	}
-	if (!strncmp(databuf, "tx_antenna", strlen("tx_antenna")) &&
-	    count > strlen("tx_antenna")) {
-		line += strlen("tx_antenna") + 1;
+	if (count > strlen("tx_antenna") &&
+	    !strncmp(databuf, "tx_antenna", strlen("tx_antenna")) &&
+	    databuf[strlen("tx_antenna")] == '=') {
+		line = databuf + strlen("tx_antenna") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_TX_ANT;
 	}
-	if (!strncmp(databuf, "rx_antenna", strlen("rx_antenna")) &&
-	    count > strlen("rx_antenna")) {
-		line += strlen("rx_antenna") + 1;
+	if (count > strlen("rx_antenna") &&
+	    !strncmp(databuf, "rx_antenna", strlen("rx_antenna")) &&
+	    databuf[strlen("rx_antenna")] == '=') {
+		line = databuf + strlen("rx_antenna") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RX_ANT;
 	}
-	if (!strncmp(databuf, "radio_mode", strlen("radio_mode")) &&
-	    count > strlen("radio_mode=")) {
-		line += strlen("radio_mode") + 1;
+	if (count > strlen("radio_mode") &&
+	    !strncmp(databuf, "radio_mode", strlen("radio_mode")) &&
+	    databuf[strlen("radio_mode")] == '=') {
+		line = databuf + strlen("radio_mode") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RADIO_MODE_CFG;
 	}
-	if (!strncmp(databuf, "channel", strlen("channel")) &&
-	    count > strlen("channel")) {
-		line += strlen("channel") + 1;
+	if (count > strlen("channel") &&
+	    !strncmp(databuf, "channel", strlen("channel")) &&
+	    databuf[strlen("channel")] == '=') {
+		line = databuf + strlen("channel") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_CHAN;
 	}
-	if (!strncmp(databuf, "band", strlen("band")) &&
-	    count > strlen("band")) {
-		line += strlen("band") + 1;
+	if (count > strlen("band") &&
+	    !strncmp(databuf, "band", strlen("band")) &&
+	    databuf[strlen("band")] == '=') {
+		line = databuf + strlen("band") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_BAND_AG;
 	}
-	if (!strncmp(databuf, "bw", strlen("bw")) &&
-	    count > strlen("bw")) {
-		line += strlen("bw") + 1;
+	if (count > strlen("bw") &&
+	    !strncmp(databuf, "bw", strlen("bw")) &&
+	    databuf[strlen("bw")] == '=') {
+		line = databuf + strlen("bw") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_CHANNELBW;
 	}
-	if (!strncmp(databuf, "get_and_reset_per", strlen("get_and_reset_per")))
+	if (woal_config_cmd_match(databuf, count, "get_and_reset_per"))
 		cmd = MFG_CMD_CLR_RX_ERR;
 	if (!strncmp(databuf, "tx_power=", strlen("tx_power=")) &&
 	    count > strlen("tx_power="))
