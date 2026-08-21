@@ -3,9 +3,9 @@
 ## 판정 범위와 최종 상태
 
 이 문서의 최종 **source/test validation HEAD**는
-`1e2e4a337d52d1e53e2149b5fa7e30c19ac0e984`이다. 이 문서를 갱신하는 후속
+`1499c4c7f6a0fa8b3edd195f9e1c8d55b98e1216`이다. 이 문서를 갱신하는 후속
 documentation commit은 source/test 파일을 바꾸지 않으므로 코드 판정 기준은 계속
-`1e2e4a3`이다.
+`1499c4c`이다.
 
 최종 판정은 **host/source validated, architecture CLEAR, target-runtime WATCH**다.
 초기 독립 검토가 BLOCK으로 분류한 source-proven USB submit-after-kill 결함, 후속
@@ -30,6 +30,7 @@ hardware pass를 뜻하지 않는다.
 | latest main reconciliation | `45f593ef8a51f2c9591cb024d956ce602a89c4f9` (includes `origin/main` `1ba9fd42b40c8f76b207ec391eec77c171cdcc12`) |
 | reconciliation review fixes | `609749f07d00c49b4659b8cc55e13ff287a8da1a` |
 | automated-review residual fixes | `1e2e4a337d52d1e53e2149b5fa7e30c19ac0e984` |
+| OTP delimiter follow-up | `1499c4c7f6a0fa8b3edd195f9e1c8d55b98e1216` |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
 갖는 non-fast-forward merge다. clean-port first-parent 범위의 upstream integration
@@ -79,6 +80,12 @@ merge는 둘이다. upstream base/tip과 `origin/main` 모두 최종 source HEAD
     검사한다. PCI peer/target lock은 cancellation을 매회 재검사하는 bounded retry를
     사용한다. 강화된 invariant의 RED/GREEN 뒤 final code reviewer는 `APPROVE`, final
     architecture reviewer는 `CLEAR`를 발행했다.
+11. 후속 OpenCode 요약의 delimiter 지적을 기계적으로 재감사했다. `mlinux/*.c,h`의
+    literal/`strlen(literal)` `strncmp()` 315쌍 중 실제 mismatch는
+    `otp_mac_addr_rd_wr=` 한 건이었다. 먼저 exact delimiter invariant가 기존 코드에서
+    실패하는 RED를 확인하고, 길이 literal 오타를 고친 뒤 GREEN을 확인했다.
+    `1499c4c` 이후 같은 감사의 mismatch는 0이고 targeted code review는 `APPROVE`,
+    architecture re-review는 `CLEAR`다.
 
 이 chronology의 source/architecture 판정은 current tree의 fresh review에 근거한다.
 target firmware와 hardware stress 결과는 별도이며 계속 **WATCH/open**이다.
@@ -160,10 +167,16 @@ ring write는 ring lock으로 직렬화되고, 과거 caller의 768-byte IE scra
 제거되었고 drop counters/default-off debug policy는 유지된다.
 
 config proc parser는 `soft_reset`, `drv_mode`, `rf_test_mode`, `antcfg`와 RF command
-keyword 뒤에 실제 `=` delimiter가 존재하는지 길이와 함께 확인한다. `debug_dump`,
+keyword 및 `otp_mac_addr_rd_wr` 뒤에 실제 `=` delimiter가 존재하는지 길이와 함께
+확인한다. `debug_dump`,
 bare `fw_reload`, `get_and_reset_per`는 command content가 정확히 일치하고 입력이
 exact length 또는 단일 LF일 때만 동작한다. `copy_from_user()` 실패는 `-EFAULT`로
 반환하고 TP accounting timer는 최종 handle free 전에 취소된다.
+
+config proc mode `0644`는 기존 read ABI를 유지하기 위해 의도적으로 보존했다. 일반
+procfs root 소유권에서 owner만 write 가능하고 group/other는 read-only이므로
+world-writable 권한이 아니다. 민감한 management log/dump entry의 `0600` 정책과도
+구분한다.
 
 `fwdump_file=` pathname은 proc input의 CR/LF를 제거하고 empty value와 embedded NUL을
 거절한 뒤 NUL-terminated allocation으로 교체한다. Configured pathname과 seq1부터
@@ -172,6 +185,10 @@ ENDE까지 고정되는 active pathname은 `moal_handle`별 mutex 아래에서 �
 Snapshot OOM은 unset path와 구분되며 file open의 `ERR_PTR`와 signed read 실패는
 VFS read/close 전에 분기한다. 정상 ENDE의 console print는 별도 heap snapshot을
 사용하여 pathname mutex 밖에서 수행한다.
+
+file-dump의 synchronous VFS I/O와 `FWDUMP_VIA_PRINT`의 whole-dump allocation은 이번
+수명 수정 이전부터 존재한 실행 모델이다. 대체 build는 해당 경로의 컴파일만
+검증하며, 실제 dump latency와 memory pressure는 target/performance WATCH로 남긴다.
 
 ### Proc/reload transaction과 deferred PCIe FLR
 
@@ -196,6 +213,10 @@ node의 중복 FLR를 차단한다. worker는 publication completion 뒤 cancell
 lock 획득 뒤 cancellation을 다시 검사한다. 이후 driver binding과
 `pci_get_drvdata()`를 다시 검증하고
 `pci_reset_function_locked()`를 호출한다.
+
+retry의 설정된 sleep budget은 스케줄러 지연을 제외하고 최대 약 40ms이며 소진 시
+terminal `-EAGAIN`을 게시한다. 이는 device-lock cycle을 피하기 위한 bounded 정책이고,
+ordered recovery queue의 contention/latency 및 재시도 성공률은 target WATCH다.
 
 Linux 5.14 이상은 `pci_dev_trylock()`/`pci_dev_unlock()`을 사용하고, 4.13~5.13은
 core와 같은 config-access-then-device lock composition을 사용한다. 4.13 미만은
@@ -252,7 +273,7 @@ bridge suite의 quiet-`grep` nondeterminism은 source assertion 실패가 아니
 결함이었다. `1dd14bf`는 fixed/extended quiet predicates를, `3b9c8f8`은 남은
 plain quiet predicates와 binary `strings` symbol check를 deterministic input
 형태로 바꿨다. assertions/mutations와 full-consuming awk/tr pipelines는 바꾸지
-않았다. `1e2e4a3`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
+않았다. `1499c4c`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
 0이었고 `upstream_port_final_checks=PASS`로 종료했다.
 
 초기 build warning 중 다음 source warning은 모두 수정되었다.
@@ -279,7 +300,9 @@ warning은 아니지만 BTF evidence가 없다는 환경 한계다.
 `checkpatch.pl --no-signoff` 결과는 **0 errors, 2 warnings**다. 두 건은 새 bounded
 retry가 기존 4.13 compatibility branch 안에 들어가면서 보고되는
 `LINUX_VERSION_CODE`/`CONSTANT_COMPARISON` warning pair다. 전체 reconciliation
-production range `45f593e..1e2e4a3`은 **0 errors, 21 warnings**이며, 이 중 14건은
+뒤의 OTP production-only range `9a7bf31..1499c4c`은 **0 errors, 0 warnings,
+8 lines checked**다. 전체 reconciliation production range
+`45f593e..1499c4c`은 **0 errors, 21 warnings**이며, 이 중 14건은
 4.13/5.14 호환 전처리 pair, 7건은 기존에 널리 사용되는 field identifier
 `fw_reseting`의 spelling warning이다. 호환 kernel range와 기존 field 이름을
 유지하기 위해 남겼다.
@@ -293,12 +316,13 @@ clean external-module build는
 기본 `DUMP_TO_PROC` build에서 제외되는 file-dump와 console-read 경로도
 `CONFIG_DUMP_TO_PROC=n EXTRA_CFLAGS=-DFWDUMP_VIA_PRINT` clean build로 별도 실행하여
 exit 0을 확인했다. `.moal_main.o.cmd`에는 `-DFWDUMP_VIA_PRINT`가 있고
-`-DDUMP_TO_PROC`가 없음을 확인했다.
+`-DDUMP_TO_PROC`가 없음을 확인했다. 이어진 기본 clean build의 같은 command file에는
+반대로 `-DDUMP_TO_PROC`만 있음을 확인했다.
 
 | artifact | bytes | SHA-256 | vermagic |
 |---|---:|---|---|
 | `mlan.ko` | 1,969,752 | `516d4cf1dee073f190d5341f5d26326796bceb76a5ebe2fb8602d99adb0827e0` | `6.8.0-111-generic SMP preempt mod_unload modversions` |
-| `moal.ko` | 3,181,464 | `3e0ed461edebec9e05a333d181d37053e41a99aa1168fe2edad3a3451fc2b23e` | `6.8.0-111-generic SMP preempt mod_unload modversions` |
+| `moal.ko` | 3,181,464 | `9bbd983fdcc172c28ddb939d96c9b3b82f1ca3f6fe8132b43365106f4c01f68b` | `6.8.0-111-generic SMP preempt mod_unload modversions` |
 
 이 hash/size/vermagic는 fresh controller artifact evidence이며 module load 또는
 target traffic pass를 뜻하지 않는다.
@@ -324,7 +348,7 @@ fresh `mlanutl` build는 compiler warning 없이 완료되었지만 device ioctl
 - latest `origin/main` ancestry: exit 0;
 - clean-port first-parent merge count: `2` (upstream integration `cc7f79d`, latest-main reconciliation `45f593e`);
 - exact conflict-marker match count: `0`;
-- reconciliation/source range `45f593e..1e2e4a3`의 `git diff --check`: exit 0;
+- reconciliation/source range `45f593e..1499c4c`의 `git diff --check`: exit 0;
 - documentation commit을 포함한 `45f593e..HEAD`도 post-commit check로 확인한다.
 
 whole local integration range의 default check는 별개다.
@@ -358,8 +382,8 @@ pass 또는 유효한 target result로 기록하지 않는다.
 |---|---|---|---|
 | USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | traffic 중 unplug/unload/suspend, resubmit fault, mode reload, KASAN/lockdep |
 | bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration | reset concurrent with PM/unbind/rebind | PCIe FLR/AER/in-band 및 SDIO/OOB reset stress |
-| management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600, card-lifetime writer transaction, exact command boundaries, per-handle dump pathname snapshots | unload/read와 frame-volume/privacy | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency | PCIe FLR/AER/in-band 및 SDIO/OOB reset stress |
+| management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 diagnostics, root-owner-write config mode 0644, card-lifetime writer transaction, exact command/OTP delimiter boundaries, per-handle dump pathname snapshots | unload/read, frame-volume/privacy, synchronous dump I/O와 whole-dump allocation | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
 | VHT/HE/rate | stored-map round-trip, HE encode/decode, 26-word bitmap | firmware persistence/power-table variance | association IE, HE groups 0–14, reconnect persistence |
@@ -407,6 +431,6 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 최종 상태는 **source/test validation complete at `1e2e4a3`, architecture
+따라서 최종 상태는 **source/test validation complete at `1499c4c`, architecture
 CLEAR, target-runtime WATCH/open**이다. 독립 code-review `APPROVE`와 architecture
 `CLEAR`는 current source tree에 대한 판정이며 hardware pass로 해석하지 않는다.
