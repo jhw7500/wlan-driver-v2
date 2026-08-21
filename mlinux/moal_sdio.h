@@ -221,15 +221,15 @@ typedef struct _sdio_mmc_card {
 	bool reset_stopping;
 	/** driver-mode/remove IRQ/OOB transport gate; protected by reset_lock */
 	bool drv_mode_quiesced;
-	/** serializes reset and driver-mode producer gates */
+	/** serializes reset and driver-mode transport gates */
 	spinlock_t reset_lock;
 	/** saved host clock value */
 	unsigned int host_clock;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	/** oob irq */
 	int oob_irq;
-	/** irq enabled */
-	int irq_enabled;
+	/** unmatched disable_irq_nosync token owned by this shared IRQ action */
+	int oob_irq_disable_owned;
 	/** sdio func intr enabled **/
 	int sdio_func_intr_enabled;
 	/** irq registered */
@@ -238,9 +238,11 @@ typedef struct _sdio_mmc_card {
 	struct workqueue_struct *sdio_oob_irq_workqueue;
 	/* SDIO OOB Interrupt handler work */
 	struct work_struct sdio_oob_irq_work;
+	/* process-context fallback for a coalesced OOB work submission */
+	struct work_struct sdio_oob_irq_release_work;
 #endif
 } sdio_mmc_card;
-/** Stop/resume SDIO IRQ/OOB production across an in-place mode rebuild. */
+/** Stop/resume SDIO IRQ/OOB transport across an in-place mode rebuild. */
 mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle);
 mlan_status woal_sdio_drv_mode_resume(moal_handle *handle);
 void woal_sdio_reset_hw(moal_handle *handle);

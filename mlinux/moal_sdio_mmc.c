@@ -296,7 +296,8 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 	spin_lock_bh(&card->reset_lock);
 	handle = card->handle;
 	/* Module exit closes reset/hang producers before FUNC_SHUTDOWN.  Keep
-	 * command-response IRQs alive until remove closes the transport gate. */
+	 * command-response IRQs alive until remove closes the transport gate.
+	 */
 	if (!handle || card->drv_mode_quiesced) {
 		spin_unlock_bh(&card->reset_lock);
 		LEAVE();
@@ -335,8 +336,7 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 #ifdef SDIO_SUSPEND_RESUME
 	if (handle->is_suspended) {
 		PRINTM(MINTR, "Receive interrupt in hs_suspended\n");
-		LEAVE();
-		return;
+		goto irq_done;
 	}
 #endif
 	handle->main_state = MOAL_START_MAIN_PROCESS;
@@ -352,11 +352,29 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 		atomic_long_add(us, &handle->rx_pull_sum_us);
 		woal_rx_acct_max(&handle->rx_pull_max_us, us);
 	}
-	handle->main_state = MOAL_END_MAIN_PROCESS;
+irq_done:
+	WRITE_ONCE(handle->main_state, MOAL_END_MAIN_PROCESS);
 	LEAVE();
 }
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
+static int sdio_func_intr_disable(struct sdio_func *func);
+
+static void woal_sdio_oob_irq_release(sdio_mmc_card *card)
+{
+	if (card && cmpxchg(&card->oob_irq_disable_owned, MTRUE, MFALSE) ==
+			    MTRUE)
+		enable_irq(card->oob_irq);
+}
+
+static void woal_sdio_oob_irq_release_work(struct work_struct *work)
+{
+	sdio_mmc_card *card = container_of(
+		work, sdio_mmc_card, sdio_oob_irq_release_work);
+
+	woal_sdio_oob_irq_release(card);
+}
+
 /**
  * @brief This work handles oob sdio top irq.
  */
@@ -366,8 +384,7 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 	struct mmc_card *mmc_card = NULL;
 	struct sdio_func *func;
 	unsigned char pending;
-	bool producer_enabled;
-	bool reenable_irq = false;
+	bool transport_enabled;
 	int i;
 	int ret;
 
@@ -384,20 +401,20 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 	// Validate the resulting card pointer and its members
 	if (!card || !card->func || !card->func->card) {
 		PRINTM(MERROR, "Invalid sdio_mmc_card structure or members\n");
-		return;
+		goto release_irq;
 	}
 
 	spin_lock_bh(&card->reset_lock);
-	producer_enabled = !card->drv_mode_quiesced && card->func &&
+	transport_enabled = !card->drv_mode_quiesced && card->func &&
 			   card->func->card;
-	mmc_card = producer_enabled ? card->func->card : NULL;
+	mmc_card = transport_enabled ? card->func->card : NULL;
 	spin_unlock_bh(&card->reset_lock);
 
 	for (i = 0; mmc_card && i < mmc_card->sdio_funcs; i++) {
 		spin_lock_bh(&card->reset_lock);
-		producer_enabled = !card->drv_mode_quiesced;
+		transport_enabled = !card->drv_mode_quiesced;
 		spin_unlock_bh(&card->reset_lock);
-		if (!producer_enabled)
+		if (!transport_enabled)
 			break;
 		func = NULL;
 		if (mmc_card->sdio_func[i])
@@ -411,18 +428,11 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 		}
 	}
 
-	/* drv-mode/remove closes the producer gate before flushing this work.
-	 * Do not undo that terminal quiesce by re-enabling the shared GPIO IRQ
-	 * after the gate changed while this work item was running. */
-	spin_lock_bh(&card->reset_lock);
-	producer_enabled = !card->drv_mode_quiesced;
-	if (producer_enabled && card->irq_registered && !card->irq_enabled) {
-		card->irq_enabled = MTRUE;
-		reenable_irq = true;
-	}
-	spin_unlock_bh(&card->reset_lock);
-	if (reenable_irq)
-		enable_irq(card->oob_irq);
+release_irq:
+	/* The transport gate suppresses SDIO access, not this action's matching
+	 * enable.  A shared IRQ must never retain our nested disable token.
+	 */
+	woal_sdio_oob_irq_release(card);
 }
 
 /**
@@ -443,10 +453,12 @@ static irqreturn_t oob_sdio_irq(int irq, void *dev_id)
 	workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
 	if (!READ_ONCE(card->drv_mode_quiesced) &&
 	    READ_ONCE(card->sdio_func_intr_enabled) &&
-	    READ_ONCE(card->irq_registered) && workqueue) {
+	    READ_ONCE(card->irq_registered) && workqueue &&
+		cmpxchg(&card->oob_irq_disable_owned, MFALSE, MTRUE) == MFALSE) {
 		disable_irq_nosync(card->oob_irq);
-		WRITE_ONCE(card->irq_enabled, MFALSE);
-		queue_work(workqueue, &card->sdio_oob_irq_work);
+		if (!queue_work(workqueue, &card->sdio_oob_irq_work))
+			queue_work(workqueue,
+				   &card->sdio_oob_irq_release_work);
 	}
 
 	return IRQ_HANDLED;
@@ -474,8 +486,8 @@ static int oob_sdio_irq_register(sdio_mmc_card *card)
 			       "nxp_oob_sdio_irq", card);
 
 	if (!ret) {
-		card->irq_registered = MTRUE;
-		card->irq_enabled = MTRUE;
+		WRITE_ONCE(card->oob_irq_disable_owned, MFALSE);
+		WRITE_ONCE(card->irq_registered, MTRUE);
 		enable_irq_wake(card->oob_irq);
 	}
 
@@ -486,19 +498,43 @@ static int oob_sdio_irq_register(sdio_mmc_card *card)
  *  @brief This function unregister oob_sdio_irq
  *
  *  @param card    a pointer to sdio_mmc_card
- *  @return         N/A
+ *  @return         0-success else failure
  */
-static void oob_sdio_irq_unregister(sdio_mmc_card *card)
+static int oob_sdio_irq_unregister(sdio_mmc_card *card)
 {
-	if (card && card->func && card->irq_registered) {
-		card->irq_registered = MFALSE;
-		disable_irq_wake(card->oob_irq);
-		if (card->irq_enabled) {
-			disable_irq(card->oob_irq);
-			card->irq_enabled = MFALSE;
+	struct workqueue_struct *workqueue;
+	struct sdio_func *func;
+	bool registered;
+	int ret = 0;
+
+	if (!card || !card->func || !card->func->card)
+		return -ENODEV;
+	func = card->func;
+	registered = xchg(&card->irq_registered, MFALSE) == MTRUE;
+	if (registered)
+		synchronize_irq(card->oob_irq);
+	workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
+	if (workqueue)
+		flush_workqueue(workqueue);
+	woal_sdio_oob_irq_release(card);
+
+	if (READ_ONCE(card->sdio_func_intr_enabled)) {
+		sdio_claim_host(func);
+		ret = sdio_func_intr_disable(func);
+		sdio_release_host(func);
+		if (ret) {
+			if (registered)
+				WRITE_ONCE(card->irq_registered, MTRUE);
+			return ret;
 		}
-		devm_free_irq(&card->func->dev, card->oob_irq, card);
+		WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);
 	}
+	if (registered) {
+		disable_irq_wake(card->oob_irq);
+		devm_free_irq(&func->dev, card->oob_irq, card);
+	}
+
+	return ret;
 }
 
 /**
@@ -545,9 +581,6 @@ static int sdio_func_intr_disable(struct sdio_func *func)
 #ifdef MMC_QUIRK_LENIENT_FN0
 	func->card->quirks |= MMC_QUIRK_LENIENT_FN0;
 #endif
-	if (func->irq_handler)
-		func->irq_handler = NULL;
-
 	reg = sdio_f0_readb(func, SDIO_CCCR_IENx, &ret);
 	if (ret)
 		return ret;
@@ -555,8 +588,12 @@ static int sdio_func_intr_disable(struct sdio_func *func)
 	if (!(reg & 0xFE))
 		reg = 0;
 	sdio_f0_writeb(func, reg, SDIO_CCCR_IENx, &ret);
+	if (ret)
+		return ret;
 
-	return ret;
+	func->irq_handler = NULL;
+
+	return 0;
 }
 
 /**
@@ -580,24 +617,27 @@ static int woal_sdio_claim_irq(sdio_mmc_card *card, sdio_irq_handler_t *handler)
 	if (!card->sdio_oob_irq_workqueue)
 		return -ENOMEM;
 	MLAN_INIT_WORK(&card->sdio_oob_irq_work, woal_sdio_oob_irq_work);
-	/* Install the function callback before exposing the GPIO IRQ.  This also
-	 * keeps every error cleanup local while the caller owns the MMC host: no
-	 * OOB work can be queued and block destroy_workqueue() on that host. */
-	ret = sdio_func_intr_enable(func, handler);
+	MLAN_INIT_WORK(&card->sdio_oob_irq_release_work,
+		       woal_sdio_oob_irq_release_work);
+	/* Install the shared GPIO action while the function source is still
+	 * disabled.  The top half observes sdio_func_intr_enabled=false, so it
+	 * cannot queue host-claiming work while this caller holds the MMC host.
+	 */
+	ret = oob_sdio_irq_register(card);
 	if (ret) {
 		destroy_workqueue(card->sdio_oob_irq_workqueue);
 		card->sdio_oob_irq_workqueue = NULL;
 		return ret;
 	}
-	card->sdio_func_intr_enabled = MTRUE;
-	ret = oob_sdio_irq_register(card);
+	ret = sdio_func_intr_enable(func, handler);
 	if (ret) {
-		sdio_func_intr_disable(func);
-		card->sdio_func_intr_enabled = MFALSE;
+		oob_sdio_irq_unregister(card);
 		destroy_workqueue(card->sdio_oob_irq_workqueue);
 		card->sdio_oob_irq_workqueue = NULL;
+		return ret;
 	}
-	return ret;
+	WRITE_ONCE(card->sdio_func_intr_enabled, MTRUE);
+	return 0;
 }
 
 /**
@@ -615,20 +655,30 @@ static int woal_sdio_release_irq(sdio_mmc_card *card)
 		return -ENODEV;
 	func = card->func;
 
-	/* This helper owns host acquisition.  Stop and drain the OOB producer
-	 * before taking the host because its work item claims the same host. */
-	oob_sdio_irq_unregister(card);
+	/* Terminal unregister drains the OOB action before it takes the host;
+	 * its work item claims that same host.
+	 */
+	ret = oob_sdio_irq_unregister(card);
+	if (ret) {
+		/* Terminal callers disable this SDIO function next.  If the
+		 * function-specific IENx write failed, disable the whole function
+		 * before retrying action teardown; never free a live source.
+		 */
+		sdio_claim_host(func);
+		ret = sdio_disable_func(func);
+		if (!ret) {
+			func->irq_handler = NULL;
+			WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);
+		}
+		sdio_release_host(func);
+		if (!ret)
+			ret = oob_sdio_irq_unregister(card);
+	}
+	if (ret)
+		return ret;
 	if (card->sdio_oob_irq_workqueue) {
-		flush_workqueue(card->sdio_oob_irq_workqueue);
 		destroy_workqueue(card->sdio_oob_irq_workqueue);
 		card->sdio_oob_irq_workqueue = NULL;
-	}
-
-	if (card->sdio_func_intr_enabled) {
-		sdio_claim_host(func);
-		ret = sdio_func_intr_disable(func);
-		sdio_release_host(func);
-		card->sdio_func_intr_enabled = MFALSE;
 	}
 
 	return ret;
@@ -703,7 +753,7 @@ mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle)
 	ext_intmode = moal_extflg_isset(handle, EXT_INTMODE);
 #endif
 
-	/* Close the producer gate before waiting for an IRQ which may have
+	/* Close the transport gate before waiting for an IRQ which may have
 	 * observed the old state.  Repeating quiesce is intentionally harmless. */
 	spin_lock_bh(&card->reset_lock);
 	WRITE_ONCE(card->drv_mode_quiesced, true);
@@ -718,19 +768,21 @@ mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle)
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (ext_intmode) {
-		/* The GPIO IRQ action and ordered workqueue belong to the physical
-		 * card, not to the adapter being rebuilt.  Drain them without the MMC
-		 * host, then disable only the function interrupt below. */
+		/* Drain this shared GPIO action and its ordered workqueue without the
+		 * MMC host, then disable only this function's interrupt below.
+		 */
 		if (READ_ONCE(card->irq_registered))
 			synchronize_irq(card->oob_irq);
 		workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
 		if (workqueue)
 			flush_workqueue(workqueue);
+		woal_sdio_oob_irq_release(card);
 
 		sdio_claim_host(func);
 		if (card->sdio_func_intr_enabled) {
 			ret = sdio_func_intr_disable(func);
-			card->sdio_func_intr_enabled = MFALSE;
+			if (!ret)
+				WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);
 		}
 		sdio_release_host(func);
 	} else
@@ -753,6 +805,7 @@ mlan_status woal_sdio_drv_mode_resume(moal_handle *handle)
 	bool same_device;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	bool ext_intmode;
+	int disable_ret;
 #endif
 	int ret = 0;
 
@@ -784,7 +837,7 @@ mlan_status woal_sdio_drv_mode_resume(moal_handle *handle)
 		else if (!card->sdio_func_intr_enabled) {
 			ret = sdio_func_intr_enable(func, woal_sdio_interrupt);
 			if (!ret)
-				card->sdio_func_intr_enabled = MTRUE;
+				WRITE_ONCE(card->sdio_func_intr_enabled, MTRUE);
 		}
 	} else
 #endif
@@ -814,8 +867,9 @@ mlan_status woal_sdio_drv_mode_resume(moal_handle *handle)
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (ext_intmode) {
 		if (card->sdio_func_intr_enabled) {
-			(void)sdio_func_intr_disable(func);
-			card->sdio_func_intr_enabled = MFALSE;
+			disable_ret = sdio_func_intr_disable(func);
+			if (!disable_ret)
+				WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);
 		}
 	} else
 #endif
@@ -1146,9 +1200,9 @@ void woal_sdio_remove(struct sdio_func *func)
 			 */
 			if (card->handle != NULL) {
 				/* check if woal_sdio_interrupt() is running */
-				while (card->handle->main_state !=
+				while (READ_ONCE(card->handle->main_state) !=
 					       MOAL_END_MAIN_PROCESS &&
-				       card->handle->main_state !=
+				       READ_ONCE(card->handle->main_state) !=
 					       MOAL_STATE_IDLE)
 					woal_sched_timeout(2); /* wait until
 								  woal_sdio_interrupt

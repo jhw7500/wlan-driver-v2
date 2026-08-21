@@ -50,6 +50,47 @@ def ordered(body: str, *needles: str) -> bool:
     return True
 
 
+_C_NONCODE = re.compile(
+    r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*.*?\*/',
+    re.DOTALL,
+)
+
+
+def c_code(source: str) -> str:
+    """Remove comments and literals before checking live C expressions."""
+    return _C_NONCODE.sub("", source)
+
+
+def if_condition_before(body: str, marker: str) -> str:
+    """Return the final balanced if-condition which directly guards marker."""
+    code = c_code(body)
+    marker_pos = code.find(marker)
+    if marker_pos < 0:
+        return ""
+    matches = list(re.finditer(r"\bif\s*\(", code[:marker_pos]))
+    if not matches:
+        return ""
+    open_paren = code.find("(", matches[-1].start())
+    depth = 0
+    for pos in range(open_paren, marker_pos):
+        if code[pos] == "(":
+            depth += 1
+        elif code[pos] == ")":
+            depth -= 1
+            if depth == 0:
+                return code[open_paren + 1:pos]
+    return ""
+
+
+def replace_nth(source: str, old: str, new: str, occurrence: int) -> str:
+    start = -1
+    for _ in range(occurrence + 1):
+        start = source.find(old, start + 1)
+        if start < 0:
+            return source
+    return source[:start] + new + source[start + len(old):]
+
+
 usb_h = read("mlinux/moal_usb.h")
 usb_c = read("mlinux/moal_usb.c")
 main_c = read("mlinux/moal_main.c")
@@ -59,6 +100,7 @@ shim_c = read("mlinux/moal_shim.c")
 bridge_c = read("mlinux/moal_bridge.c")
 eth_ioctl_c = read("mlinux/moal_eth_ioctl.c")
 pcie_c = read("mlinux/moal_pcie.c")
+sdio_h = read("mlinux/moal_sdio.h")
 sdio_c = read("mlinux/moal_sdio_mmc.c")
 mlan_misc_c = read("mlan/mlan_misc.c")
 mlan_decl = read("mlan/mlan_decl.h")
@@ -125,7 +167,27 @@ sdio_interrupt = c_function(
 sdio_oob_work = c_function(
     sdio_c, "static void woal_sdio_oob_irq_work"
 )
+sdio_oob_release_token = c_function(
+    sdio_c, "static void woal_sdio_oob_irq_release"
+)
+sdio_oob_release_work = c_function(
+    sdio_c, "static void woal_sdio_oob_irq_release_work"
+)
 sdio_oob_interrupt = c_function(sdio_c, "static irqreturn_t oob_sdio_irq")
+sdio_oob_unregister = c_function(
+    sdio_c, "static int oob_sdio_irq_unregister"
+)
+sdio_func_intr_disable = c_function(
+    sdio_c, "static int sdio_func_intr_disable"
+)
+sdio_release_irq = c_function(sdio_c, "static int woal_sdio_release_irq")
+sdio_claim_irq = c_function(sdio_c, "static int woal_sdio_claim_irq")
+sdio_drv_mode_quiesce = c_function(
+    sdio_c, "mlan_status woal_sdio_drv_mode_quiesce"
+)
+sdio_drv_mode_resume = c_function(
+    sdio_c, "mlan_status woal_sdio_drv_mode_resume"
+)
 sdio_remove = c_function(sdio_c, "void woal_sdio_remove")
 add_card = c_function(main_c, "moal_handle *woal_add_card")
 reset_intf = c_function(main_c, "mlan_status woal_reset_intf")
@@ -137,6 +199,23 @@ file_fwdump_store = (
     if file_fwdump_start >= 0 else ""
 )
 print_fwdump = c_function(main_c, "t_void woal_print_firmware_dump")
+
+for name, body in (
+    ("module cleanup", cleanup_module),
+    ("SDIO interrupt", sdio_interrupt),
+    ("SDIO OOB disable-token release", sdio_oob_release_token),
+    ("SDIO OOB deferred disable-token release", sdio_oob_release_work),
+    ("SDIO OOB work", sdio_oob_work),
+    ("SDIO OOB interrupt", sdio_oob_interrupt),
+    ("SDIO OOB unregister", sdio_oob_unregister),
+    ("SDIO function interrupt disable", sdio_func_intr_disable),
+    ("SDIO OOB release", sdio_release_irq),
+    ("SDIO OOB claim", sdio_claim_irq),
+    ("SDIO driver-mode quiesce", sdio_drv_mode_quiesce),
+    ("SDIO driver-mode resume", sdio_drv_mode_resume),
+    ("SDIO remove", sdio_remove),
+):
+    require(bool(body), f"cannot extract {name} for lifecycle validation")
 
 for path, source in (("mlinux/moal_main.c", main_c),
                      ("mlinux/moal_proc.c", proc_c)):
@@ -453,15 +532,432 @@ for bus, source, signature in (
     require(ordered(flr, "(void)woal_reset_intf(", "woal_clean_up(handle)"),
             f"{bus} FLR still aborts before cleanup when reset IOCTLs are gated")
 
+
+def sdio_irq_restores_main_state(body: str) -> bool:
+    code = c_code(body)
+    admitted = code.find("handle->main_state = MOAL_RECV_INT;")
+    completed = code.rfind(
+        "WRITE_ONCE(handle->main_state, MOAL_END_MAIN_PROCESS);"
+    )
+    return (admitted >= 0 and completed > admitted and
+            re.search(r"\breturn\s*;", code[admitted:completed]) is None)
+
+
+require(
+    sdio_irq_restores_main_state(sdio_interrupt),
+    "SDIO IRQ can return after admission without restoring main_state",
+)
+missing_irq_epilogue = sdio_interrupt.replace(
+    "WRITE_ONCE(handle->main_state, MOAL_END_MAIN_PROCESS);", "", 1
+)
+require(
+    not sdio_irq_restores_main_state(missing_irq_epilogue),
+    "SDIO main_state invariant accepts a missing completion epilogue",
+)
+direct_suspended_return = sdio_interrupt.replace(
+    "goto irq_done;", "return;", 1
+)
+require(
+    not sdio_irq_restores_main_state(direct_suspended_return),
+    "SDIO main_state invariant accepts a direct post-admission return",
+)
+require(
+    "READ_ONCE(card->handle->main_state)" in c_code(sdio_remove),
+    "SDIO remove polls main_state without an explicit concurrent snapshot",
+)
+
+cleanup_code = c_code(cleanup_module)
 exit_gate_precedes_shutdown = ordered(
-    cleanup_module,
+    cleanup_code,
     "WRITE_ONCE(driver_exit_in_progress, 1)",
     "woal_shutdown_fw(",
 )
 reset_gate_precedes_shutdown = ordered(
-    cleanup_module,
+    cleanup_code,
     "woal_quiesce_reset_work(m_handle[index])",
     "woal_shutdown_fw(",
+)
+require(
+    exit_gate_precedes_shutdown and reset_gate_precedes_shutdown,
+    "cannot establish module-exit gate ordering before firmware shutdown",
+)
+missing_sdio_irq_definition = sdio_c.replace(
+    "static void woal_sdio_interrupt", "static void removed_sdio_interrupt", 1
+)
+require(
+    not c_function(
+        missing_sdio_irq_definition, "static void woal_sdio_interrupt"
+    ),
+    "SDIO lifecycle extraction mutation still finds a removed IRQ definition",
+)
+
+
+def sdio_irq_has_transport_gate(body: str) -> bool:
+    condition = if_condition_before(
+        body, "spin_unlock_bh(&card->reset_lock);"
+    )
+    return ("!handle" in condition and
+            "card->drv_mode_quiesced" in condition)
+
+
+def sdio_oob_top_has_transport_gate(body: str) -> bool:
+    condition = if_condition_before(body, "disable_irq_nosync(card->oob_irq)")
+    return ("!READ_ONCE(card->drv_mode_quiesced)" in condition and
+            "READ_ONCE(card->irq_registered)" in condition and
+            "cmpxchg(&card->oob_irq_disable_owned" in condition)
+
+
+def sdio_oob_work_has_stage_gates(body: str) -> bool:
+    code = c_code(body)
+    initial_end = code.find("mmc_card = transport_enabled")
+    loop_start = code.find("for (i = 0")
+    loop_end = code.find("func = NULL", loop_start)
+    if min(initial_end, loop_start, loop_end) < 0:
+        return False
+    stages = (
+        code[:initial_end],
+        code[loop_start:loop_end],
+    )
+    return all("card->drv_mode_quiesced" in stage for stage in stages)
+
+
+def sdio_oob_work_releases_disable_token(body: str) -> bool:
+    code = c_code(body)
+    container = code.find("card = container_of(")
+    release = code.rfind("woal_sdio_oob_irq_release(card);")
+    return (container >= 0 and release > container and
+            re.search(r"\breturn\s*;", code[container:release]) is None)
+
+
+def sdio_oob_top_defers_coalesced_release(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return (
+        ordered(
+            code,
+            "disable_irq_nosync(card->oob_irq)",
+            "if(!queue_work(workqueue,&card->sdio_oob_irq_work))",
+            "queue_work(workqueue,&card->sdio_oob_irq_release_work)",
+        ) and
+        "woal_sdio_oob_irq_release(card)" not in code
+    )
+
+
+def sdio_oob_release_work_balances_token(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "container_of(work,sdio_mmc_card,sdio_oob_irq_release_work)",
+        "woal_sdio_oob_irq_release(card)",
+    )
+
+
+def sdio_oob_unregister_is_terminal(body: str) -> bool:
+    code = c_code(body)
+    return (
+        ordered(
+            code,
+            "xchg(&card->irq_registered, MFALSE)",
+            "synchronize_irq(card->oob_irq)",
+            "flush_workqueue(workqueue)",
+            "woal_sdio_oob_irq_release(card)",
+            "sdio_claim_host(func)",
+            "sdio_func_intr_disable(func)",
+            "sdio_release_host(func)",
+            "disable_irq_wake(card->oob_irq)",
+            "devm_free_irq(",
+        ) and
+        "disable_irq(card->oob_irq)" not in code
+    )
+
+
+def sdio_func_disable_is_transactional(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "reg=sdio_f0_readb(func,SDIO_CCCR_IENx,&ret);",
+        "if(ret)returnret;",
+        "sdio_f0_writeb(func,reg,SDIO_CCCR_IENx,&ret);",
+        "if(ret)returnret;",
+        "func->irq_handler=NULL;",
+        "return0;",
+    )
+
+
+def sdio_oob_unregister_preserves_failed_source(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "ret=sdio_func_intr_disable(func);",
+        "sdio_release_host(func);",
+        "if(ret){",
+        "WRITE_ONCE(card->irq_registered,MTRUE);",
+        "returnret;",
+        "WRITE_ONCE(card->sdio_func_intr_enabled,MFALSE);",
+        "devm_free_irq(",
+    )
+
+
+def sdio_oob_release_has_safe_fallback(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "ret=oob_sdio_irq_unregister(card);",
+        "if(ret){",
+        "sdio_claim_host(func);",
+        "ret=sdio_disable_func(func);",
+        "func->irq_handler=NULL;",
+        "WRITE_ONCE(card->sdio_func_intr_enabled,MFALSE);",
+        "sdio_release_host(func);",
+        "ret=oob_sdio_irq_unregister(card);",
+        "if(ret)returnret;",
+        "destroy_workqueue(card->sdio_oob_irq_workqueue);",
+    )
+
+
+def sdio_oob_quiesce_drains_token(body: str) -> bool:
+    code = c_code(body)
+    return ordered(
+        code,
+        "WRITE_ONCE(card->drv_mode_quiesced, true)",
+        "synchronize_irq(card->oob_irq)",
+        "flush_workqueue(workqueue)",
+        "woal_sdio_oob_irq_release(card)",
+        "sdio_claim_host(func)",
+        "sdio_func_intr_disable(func)",
+    )
+
+
+def sdio_source_flag_tracks_disable_result(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return re.search(
+        r"(?:ret|disable_ret)=sdio_func_intr_disable\(func\);"
+        r"if\(!(?:ret|disable_ret)\)"
+        r"WRITE_ONCE\(card->sdio_func_intr_enabled,MFALSE\);",
+        code,
+    ) is not None
+
+
+def sdio_oob_resume_uses_drained_token(body: str) -> bool:
+    return "enable_irq(card->oob_irq)" not in c_code(body)
+
+
+require(
+    sdio_irq_has_transport_gate(sdio_interrupt),
+    "SDIO interrupt lacks the locked remove/driver-mode transport gate",
+)
+require(
+    sdio_oob_top_has_transport_gate(sdio_oob_interrupt),
+    "SDIO OOB top half lacks the live transport/registration gate",
+)
+require(
+    sdio_oob_work_has_stage_gates(sdio_oob_work),
+    "SDIO OOB work lacks an initial or per-function transport gate",
+)
+require(
+    "int oob_irq_disable_owned;" in sdio_h,
+    "SDIO OOB action lacks an explicit disable token",
+)
+require(
+    "struct work_struct sdio_oob_irq_release_work;" in sdio_h,
+    "SDIO OOB action lacks process-context disable-token release work",
+)
+require(
+    ordered(
+        c_code(sdio_oob_release_token),
+        "cmpxchg(&card->oob_irq_disable_owned, MTRUE, MFALSE)",
+        "enable_irq(card->oob_irq)",
+    ),
+    "SDIO OOB disable token is not atomically balanced",
+)
+require(
+    sdio_oob_top_defers_coalesced_release(sdio_oob_interrupt),
+    "SDIO OOB top half releases a coalesced token in hard-IRQ context",
+)
+require(
+    sdio_oob_release_work_balances_token(sdio_oob_release_work),
+    "SDIO OOB deferred release work does not balance the disable token",
+)
+require(
+    "MLAN_INIT_WORK(&card->sdio_oob_irq_release_work," in
+    c_code(sdio_claim_irq),
+    "SDIO OOB deferred release work is not initialized before IRQ exposure",
+)
+require(
+    sdio_oob_work_releases_disable_token(sdio_oob_work),
+    "SDIO OOB work does not release its disable token on every exit",
+)
+require(
+    sdio_oob_unregister_is_terminal(sdio_oob_unregister),
+    "SDIO OOB unregister does not drain before source disable and action free",
+)
+require(
+    sdio_func_disable_is_transactional(sdio_func_intr_disable),
+    "SDIO function callback is cleared before CCCR source disable succeeds",
+)
+require(
+    sdio_oob_unregister_preserves_failed_source(sdio_oob_unregister),
+    "SDIO OOB unregister frees the action after source-disable failure",
+)
+require(
+    ordered(
+        c_code(sdio_release_irq),
+        "oob_sdio_irq_unregister(card)",
+        "destroy_workqueue(card->sdio_oob_irq_workqueue)",
+    ),
+    "SDIO OOB release destroys its workqueue before terminal unregister",
+)
+require(
+    sdio_oob_release_has_safe_fallback(sdio_release_irq),
+    "SDIO OOB release lacks a whole-function fallback before action teardown",
+)
+require(
+    ordered(
+        re.sub(r"\s+", "", c_code(sdio_claim_irq)),
+        "ret=oob_sdio_irq_register(card);",
+        "ret=sdio_func_intr_enable(func,handler);",
+        "WRITE_ONCE(card->sdio_func_intr_enabled,MTRUE);",
+    ),
+    "SDIO OOB claim exposes the function source before its IRQ action",
+)
+require(
+    ordered(
+        re.sub(r"\s+", "", c_code(sdio_drv_mode_resume)),
+        "ret=sdio_func_intr_enable(func,woal_sdio_interrupt);",
+        "if(!ret)WRITE_ONCE(card->sdio_func_intr_enabled,MTRUE);",
+    ),
+    "SDIO resume publishes source state without an explicit concurrent write",
+)
+require(
+    sdio_oob_quiesce_drains_token(sdio_drv_mode_quiesce),
+    "SDIO driver-mode quiesce does not drain its OOB disable token",
+)
+require(
+    sdio_source_flag_tracks_disable_result(sdio_drv_mode_quiesce),
+    "SDIO quiesce clears source state after a failed CCCR disable",
+)
+require(
+    sdio_source_flag_tracks_disable_result(sdio_drv_mode_resume),
+    "SDIO resume rollback clears source state after a failed CCCR disable",
+)
+require(
+    sdio_oob_resume_uses_drained_token(sdio_drv_mode_resume),
+    "SDIO driver-mode resume compensates for an undrained OOB disable token",
+)
+
+irq_gate_removed = sdio_interrupt.replace(
+    " || card->drv_mode_quiesced", "", 1
+)
+require(
+    not sdio_irq_has_transport_gate(irq_gate_removed),
+    "SDIO IRQ transport-gate invariant accepts a removed live gate",
+)
+oob_top_gate_removed = sdio_oob_interrupt.replace(
+    "!READ_ONCE(card->drv_mode_quiesced) &&", "true &&", 1
+)
+require(
+    not sdio_oob_top_has_transport_gate(oob_top_gate_removed),
+    "SDIO OOB top-half invariant accepts a removed live gate",
+)
+oob_gate_expression = "transport_enabled = !card->drv_mode_quiesced"
+require(
+    sdio_oob_work.count(oob_gate_expression) == 2,
+    "SDIO OOB work gate layout changed without updating stage mutations",
+)
+for occurrence in range(2):
+    oob_stage_gate_removed = replace_nth(
+        sdio_oob_work, oob_gate_expression, "transport_enabled = true",
+        occurrence,
+    )
+    require(
+        not sdio_oob_work_has_stage_gates(oob_stage_gate_removed),
+        f"SDIO OOB work invariant accepts removed stage gate {occurrence + 1}",
+    )
+oob_token_acquire_removed = sdio_oob_interrupt.replace(
+    "cmpxchg(&card->oob_irq_disable_owned, MFALSE, MTRUE) == MFALSE",
+    "true",
+    1,
+)
+require(
+    not sdio_oob_top_has_transport_gate(oob_token_acquire_removed),
+    "SDIO OOB top-half invariant accepts missing disable-token ownership",
+)
+oob_queue_fallback_removed = sdio_oob_interrupt.replace(
+    "&card->sdio_oob_irq_release_work", "&card->sdio_oob_irq_work", 1
+)
+require(
+    not sdio_oob_top_defers_coalesced_release(oob_queue_fallback_removed),
+    "SDIO OOB top-half invariant accepts missing deferred coalescing release",
+)
+oob_token_release_removed = sdio_oob_work.replace(
+    "woal_sdio_oob_irq_release(card);", "", 1
+)
+require(
+    not sdio_oob_work_releases_disable_token(oob_token_release_removed),
+    "SDIO OOB work invariant accepts a missing token-release epilogue",
+)
+for marker in (
+    "synchronize_irq(card->oob_irq);",
+    "flush_workqueue(workqueue);",
+    "woal_sdio_oob_irq_release(card);",
+):
+    unregister_drain_removed = sdio_oob_unregister.replace(marker, "", 1)
+    require(
+        not sdio_oob_unregister_is_terminal(unregister_drain_removed),
+        f"SDIO OOB unregister invariant accepts missing {marker[:-1]}",
+    )
+unregister_failure_return_removed = sdio_oob_unregister.replace(
+    "return ret;", "", 1
+)
+require(
+    not sdio_oob_unregister_preserves_failed_source(
+        unregister_failure_return_removed
+    ),
+    "SDIO OOB unregister invariant accepts teardown after disable failure",
+)
+func_disable_early_clear = sdio_func_intr_disable.replace(
+    "func->irq_handler = NULL;", "", 1
+).replace(
+    "reg = sdio_f0_readb(func, SDIO_CCCR_IENx, &ret);",
+    "func->irq_handler = NULL;\n\treg = sdio_f0_readb(func, SDIO_CCCR_IENx, &ret);",
+    1,
+)
+require(
+    not sdio_func_disable_is_transactional(func_disable_early_clear),
+    "SDIO source-disable invariant accepts an early callback clear",
+)
+quiesce_token_drain_removed = sdio_drv_mode_quiesce.replace(
+    "woal_sdio_oob_irq_release(card);", "", 1
+)
+require(
+    not sdio_oob_quiesce_drains_token(quiesce_token_drain_removed),
+    "SDIO quiesce invariant accepts a missing disable-token drain",
+)
+quiesce_unconditional_source_clear = sdio_drv_mode_quiesce.replace(
+    "if (!ret)\n\t\t\t\tWRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);",
+    "WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);",
+    1,
+)
+require(
+    not sdio_source_flag_tracks_disable_result(
+        quiesce_unconditional_source_clear
+    ),
+    "SDIO source-state invariant accepts an unconditional quiesce clear",
+)
+resume_with_global_enable = sdio_drv_mode_resume.replace(
+    "sdio_release_host(func);",
+    "sdio_release_host(func);\n\tenable_irq(card->oob_irq);",
+    1,
+)
+require(
+    not sdio_oob_resume_uses_drained_token(resume_with_global_enable),
+    "SDIO resume invariant accepts global IRQ compensation",
+)
+comment_only_irq_gate = irq_gate_removed.replace(
+    "if (!handle)", "if (!handle /* card->drv_mode_quiesced */)", 1
+)
+require(
+    not sdio_irq_has_transport_gate(comment_only_irq_gate),
+    "SDIO IRQ transport-gate invariant accepts a comment-only gate",
 )
 require(
     not (
