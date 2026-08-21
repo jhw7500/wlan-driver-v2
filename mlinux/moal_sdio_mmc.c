@@ -631,9 +631,13 @@ static int woal_sdio_claim_irq(sdio_mmc_card *card, sdio_irq_handler_t *handler)
 	}
 	ret = sdio_func_intr_enable(func, handler);
 	if (ret) {
-		oob_sdio_irq_unregister(card);
-		destroy_workqueue(card->sdio_oob_irq_workqueue);
-		card->sdio_oob_irq_workqueue = NULL;
+		/* The IENx write may have reached the device even when the bus
+		 * reports an error.  Keep the level-low action and queue alive, and
+		 * publish a callback so the caller can drop the MMC host before
+		 * performing conservative terminal cleanup.
+		 */
+		func->irq_handler = handler;
+		WRITE_ONCE(card->sdio_func_intr_enabled, MTRUE);
 		return ret;
 	}
 	WRITE_ONCE(card->sdio_func_intr_enabled, MTRUE);
@@ -794,7 +798,19 @@ mlan_status woal_sdio_drv_mode_quiesce(moal_handle *handle)
 		sdio_release_host(func);
 	}
 
-	return ret ? MLAN_STATUS_FAILURE : MLAN_STATUS_SUCCESS;
+	if (ret) {
+		/* A failed source disable leaves a level-low producer live.  Reopen
+		 * the transport gate when the same device is still valid so the
+		 * shared line cannot storm behind an action that refuses ownership.
+		 */
+		spin_lock_bh(&card->reset_lock);
+		if (woal_sdio_drv_mode_can_resume(card, handle, func))
+			WRITE_ONCE(card->drv_mode_quiesced, false);
+		spin_unlock_bh(&card->reset_lock);
+		return MLAN_STATUS_FAILURE;
+	}
+
+	return MLAN_STATUS_SUCCESS;
 }
 
 mlan_status woal_sdio_drv_mode_resume(moal_handle *handle)
@@ -1987,12 +2003,26 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 	/* Request the SDIO IRQ */
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (moal_extflg_isset(handle, EXT_INTMODE)) {
+		int release_ret;
+
 		ret = woal_request_gpio(card, card->handle->params.gpiopin);
 		if (ret) {
 			PRINTM(MERROR, "Fail to request gpio\n");
 			goto release_host;
 		}
 		ret = woal_sdio_claim_irq(card, woal_sdio_interrupt);
+		if (ret) {
+			PRINTM(MFATAL, "sdio_claim_irq failed: ret=%d\n", ret);
+			sdio_release_host(func);
+			release_ret = woal_sdio_release_irq(card);
+			if (release_ret)
+				PRINTM(MFATAL,
+				       "OOB source cleanup failed: ret=%d\n",
+				       release_ret);
+			handle->card = NULL;
+			LEAVE();
+			return MLAN_STATUS_FAILURE;
+		}
 		/* For SDIO over SPI, set CCCR_IF register bit5 ECSI to enable
 		 * IRQ mode. Set CCCR CARD_CTRL3 bit 1 to configure start token
 		 * is 0xFE for CMD53 single block write operation.
@@ -3442,7 +3472,14 @@ void woal_sdio_reset_hw(moal_handle *handle)
 	ENTER();
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (moal_extflg_isset(handle, EXT_INTMODE)) {
-		woal_sdio_release_irq(card);
+		int ret;
+
+		ret = woal_sdio_release_irq(card);
+		if (ret) {
+			PRINTM(MERROR, "Failed to release OOB IRQ: ret=%d\n", ret);
+			LEAVE();
+			return;
+		}
 		sdio_claim_host(func);
 	} else
 #endif
@@ -3476,9 +3513,18 @@ void woal_sdio_reset_hw(moal_handle *handle)
 #endif
 	sdio_enable_func(func);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (moal_extflg_isset(handle, EXT_INTMODE))
-		woal_sdio_claim_irq(card, woal_sdio_interrupt);
-	else
+	if (moal_extflg_isset(handle, EXT_INTMODE)) {
+		int ret;
+
+		ret = woal_sdio_claim_irq(card, woal_sdio_interrupt);
+		if (ret) {
+			sdio_release_host(func);
+			(void)woal_sdio_release_irq(card);
+			PRINTM(MERROR, "Failed to reclaim OOB IRQ: ret=%d\n", ret);
+			LEAVE();
+			return;
+		}
+	} else
 #endif
 		sdio_claim_irq(func, woal_sdio_interrupt);
 	sdio_set_block_size(card->func, handle->sdio_blk_size);

@@ -177,11 +177,17 @@ sdio_oob_interrupt = c_function(sdio_c, "static irqreturn_t oob_sdio_irq")
 sdio_oob_unregister = c_function(
     sdio_c, "static int oob_sdio_irq_unregister"
 )
+sdio_oob_register = c_function(
+    sdio_c, "static int oob_sdio_irq_register"
+)
 sdio_func_intr_disable = c_function(
     sdio_c, "static int sdio_func_intr_disable"
 )
 sdio_release_irq = c_function(sdio_c, "static int woal_sdio_release_irq")
 sdio_claim_irq = c_function(sdio_c, "static int woal_sdio_claim_irq")
+sdio_register_dev = c_function(
+    sdio_c, "static mlan_status woal_sdiommc_register_dev"
+)
 sdio_drv_mode_quiesce = c_function(
     sdio_c, "mlan_status woal_sdio_drv_mode_quiesce"
 )
@@ -189,6 +195,7 @@ sdio_drv_mode_resume = c_function(
     sdio_c, "mlan_status woal_sdio_drv_mode_resume"
 )
 sdio_remove = c_function(sdio_c, "void woal_sdio_remove")
+sdio_reset_hw = c_function(sdio_c, "void woal_sdio_reset_hw")
 add_card = c_function(main_c, "moal_handle *woal_add_card")
 reset_intf = c_function(main_c, "mlan_status woal_reset_intf")
 config_write = c_function(proc_c, "static ssize_t woal_config_write")
@@ -207,13 +214,16 @@ for name, body in (
     ("SDIO OOB deferred disable-token release", sdio_oob_release_work),
     ("SDIO OOB work", sdio_oob_work),
     ("SDIO OOB interrupt", sdio_oob_interrupt),
+    ("SDIO OOB register", sdio_oob_register),
     ("SDIO OOB unregister", sdio_oob_unregister),
     ("SDIO function interrupt disable", sdio_func_intr_disable),
     ("SDIO OOB release", sdio_release_irq),
     ("SDIO OOB claim", sdio_claim_irq),
+    ("SDIO device register", sdio_register_dev),
     ("SDIO driver-mode quiesce", sdio_drv_mode_quiesce),
     ("SDIO driver-mode resume", sdio_drv_mode_resume),
     ("SDIO remove", sdio_remove),
+    ("SDIO hardware reset", sdio_reset_hw),
 ):
     require(bool(body), f"cannot extract {name} for lifecycle validation")
 
@@ -714,6 +724,51 @@ def sdio_oob_release_has_safe_fallback(body: str) -> bool:
     )
 
 
+def sdio_oob_claim_retains_ambiguous_source(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    enable = code.find("ret=sdio_func_intr_enable(func,handler);")
+    if enable < 0:
+        return False
+    tail = code[enable:]
+    return (
+        ordered(
+            tail,
+            "ret=sdio_func_intr_enable(func,handler);",
+            "if(ret){",
+            "func->irq_handler=handler;",
+            "WRITE_ONCE(card->sdio_func_intr_enabled,MTRUE);",
+            "returnret;",
+            "WRITE_ONCE(card->sdio_func_intr_enabled,MTRUE);",
+            "return0;",
+        ) and
+        "oob_sdio_irq_unregister(card)" not in tail and
+        "destroy_workqueue(card->sdio_oob_irq_workqueue)" not in tail
+    )
+
+
+def sdio_claim_error_is_released_after_host(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    claim = code.find("ret=woal_sdio_claim_irq(card,woal_sdio_interrupt);")
+    if claim < 0:
+        return False
+    block_size = code.find("sdio_set_block_size", claim)
+    if block_size < 0:
+        return False
+    tail = code[claim:block_size]
+    error_check = tail.find("if(ret)")
+    return (
+        error_check >= 0 and
+        "woal_sdio_f0_readb" not in tail[:error_check] and
+        ordered(
+            tail,
+            "ret=woal_sdio_claim_irq(card,woal_sdio_interrupt);",
+            "if(ret)",
+            "sdio_release_host(func);",
+            "woal_sdio_release_irq(card)",
+        )
+    )
+
+
 def sdio_oob_quiesce_drains_token(body: str) -> bool:
     code = c_code(body)
     return ordered(
@@ -724,6 +779,21 @@ def sdio_oob_quiesce_drains_token(body: str) -> bool:
         "woal_sdio_oob_irq_release(card)",
         "sdio_claim_host(func)",
         "sdio_func_intr_disable(func)",
+    )
+
+
+def sdio_quiesce_reopens_failed_gate(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "sdio_func_intr_disable(func)",
+        "sdio_release_host(func);",
+        "if(ret){",
+        "spin_lock_bh(&card->reset_lock);",
+        "woal_sdio_drv_mode_can_resume(card,handle,func)",
+        "WRITE_ONCE(card->drv_mode_quiesced,false);",
+        "spin_unlock_bh(&card->reset_lock);",
+        "returnMLAN_STATUS_FAILURE;",
     )
 
 
@@ -811,6 +881,10 @@ require(
     "SDIO OOB release lacks a whole-function fallback before action teardown",
 )
 require(
+    "IRQF_TRIGGER_LOW | IRQF_SHARED" in c_code(sdio_oob_register),
+    "SDIO OOB action is not constrained to retriggerable level-low delivery",
+)
+require(
     ordered(
         re.sub(r"\s+", "", c_code(sdio_claim_irq)),
         "ret=oob_sdio_irq_register(card);",
@@ -818,6 +892,18 @@ require(
         "WRITE_ONCE(card->sdio_func_intr_enabled,MTRUE);",
     ),
     "SDIO OOB claim exposes the function source before its IRQ action",
+)
+require(
+    sdio_oob_claim_retains_ambiguous_source(sdio_claim_irq),
+    "SDIO OOB claim frees an action after ambiguous source-enable failure",
+)
+require(
+    sdio_claim_error_is_released_after_host(sdio_register_dev),
+    "SDIO register failure does not release an ambiguous OOB source after host unlock",
+)
+require(
+    sdio_claim_error_is_released_after_host(sdio_reset_hw),
+    "SDIO reset failure does not release an ambiguous OOB source after host unlock",
 )
 require(
     ordered(
@@ -834,6 +920,10 @@ require(
 require(
     sdio_source_flag_tracks_disable_result(sdio_drv_mode_quiesce),
     "SDIO quiesce clears source state after a failed CCCR disable",
+)
+require(
+    sdio_quiesce_reopens_failed_gate(sdio_drv_mode_quiesce),
+    "SDIO quiesce leaves a live level source behind a closed gate on failure",
 )
 require(
     sdio_source_flag_tracks_disable_result(sdio_drv_mode_resume),
@@ -925,12 +1015,51 @@ require(
     not sdio_func_disable_is_transactional(func_disable_early_clear),
     "SDIO source-disable invariant accepts an early callback clear",
 )
+oob_edge_trigger = sdio_oob_register.replace(
+    "IRQF_TRIGGER_LOW", "IRQF_TRIGGER_RISING", 1
+)
+require(
+    "IRQF_TRIGGER_LOW | IRQF_SHARED" not in c_code(oob_edge_trigger),
+    "SDIO OOB trigger invariant accepts edge-triggered delivery",
+)
+claim_ambiguous_state_removed = sdio_claim_irq.replace(
+    "func->irq_handler = handler;", "", 1
+)
+require(
+    not sdio_oob_claim_retains_ambiguous_source(
+        claim_ambiguous_state_removed
+    ),
+    "SDIO OOB claim invariant accepts missing ambiguous-source callback",
+)
+register_claim_cleanup_removed = sdio_register_dev.replace(
+    "release_ret = woal_sdio_release_irq(card);", "release_ret = 0;", 1
+)
+require(
+    not sdio_claim_error_is_released_after_host(
+        register_claim_cleanup_removed
+    ),
+    "SDIO register invariant accepts missing ambiguous-source cleanup",
+)
+reset_claim_cleanup_removed = sdio_reset_hw.replace(
+    "(void)woal_sdio_release_irq(card);", "", 1
+)
+require(
+    not sdio_claim_error_is_released_after_host(reset_claim_cleanup_removed),
+    "SDIO reset invariant accepts missing ambiguous-source cleanup",
+)
 quiesce_token_drain_removed = sdio_drv_mode_quiesce.replace(
     "woal_sdio_oob_irq_release(card);", "", 1
 )
 require(
     not sdio_oob_quiesce_drains_token(quiesce_token_drain_removed),
     "SDIO quiesce invariant accepts a missing disable-token drain",
+)
+quiesce_failed_gate_reopen_removed = sdio_drv_mode_quiesce.replace(
+    "WRITE_ONCE(card->drv_mode_quiesced, false);", "", 1
+)
+require(
+    not sdio_quiesce_reopens_failed_gate(quiesce_failed_gate_reopen_removed),
+    "SDIO quiesce invariant accepts a live source behind a closed gate",
 )
 quiesce_unconditional_source_clear = sdio_drv_mode_quiesce.replace(
     "if (!ret)\n\t\t\t\tWRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);",
