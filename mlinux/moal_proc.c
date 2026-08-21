@@ -1218,7 +1218,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	    count > strlen("trigger_frame="))
 		cmd = MFG_CMD_CONFIG_TRIGGER_FRAME;
 	if (!strncmp(databuf,
-		     "otp_mac_addr_rd_wr=", strlen("otp_mac_add_rd_wr=")) &&
+		     "otp_mac_addr_rd_wr=", strlen("otp_mac_addr_rd_wr=")) &&
 	    count > strlen("otp_mac_addr_rd_wr="))
 		cmd = MFG_CMD_OTP_MAC_ADD;
 	if (!strncmp(databuf,

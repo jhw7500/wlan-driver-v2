@@ -419,6 +419,11 @@ for keyword in ("tx_antenna", "rx_antenna", "radio_mode", "channel",
     )
     require(guarded_parser is not None,
             f"config parser accepts a malformed {keyword} delimiter")
+require(re.search(
+            r'!strncmp\(databuf,\s*"otp_mac_addr_rd_wr=",\s*'
+            r'strlen\("otp_mac_addr_rd_wr="\)\)',
+            config_write) is not None,
+        "OTP MAC config parser does not compare the complete command delimiter")
 require(config_cmd_match and
         ordered(config_cmd_match, "count >= cmd_len",
                 "!strncmp(databuf, cmd, cmd_len)", "count == cmd_len") and
