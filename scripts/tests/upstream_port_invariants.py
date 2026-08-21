@@ -188,6 +188,9 @@ sdio_claim_irq = c_function(sdio_c, "static int woal_sdio_claim_irq")
 sdio_register_dev = c_function(
     sdio_c, "static mlan_status woal_sdiommc_register_dev"
 )
+sdio_unregister_dev = c_function(
+    sdio_c, "static void woal_sdiommc_unregister_dev"
+)
 sdio_drv_mode_quiesce = c_function(
     sdio_c, "mlan_status woal_sdio_drv_mode_quiesce"
 )
@@ -220,6 +223,7 @@ for name, body in (
     ("SDIO OOB release", sdio_release_irq),
     ("SDIO OOB claim", sdio_claim_irq),
     ("SDIO device register", sdio_register_dev),
+    ("SDIO device unregister", sdio_unregister_dev),
     ("SDIO driver-mode quiesce", sdio_drv_mode_quiesce),
     ("SDIO driver-mode resume", sdio_drv_mode_resume),
     ("SDIO remove", sdio_remove),
@@ -769,6 +773,50 @@ def sdio_claim_error_is_released_after_host(body: str) -> bool:
     )
 
 
+def sdio_register_quarantines_cleanup_failure(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "release_ret=woal_sdio_release_irq(card);",
+        "if(release_ret){",
+        "sdio_set_drvdata(func,card);",
+        "returnMLAN_STATUS_PENDING;",
+        "handle->card=NULL;",
+        "returnMLAN_STATUS_FAILURE;",
+    )
+
+
+def add_card_preserves_sdio_quarantine(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "status=handle->ops.register_dev(handle);",
+        "if(status==MLAN_STATUS_PENDING&&IS_SD(handle->card_type)){",
+        "handle->driver_status=MTRUE;",
+        "handle->hardware_status=HardwareStatusNotReady;",
+        "MOAL_REL_SEMAPHORE(&AddRemoveCardSem);",
+        "returnhandle;",
+        "if(status!=MLAN_STATUS_SUCCESS)",
+        "gotoerr_registerdev;",
+    )
+
+
+def sdio_unregister_retries_after_function_disable(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "oob_ret=woal_sdio_release_irq(card);",
+        "sdio_claim_host(card->func);",
+        "disable_ret=sdio_disable_func(card->func);",
+        "if(ext_intmode&&oob_ret&&!disable_ret){",
+        "card->func->irq_handler=NULL;",
+        "WRITE_ONCE(card->sdio_func_intr_enabled,MFALSE);",
+        "sdio_release_host(card->func);",
+        "oob_ret=woal_sdio_release_irq(card);",
+        "sdio_set_drvdata(card->func,NULL);",
+    )
+
+
 def sdio_oob_quiesce_drains_token(body: str) -> bool:
     code = c_code(body)
     return ordered(
@@ -900,6 +948,18 @@ require(
 require(
     sdio_claim_error_is_released_after_host(sdio_register_dev),
     "SDIO register failure does not release an ambiguous OOB source after host unlock",
+)
+require(
+    sdio_register_quarantines_cleanup_failure(sdio_register_dev),
+    "SDIO register cleanup failure enters normal card/handle unwind",
+)
+require(
+    add_card_preserves_sdio_quarantine(add_card),
+    "SDIO add-card cleanup frees a quarantined OOB action owner",
+)
+require(
+    sdio_unregister_retries_after_function_disable(sdio_unregister_dev),
+    "SDIO unregister does not retry retained OOB action cleanup after function disable",
 )
 require(
     sdio_claim_error_is_released_after_host(sdio_reset_hw),
@@ -1039,6 +1099,33 @@ require(
         register_claim_cleanup_removed
     ),
     "SDIO register invariant accepts missing ambiguous-source cleanup",
+)
+register_quarantine_return_removed = sdio_register_dev.replace(
+    "return MLAN_STATUS_PENDING;", "return MLAN_STATUS_FAILURE;", 1
+)
+require(
+    not sdio_register_quarantines_cleanup_failure(
+        register_quarantine_return_removed
+    ),
+    "SDIO register invariant accepts normal unwind after cleanup failure",
+)
+add_card_quarantine_owner_removed = add_card.replace(
+    "return handle;", "return NULL;", 1
+)
+require(
+    not add_card_preserves_sdio_quarantine(
+        add_card_quarantine_owner_removed
+    ),
+    "SDIO add-card invariant accepts dropping quarantined owner lifetime",
+)
+unregister_retry_removed = sdio_unregister_dev.replace(
+    "oob_ret = woal_sdio_release_irq(card);", "oob_ret = 0;", 2
+)
+require(
+    not sdio_unregister_retries_after_function_disable(
+        unregister_retry_removed
+    ),
+    "SDIO unregister invariant accepts missing retained-action retry",
 )
 reset_claim_cleanup_removed = sdio_reset_hw.replace(
     "(void)woal_sdio_release_irq(card);", "", 1

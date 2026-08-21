@@ -1941,14 +1941,18 @@ static void woal_sdiommc_unregister_dev(moal_handle *handle)
 	ENTER();
 	if (handle->card) {
 		sdio_mmc_card *card = handle->card;
+		int disable_ret;
+		int oob_ret __maybe_unused = 0;
+		bool ext_intmode __maybe_unused = false;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 		struct sdio_func *func = card->func;
 #endif
 		/* Release OOB without holding the MMC host: its queued work claims
 		 * that host and must be drained first. */
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-		if (moal_extflg_isset(handle, EXT_INTMODE)) {
-			woal_sdio_release_irq(card);
+		ext_intmode = moal_extflg_isset(handle, EXT_INTMODE);
+		if (ext_intmode) {
+			oob_ret = woal_sdio_release_irq(card);
 			sdio_claim_host(card->func);
 		} else
 #endif
@@ -1957,7 +1961,13 @@ static void woal_sdiommc_unregister_dev(moal_handle *handle)
 			if (card->func->irq_handler)
 				sdio_release_irq(card->func);
 		}
-		sdio_disable_func(card->func);
+		disable_ret = sdio_disable_func(card->func);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
+		if (ext_intmode && oob_ret && !disable_ret) {
+			card->func->irq_handler = NULL;
+			WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);
+		}
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 		if (handle->driver_status)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
@@ -1967,6 +1977,16 @@ static void woal_sdiommc_unregister_dev(moal_handle *handle)
 #endif
 #endif
 		sdio_release_host(card->func);
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
+		if (ext_intmode && oob_ret) {
+			oob_ret = woal_sdio_release_irq(card);
+			if (oob_ret)
+				PRINTM(MFATAL,
+				       "OOB unregister retry failed: ret=%d\n",
+				       oob_ret);
+		}
+#endif
 
 		sdio_set_drvdata(card->func, NULL);
 
@@ -2015,10 +2035,18 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 			PRINTM(MFATAL, "sdio_claim_irq failed: ret=%d\n", ret);
 			sdio_release_host(func);
 			release_ret = woal_sdio_release_irq(card);
-			if (release_ret)
+			if (release_ret) {
 				PRINTM(MFATAL,
-				       "OOB source cleanup failed: ret=%d\n",
+				       "OOB source cleanup failed; quarantine card: ret=%d\n",
 				       release_ret);
+				/* A retained action/WQ still dereferences card and handle.
+				 * Keep the SDIO driver bound so remove can retry terminal
+				 * cleanup instead of entering the normal free unwind.
+				 */
+				sdio_set_drvdata(func, card);
+				LEAVE();
+				return MLAN_STATUS_PENDING;
+			}
 			handle->card = NULL;
 			LEAVE();
 			return MLAN_STATUS_FAILURE;

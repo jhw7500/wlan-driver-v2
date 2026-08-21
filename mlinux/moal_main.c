@@ -15918,7 +15918,20 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 	 * relevant information from the card and request for the
 	 * required IRQ.
 	 */
-	if (handle->ops.register_dev(handle) != MLAN_STATUS_SUCCESS) {
+	status = handle->ops.register_dev(handle);
+	if (status == MLAN_STATUS_PENDING && IS_SD(handle->card_type)) {
+		/* SDIO OOB terminal cleanup could not prove a level source dead.
+		 * Preserve card/handle ownership under the bound driver; the remove
+		 * path will retry cleanup and no normal error label may free it.
+		 */
+		PRINTM(MFATAL, "Quarantine SDIO card after OOB cleanup failure\n");
+		handle->driver_status = MTRUE;
+		handle->hardware_status = HardwareStatusNotReady;
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+		LEAVE();
+		return handle;
+	}
+	if (status != MLAN_STATUS_SUCCESS) {
 		PRINTM(MFATAL, "Failed to register wlan device!\n");
 		goto err_registerdev;
 	}
