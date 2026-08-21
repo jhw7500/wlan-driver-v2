@@ -1,6 +1,6 @@
 # Upstream Port Runtime WATCH Closure Design
 
-**Status:** Approved for execution by the user's 2026-08-21 “진행” direction.
+**Status:** Executed — blocked by platform policy.
 
 ## Objective
 
@@ -13,7 +13,12 @@ The source baseline for this qualification is `734f75b`; the documentation
 HEAD at design time is `5f8d10a` on
 `port/upstream-61820-0396-clean`.
 
-## Fixed target facts
+Execution advanced the source/test qualification HEAD to
+`c4644eee070c3a735e83037fdefdfbaf3d74ea8e`. The final documentation-only commit
+uses subject `docs: record OOB WATCH qualification`; independent reviews, push,
+Draft PR update, and merge decisions remain controller-owned follow-up work.
+
+## Fixed pre-execution target facts
 
 - Target: i.MX93, with SSH carried by the wired `eth0` management path.
 - Wi-Fi transport: SD9098 DBDC, SDIO functions `02df:914d` and `02df:914e`.
@@ -175,29 +180,68 @@ Do not force-reset the card, overwrite the board DTB, replace packaged
 `/lib/modules` files, or add fault hooks in order to make a blocked scenario
 appear tested.
 
-## Coverage classification
+## Executed coverage classification
 
-| WATCH item | Planned result |
+The selected target runtime did not pass or fail: production platform policy
+stopped it at the initial restart before the health gate. Cleanup and baseline
+restoration are proved, which permits the executed status without implying that
+any selected OOB runtime slice passed.
+
+| WATCH item | Executed result |
 |---|---|
-| OOB registration, traffic, reload, DBDC teardown | Dynamic target PASS/FAIL |
-| OOB suspend/resume (`s2idle`, `deep`) | Dynamic target PASS/FAIL |
-| Thirty-minute SDIO/OOB traffic | Dynamic target PASS/FAIL |
-| All-hardware-cleanup-fails physical IRQ liveness | BLOCKED_BY_PLATFORM plus safe substitute |
-| USB runtime | BLOCKED_BY_HARDWARE |
-| PCIe runtime/FLR | BLOCKED_BY_HARDWARE |
-| `/lib/modules` vendor copy mismatch | Documented packaging WATCH; no ad-hoc overwrite |
+| OOB initial health and action count | NOT EXECUTED — Task 4 `BLOCKED_BY_PLATFORM` |
+| OOB traffic IRQ delta and idle storm | NOT EXECUTED — healthy-OOB gate not reached |
+| OOB traffic-active reload/DBDC teardown | NOT EXECUTED — `0/10` cycles |
+| OOB suspend/resume (`s2idle`, `deep`) | NOT EXECUTED / `BLOCKED_BY_PREREQUISITE` |
+| Thirty-minute OOB ping and iperf | NOT EXECUTED / `BLOCKED_BY_PREREQUISITE`; peer/server environment was not probed |
+| All-hardware-cleanup-fails physical IRQ liveness | separate `BLOCKED_BY_PLATFORM`; static mutations and earlier live substitute do not prove physical-source quiescence |
+| USB runtime | `BLOCKED_BY_HARDWARE` |
+| PCIe runtime/FLR | `BLOCKED_BY_HARDWARE` |
+| `/lib/modules` vendor copy mismatch | inactive `437.p3` copies unchanged; active runtime restored from the in-band `543.p18` backup |
 
-## Completion criteria
+## Execution outcome and cleanup
 
-This qualification is complete when:
+- `c4644eee` added preferred/fallback DT lookup plus mutation-tested node/IRQ and
+  lifecycle hygiene. The new invariant recorded actual RED exit `1`, then GREEN
+  exit `0`; the aggregate suite passed.
+- Task 2 produced exact staged artifacts and an exit-`0` i.MX93 build with exactly
+  three known `mlanutl` warnings: unchecked `fgets`, fortified `memcpy` bounds,
+  and fortified `strncpy` bounds.
+- Task 3 backup, stage, manifest verification, baseline-only rollback rehearsal,
+  and 90-minute rollback-timer proof succeeded.
+- At Task 4's canceled initial restart, production `wifi_checker` classified the
+  intentional module-reload netdev gap as `fw_crash`; reboot policy approved a
+  board reboot. The test script had no reboot action. Previous-boot kernel
+  journal evidence was unavailable, so neither OOB success nor driver failure is
+  inferred. Target wall-clock skew is distinct from controller chronology.
+- The terminal all-hardware-cleanup-fails path remains a separate
+  `BLOCKED_BY_PLATFORM` item. The safe substitutes do not prove physical-source
+  quiescence.
+- Final target state is the restored pre-qualification in-band `543.p18` backup:
+  all five active artifacts match backup, OOB/`intmode` are absent, and required
+  services/functions are healthy. The c464 candidate is retained staged-only,
+  inactive, and unqualified. Packaged `/lib/modules` copies remain inactive,
+  unchanged vendor `437.p3` artifacts.
+- Both stage-owned rollback timers are stopped/inactive; final active and
+  stage-associated timer counts are zero. `/run/mwifiex-oob-watch.env` is removed,
+  while backup/stage evidence is retained.
+
+Explicit summary: **traffic qualification BLOCKED_BY_PREREQUISITE; cleanup
+COMPLETE/ACCEPTED.** Draft PR #27 must remain Draft; this execution makes no
+merge-ready claim.
+
+## Completion criteria and disposition
+
+This qualification closes under the design stop/rollback path because:
 
 1. the source invariant follows a demonstrated RED-to-GREEN cycle;
 2. local final checks and exact `make_for_imx93.sh` build pass;
 3. the OOB reload, shared-IRQ traffic, suspend/resume, and long-traffic slices
-   either pass or stop through the defined rollback path;
+   stopped through the defined platform-policy and prerequisite classifications;
 4. the target is left healthy with the original in-band runtime setting;
-5. generated target harnesses and timers are removed or intentionally retained
-   as named evidence;
-6. the worktree is clean, commits are pushed, and Draft PR #27 reports both
-   positive evidence and every blocked residual without an unqualified
-   merge-ready claim.
+5. both stage-owned timers are stopped and inactive, the transient runtime
+   environment is removed, and backup/stage evidence is intentionally retained;
+6. the local documentation commit is verified cleanly. Push, independent reviews,
+   Draft PR #27 update, and final OMX-state handling remain controller-owned; the
+   PR must remain Draft and report every blocked residual without a merge-ready
+   claim.
