@@ -563,7 +563,13 @@ static void woal_sdio_force_detach_irq(sdio_mmc_card *card)
 	if (workqueue)
 		flush_workqueue(workqueue);
 	woal_sdio_oob_irq_release(card);
+	/* A sibling SD9098 OOB worker dispatches every function callback while
+	 * holding this host.  Cross that same barrier before severing ownership.
+	 */
+	sdio_claim_host(func);
 	func->irq_handler = NULL;
+	sdio_set_drvdata(func, NULL);
+	sdio_release_host(func);
 	if (registered) {
 		disable_irq_wake(card->oob_irq);
 		devm_free_irq(&func->dev, card->oob_irq, card);
@@ -3516,12 +3522,11 @@ void woal_sdio_reset_hw(moal_handle *handle)
 {
 	sdio_mmc_card *card = handle->card;
 	struct sdio_func *func = card->func;
+	int ret;
 
 	ENTER();
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (moal_extflg_isset(handle, EXT_INTMODE)) {
-		int ret;
-
 		ret = woal_sdio_release_irq(card);
 		if (ret) {
 			PRINTM(MERROR, "Failed to release OOB IRQ: ret=%d\n", ret);
@@ -3560,10 +3565,15 @@ void woal_sdio_reset_hw(moal_handle *handle)
 		func->enable_timeout = 200;
 #endif
 	sdio_enable_func(func);
+	ret = sdio_set_block_size(card->func, handle->sdio_blk_size);
+	if (ret) {
+		PRINTM(MERROR, "Failed to restore SDIO block size: ret=%d\n", ret);
+		sdio_release_host(func);
+		LEAVE();
+		return;
+	}
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (moal_extflg_isset(handle, EXT_INTMODE)) {
-		int ret;
-
 		ret = woal_sdio_claim_irq(card, woal_sdio_interrupt);
 		if (ret) {
 			sdio_release_host(func);
@@ -3575,7 +3585,6 @@ void woal_sdio_reset_hw(moal_handle *handle)
 	} else
 #endif
 		sdio_claim_irq(func, woal_sdio_interrupt);
-	sdio_set_block_size(card->func, handle->sdio_blk_size);
 	sdio_release_host(func);
 	LEAVE();
 	return;

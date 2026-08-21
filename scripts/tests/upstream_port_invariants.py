@@ -763,6 +763,10 @@ def sdio_oob_force_detach_drains_software_owners(body: str) -> bool:
         "synchronize_irq(card->oob_irq);",
         "flush_workqueue(workqueue);",
         "woal_sdio_oob_irq_release(card);",
+        "sdio_claim_host(func);",
+        "func->irq_handler=NULL;",
+        "sdio_set_drvdata(func,NULL);",
+        "sdio_release_host(func);",
         "devm_free_irq(&func->dev,card->oob_irq,card);",
         "WRITE_ONCE(card->sdio_oob_irq_workqueue,NULL);",
         "destroy_workqueue(workqueue);",
@@ -815,6 +819,37 @@ def sdio_register_sets_block_size_before_irq(body: str) -> bool:
         block_size < inband_claim and
         "gotorelease_irq;" not in code and
         "release_irq:" not in code
+    )
+
+
+def sdio_reset_sets_block_size_before_irq(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    enable = code.find("sdio_enable_func(func);")
+    block_size = code.find(
+        "ret=sdio_set_block_size(card->func,handle->sdio_blk_size);",
+        enable,
+    )
+    oob_claim = code.find(
+        "ret=woal_sdio_claim_irq(card,woal_sdio_interrupt);",
+        enable,
+    )
+    inband_claim = code.find(
+        "sdio_claim_irq(func,woal_sdio_interrupt);",
+        enable,
+    )
+    if min(enable, block_size, oob_claim, inband_claim) < 0:
+        return False
+    setup = code[block_size:oob_claim]
+    return (
+        enable < block_size < oob_claim and
+        block_size < inband_claim and
+        ordered(
+            setup,
+            "ret=sdio_set_block_size(card->func,handle->sdio_blk_size);",
+            "if(ret){",
+            "sdio_release_host(func);",
+            "return;",
+        )
     )
 
 
@@ -1029,6 +1064,10 @@ require(
     "SDIO reset failure does not release an ambiguous OOB source after host unlock",
 )
 require(
+    sdio_reset_sets_block_size_before_irq(sdio_reset_hw),
+    "SDIO reset exposes an IRQ action before block-size restore can fail",
+)
+require(
     ordered(
         re.sub(r"\s+", "", c_code(sdio_drv_mode_resume)),
         "ret=sdio_func_intr_enable(func,woal_sdio_interrupt);",
@@ -1163,6 +1202,15 @@ require(
     ),
     "SDIO forced-detach invariant accepts a retained IRQ action",
 )
+force_detach_host_barrier_removed = sdio_oob_force_detach.replace(
+    "sdio_claim_host(func);", "", 1
+)
+require(
+    not sdio_oob_force_detach_drains_software_owners(
+        force_detach_host_barrier_removed
+    ),
+    "SDIO forced-detach invariant accepts an unlocked cross-function callback clear",
+)
 register_claim_cleanup_removed = sdio_register_dev.replace(
     "release_ret = woal_sdio_release_irq(card);", "release_ret = 0;", 1
 )
@@ -1212,6 +1260,13 @@ reset_claim_cleanup_removed = sdio_reset_hw.replace(
 require(
     not sdio_claim_error_is_released_after_host(reset_claim_cleanup_removed),
     "SDIO reset invariant accepts missing ambiguous-source cleanup",
+)
+reset_block_size_removed = sdio_reset_hw.replace(
+    "ret = sdio_set_block_size(card->func, handle->sdio_blk_size);", "", 1
+)
+require(
+    not sdio_reset_sets_block_size_before_irq(reset_block_size_removed),
+    "SDIO reset invariant accepts missing pre-IRQ block-size restore",
 )
 quiesce_token_drain_removed = sdio_drv_mode_quiesce.replace(
     "woal_sdio_oob_irq_release(card);", "", 1
