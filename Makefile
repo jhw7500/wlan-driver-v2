@@ -154,7 +154,8 @@ endif
 #############################################################################
 # Select Platform Tools
 #############################################################################
-ifeq ($(ANDROID_BUILD), yes)
+ANDROID_BUILD_ENABLED := $(if $(filter 1 yes,$(strip $(ANDROID_BUILD))),yes,no)
+ifeq ($(ANDROID_BUILD_ENABLED),yes)
 # Set target Android SDK version.
 # ANDROID_SDK_VERSION 29 corresponds to Android 10 Android 10
 # ANDROID_SDK_VERSION 30 corresponds to Android 11 (Red Velvet Cake)
@@ -392,7 +393,7 @@ ifeq ($(CONFIG_PCIEAW693),y)
 	CONFIG_PCIE=y
 	ccflags-y += -DPCIEAW693
 	CONFIG_XDP_SUPPORT=y
-ifeq ($(ANDROID_BUILD), 1)
+ifeq ($(ANDROID_BUILD_ENABLED),yes)
 	CONFIG_XDP_SUPPORT=n
 endif
 	CONFIG_SECURE_HOST=n

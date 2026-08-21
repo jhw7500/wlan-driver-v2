@@ -2,12 +2,15 @@
 """Source-level lifecycle/ABI invariants for the mwifiex 0396 port."""
 
 from pathlib import Path
+import os
 import re
+import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
 failures: list[str] = []
+REVIEW_FOCUS = os.environ.get("UPSTREAM_PORT_FOCUS", "")
 
 
 def read(path: str) -> str:
@@ -17,6 +20,11 @@ def read(path: str) -> str:
 def require(condition: bool, message: str) -> None:
     if not condition:
         failures.append(message)
+
+
+def review_require(finding: str, condition: bool, message: str) -> None:
+    if not REVIEW_FOCUS or REVIEW_FOCUS == finding:
+        require(condition, message)
 
 
 def c_function(source: str, signature: str) -> str:
@@ -99,6 +107,8 @@ proc_c = read("mlinux/moal_proc.c")
 shim_c = read("mlinux/moal_shim.c")
 bridge_c = read("mlinux/moal_bridge.c")
 eth_ioctl_c = read("mlinux/moal_eth_ioctl.c")
+cfg80211_util_c = read("mlinux/moal_cfg80211_util.c")
+cfg80211_util_h = read("mlinux/moal_cfg80211_util.h")
 pcie_c = read("mlinux/moal_pcie.c")
 sdio_h = read("mlinux/moal_sdio.h")
 sdio_c = read("mlinux/moal_sdio_mmc.c")
@@ -108,6 +118,438 @@ mlan_decl = read("mlan/mlan_decl.h")
 moal_decl = read("mlinux/mlan_decl.h")
 makefile = read("Makefile")
 kconfig = read("Kconfig")
+
+apf_set_filter = c_function(
+    cfg80211_util_c, "static int woal_cfg80211_subcmd_set_packet_filter"
+)
+apf_init_ctx = c_function(cfg80211_util_c, "static struct woal_apf_ctx *woal_apf_init_ctx")
+apf_free_ctx = c_function(cfg80211_util_c, "static void woal_apf_free_ctx")
+apf_v6_exec = c_function(cfg80211_util_c, "static int apf_v6_exec")
+apf_run = c_function(cfg80211_util_c, "static int apf_run")
+apf_filter_packet = c_function(cfg80211_util_c, "int woal_filter_packet")
+apf_icmpv6_csum = c_function(cfg80211_util_c, "apf_icmpv6_csum")
+passphrase_ioctl = c_function(
+    eth_ioctl_c, "static int woal_setget_priv_passphrase"
+)
+
+
+def apf_install_is_lock_safe(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    parse = code.find("nla_for_each_attr(")
+    allocation = code.find("apf_bin=km")
+    packet_lock = code.find(
+        "spin_lock_irqsave(&pkt_filter->lock,pkt_filter_flags);"
+    )
+    ctx_lock = code.find("spin_lock_irqsave(&ctx->lock,ctx_flags);")
+    if min(parse, allocation, packet_lock, ctx_lock) < 0:
+        return False
+    return (
+        parse < allocation < packet_lock < ctx_lock
+        and "GFP_KERNEL" not in code[packet_lock:]
+        and ordered(
+            code[packet_lock:],
+            "spin_lock_irqsave(&pkt_filter->lock,pkt_filter_flags);",
+            "spin_lock_irqsave(&ctx->lock,ctx_flags);",
+            "memcpy(pkt_filter->packet_filter_program,apf_bin,apf_len);",
+            "memcpy(ctx->ram,apf_bin,apf_len);",
+            "ctx->gen++;",
+            "spin_unlock_irqrestore(&ctx->lock,ctx_flags);",
+            "spin_unlock_irqrestore(&pkt_filter->lock,pkt_filter_flags);",
+        )
+        and code.count("kfree(apf_bin);") == 1
+        and code.rfind("kfree(apf_bin);") > code.rfind("done:")
+    )
+
+
+review_require(
+    "C1",
+    apf_install_is_lock_safe(apf_set_filter),
+    "C1 APF install parses/allocates under a spinlock or corrupts nested IRQ flags",
+)
+c1_same_flags = apf_set_filter.replace("ctx_flags", "pkt_filter_flags")
+review_require(
+    "C1",
+    not apf_install_is_lock_safe(c1_same_flags),
+    "C1 APF install invariant accepts reused nested IRQ flags",
+)
+c1_sleeping_allocation = apf_set_filter.replace(
+    "spin_lock_irqsave(&pkt_filter->lock, pkt_filter_flags);",
+    "spin_lock_irqsave(&pkt_filter->lock, pkt_filter_flags);\n"
+    "\tapf_bin = kmalloc(apf_len, GFP_KERNEL);",
+    1,
+)
+review_require(
+    "C1",
+    not apf_install_is_lock_safe(c1_sleeping_allocation),
+    "C1 APF install invariant accepts a sleeping allocation under spinlock",
+)
+
+
+def apf_tail_bounds_are_overflow_safe(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    passdrop = code[code.find("casePASSDROP_OPCODE:"):code.find("caseLDB_OPCODE:")]
+    jmp = code[code.find("caseJMP_OPCODE:"):code.find("caseJEQ_OPCODE:")]
+    data_words = code[code.find("caseLDDW_OPCODE:"):code.find("default:", code.find("caseLDDW_OPCODE:"))]
+    return (
+        min(len(passdrop), len(jmp), len(data_words)) > 0
+        and ordered(
+            passdrop,
+            "if(imm){",
+            "V6_ASSERT_RET(imm<=c->ram_len/sizeof(*counter));",
+            "counter[-(t_s32)imm]++;",
+        )
+        and ordered(
+            jmp,
+            "V6_ASSERT_RET(c->ram_len/sizeof(*counter)>=2);",
+            "counter[-1]=0x12345678;",
+            "counter[-2]+=1;",
+        )
+        and "k<=c->ram_len/sizeof(*ctr)" in data_words
+        and "imm<=c->ram_len/sizeof(*counter)" in data_words
+        and "4u*imm" not in code
+        and "4u*k" not in code
+    )
+
+
+review_require(
+    "C2",
+    apf_tail_bounds_are_overflow_safe(apf_v6_exec),
+    "C2 APF tail-counter bounds can wrap or omit fixed-tail minimum RAM",
+)
+c2_wrapped_passdrop = re.sub(
+    r"imm\s*<=\s*c->ram_len\s*/\s*sizeof\(\*counter\)",
+    "sizeof(*counter) * imm <= c->ram_len",
+    apf_v6_exec,
+    count=1,
+)
+review_require(
+    "C2",
+    not apf_tail_bounds_are_overflow_safe(c2_wrapped_passdrop),
+    "C2 APF counter invariant accepts a multiplication-wrap mutation",
+)
+c2_fixed_tail_unguarded = re.sub(
+    r"V6_ASSERT_RET\(c->ram_len\s*/\s*sizeof\(\*counter\)\s*>=\s*2\s*\);",
+    "",
+    apf_v6_exec,
+    count=1,
+)
+review_require(
+    "C2",
+    not apf_tail_bounds_are_overflow_safe(c2_fixed_tail_unguarded),
+    "C2 APF counter invariant accepts unguarded fixed tail writes",
+)
+
+
+def apf_packet_scratch_is_private(
+    body: str, ctx_header: str, init_body: str, free_body: str
+) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    header_code = c_code(ctx_header)
+    lifecycle = c_code(init_body + free_body)
+    first_ctx_lock = code.find("spin_lock_irqsave(&ctx->lock,flags_ctx);")
+    first_ctx_unlock = code.find(
+        "spin_unlock_irqrestore(&ctx->lock,flags_ctx);", first_ctx_lock
+    )
+    run = code.find("v6r=apf_run(")
+    second_ctx_lock = code.find(
+        "spin_lock_irqsave(&ctx->lock,flags_ctx);", first_ctx_lock + 1
+    )
+    second_ctx_unlock = code.find(
+        "spin_unlock_irqrestore(&ctx->lock,flags_ctx);", second_ctx_lock
+    )
+    cleanup = code.rfind("done:")
+    return (
+        "tmp_ram" not in header_code
+        and "shim_buf" not in header_code
+        and "tmp_ram" not in lifecycle
+        and "shim_buf" not in lifecycle
+        and "tmp=kmalloc(ram_len,GFP_ATOMIC);" in code
+        and "shim_buf=kmalloc(shim_len,GFP_ATOMIC);" in code
+        and "tmp=ctx->" not in code
+        and "shim_buf=ctx->" not in code
+        and min(first_ctx_lock, first_ctx_unlock, run,
+                second_ctx_lock, second_ctx_unlock, cleanup) >= 0
+        and first_ctx_lock < first_ctx_unlock < run
+        and run < second_ctx_lock < second_ctx_unlock < cleanup
+        and "apf_run(" not in code[first_ctx_lock:first_ctx_unlock]
+        and "apf_run(" not in code[second_ctx_lock:second_ctx_unlock]
+        and "spin_lock" not in re.sub(r"\s+", "", c_code(apf_v6_exec))
+        and code.count("kfree(tmp);") == 1
+        and code.count("kfree(shim_buf);") == 1
+        and code.find("kfree(tmp);", cleanup) > cleanup
+        and code.find("kfree(shim_buf);", cleanup) > cleanup
+    )
+
+
+review_require(
+    "I1",
+    apf_packet_scratch_is_private(
+        apf_filter_packet, cfg80211_util_h, apf_init_ctx, apf_free_ctx
+    ),
+    "I1 APF packet execution shares mutable scratch or spans execution with a spinlock",
+)
+i1_shared_ram = apf_filter_packet.replace(
+    "tmp = kmalloc(ram_len, GFP_ATOMIC);", "tmp = ctx->tmp_ram;", 1
+)
+review_require(
+    "I1",
+    not apf_packet_scratch_is_private(
+        i1_shared_ram, cfg80211_util_h, apf_init_ctx, apf_free_ctx
+    ),
+    "I1 APF scratch invariant accepts shared context RAM",
+)
+i1_tmp_cleanup_removed = apf_filter_packet.replace("kfree(tmp);", "", 1)
+review_require(
+    "I1",
+    not apf_packet_scratch_is_private(
+        i1_tmp_cleanup_removed, cfg80211_util_h, apf_init_ctx, apf_free_ctx
+    ),
+    "I1 APF scratch invariant accepts a missing per-packet cleanup",
+)
+
+
+def apf_tx_cleanup_has_final_owner(run_body: str, exec_body: str) -> bool:
+    run_code = re.sub(r"\s+", "", c_code(run_body))
+    exec_code = re.sub(r"\s+", "", c_code(exec_body))
+    allocate = exec_code.find("c->tx_buf=kmalloc(")
+    exception_after_allocate = exec_code.find(
+        "returnAPF_V6_EXCEPTION;", allocate
+    )
+    transmit_free = exec_code.rfind("kfree(c->tx_buf);")
+    transmit_null = exec_code.find("c->tx_buf=NULL;", transmit_free)
+    return (
+        allocate >= 0
+        and exception_after_allocate > allocate
+        and transmit_free > allocate
+        and transmit_null > transmit_free
+        and ordered(
+            run_code,
+            "result=apf_v6_exec(&c);",
+            "kfree(c.tx_buf);",
+            "returnresult;",
+        )
+        and run_code.count("kfree(c.tx_buf);") == 1
+        and "returnapf_v6_exec(&c);" not in run_code
+    )
+
+
+review_require(
+    "I2",
+    apf_tx_cleanup_has_final_owner(apf_run, apf_v6_exec),
+    "I2 APF TX buffer lacks one final cleanup owner after executor returns",
+)
+i2_final_cleanup_removed = apf_run.replace("kfree(c.tx_buf);", "", 1)
+review_require(
+    "I2",
+    not apf_tx_cleanup_has_final_owner(i2_final_cleanup_removed, apf_v6_exec),
+    "I2 APF TX cleanup invariant accepts allocate-then-exception leakage",
+)
+i2_transmit_null_removed = replace_nth(
+    apf_v6_exec, "c->tx_buf = NULL;", "", 0
+)
+review_require(
+    "I2",
+    not apf_tx_cleanup_has_final_owner(apf_run, i2_transmit_null_removed),
+    "I2 APF TX cleanup invariant accepts a TRANSMIT double-free mutation",
+)
+
+
+def apf_icmpv6_checksum_is_bounded(helper_body: str, exec_body: str) -> bool:
+    helper = re.sub(r"\s+", "", c_code(helper_body))
+    executor = re.sub(r"\s+", "", c_code(exec_body))
+    checksum_call = executor.find(
+        "csum_valid=apf_icmpv6_csum(c->tx_buf,tx_len,&csum);"
+    )
+    transmit = executor.find("dev_queue_xmit(")
+    return (
+        ordered(
+            helper,
+            "if(!pkt||!csum)",
+            "if(len<ETH_HLEN+40)",
+            "ip6=pkt+ETH_HLEN;",
+            "plen=(ip6[4]<<8)|ip6[5];",
+            "if(plen<8||plen>len-(ETH_HLEN+40))",
+            "icmp=ip6+40;",
+            "*csum=(u16)(~sum);",
+            "returntrue;",
+        )
+        and checksum_call >= 0
+        and transmit > checksum_call
+        and "V6_ASSERT_RET(csum_valid);" in executor[checksum_call:transmit]
+    )
+
+
+review_require(
+    "I3",
+    apf_icmpv6_checksum_is_bounded(apf_icmpv6_csum, apf_v6_exec),
+    "I3 APF ICMPv6 checksum trusts malformed advertised payload length",
+)
+i3_payload_bound_removed = re.sub(
+    r"plen\s*>\s*len\s*-\s*\(ETH_HLEN\s*\+\s*40\)",
+    "false",
+    apf_icmpv6_csum,
+    count=1,
+)
+review_require(
+    "I3",
+    not apf_icmpv6_checksum_is_bounded(i3_payload_bound_removed, apf_v6_exec),
+    "I3 APF checksum invariant accepts oversized IPv6 payload mutation",
+)
+i3_icmp_minimum_removed = re.sub(
+    r"plen\s*<\s*8\s*\|\|", "", apf_icmpv6_csum, count=1
+)
+review_require(
+    "I3",
+    not apf_icmpv6_checksum_is_bounded(i3_icmp_minimum_removed, apf_v6_exec),
+    "I3 APF checksum invariant accepts undersized ICMPv6 payload mutation",
+)
+
+
+def android_makefile_uses_normalized_truth(source: str) -> bool:
+    code = re.sub(r"(?m)#.*$", "", source)
+    code = re.sub(r"\s+", "", code)
+    normalized = (
+        "ANDROID_BUILD_ENABLED:=$(if$(filter1yes,$(strip$(ANDROID_BUILD))),yes,no)"
+    )
+    predicate = "ifeq($(ANDROID_BUILD_ENABLED),yes)"
+    return (
+        normalized in code
+        and code.count(predicate) == 2
+        and "ifeq($(ANDROID_BUILD)," not in code
+        and code.find(normalized) < code.find(predicate)
+    )
+
+
+def android_make_values(value: str) -> dict[str, str]:
+    wrapper = f"""include {ROOT / 'Makefile'}
+.PHONY: print-android-qa
+print-android-qa:
+\t@echo enabled=$(ANDROID_BUILD_ENABLED)
+\t@echo xdp=$(CONFIG_XDP_SUPPORT)
+\t@echo android=$(filter -DANDROID,$(KERNEL_CFLAGS))
+\t@echo sdk=$(filter -DANDROID_SDK_VERSION=34,$(ccflags-y))
+\t@echo xdpflag=$(filter -DXDP_SUPPORT,$(ccflags-y))
+"""
+    result = subprocess.run(
+        [
+            "make", "-s", "-f", "-", "print-android-qa",
+            f"ANDROID_BUILD={value}", "ANDROID_SDK_VERSION=34",
+            "CONFIG_PCIEAW693=y", "KERNELRELEASE=qa",
+        ],
+        cwd=ROOT,
+        input=wrapper,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        return {"error": result.stderr.strip() or f"make exit {result.returncode}"}
+    return dict(line.split("=", 1) for line in result.stdout.splitlines())
+
+
+def android_make_matrix_is_compatible() -> bool:
+    yes = android_make_values("yes")
+    one = android_make_values("1")
+    no = android_make_values("no")
+    return (
+        yes == one
+        and yes == {
+            "enabled": "yes",
+            "xdp": "n",
+            "android": "-DANDROID",
+            "sdk": "-DANDROID_SDK_VERSION=34",
+            "xdpflag": "",
+        }
+        and no == {
+            "enabled": "no",
+            "xdp": "y",
+            "android": "",
+            "sdk": "",
+            "xdpflag": "-DXDP_SUPPORT",
+        }
+    )
+
+
+review_require(
+    "I4",
+    android_makefile_uses_normalized_truth(makefile),
+    "I4 Makefile does not use one normalized Android truth predicate",
+)
+review_require(
+    "I4",
+    android_make_matrix_is_compatible(),
+    "I4 Android yes/1 flags or PCIEAW693 XDP override differ",
+)
+i4_direct_predicate = makefile.replace(
+    "ifeq ($(ANDROID_BUILD_ENABLED),yes)", "ifeq ($(ANDROID_BUILD),yes)", 1
+)
+review_require(
+    "I4",
+    not android_makefile_uses_normalized_truth(i4_direct_predicate),
+    "I4 Android invariant accepts a direct truth-value predicate",
+)
+
+
+def sae_password_snapshot_is_bounded(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    set_snapshot = code.find("sae_password_len=strlen(end);")
+    ioctl = code.find("status=woal_request_ioctl(")
+    get_guard = code.find(
+        "if(req->action==MLAN_ACT_GET&&"
+        "sec->param.passphrase.psk_type==MLAN_PSK_SAE_PASSWORD)"
+    )
+    response_reset = code.find("memset(respbuf,0,respbuflen);")
+    get_snapshot = code[get_guard:response_reset]
+    response = code[response_reset:]
+    return (
+        min(set_snapshot, ioctl, get_guard, response_reset) >= 0
+        and set_snapshot < ioctl < get_guard < response_reset
+        and ordered(
+            code[set_snapshot:ioctl],
+            "sae_password_len=strlen(end);",
+            "moal_memcpy_ext(priv->phandle,sae_password,end,sae_password_len,sizeof(sae_password)-1);",
+            "sae_password[sae_password_len]=;",
+        )
+        and "sae_password_len=MIN(sec->param.passphrase.psk.sae_password.sae_password_len,MLAN_MAX_SAE_PASSWORD_LENGTH);" in get_snapshot
+        and ordered(
+            get_snapshot,
+            "moal_memcpy_ext(",
+            "sae_password,",
+            "sec->param.passphrase.psk.sae_password.sae_password,",
+            "sae_password_len,",
+            "sizeof(sae_password)-1);",
+            "sae_password[sae_password_len]=;",
+        )
+        and "scnprintf(respbuf+len,respbuflen-len," in response
+        and "sae_password" in response
+    )
+
+
+review_require(
+    "I5",
+    sae_password_snapshot_is_bounded(passphrase_ioctl),
+    "I5 SAE SET/GET response does not snapshot bounded post-validation data",
+)
+i5_set_terminator_removed = passphrase_ioctl.replace(
+    "sae_password[sae_password_len] = '\\0';", "", 1
+)
+review_require(
+    "I5",
+    not sae_password_snapshot_is_bounded(i5_set_terminator_removed),
+    "I5 SAE invariant accepts an unterminated SET snapshot",
+)
+i5_get_clamp_removed = re.sub(
+    r"MIN\(\s*sec->param\.passphrase\.psk\.sae_password\.sae_password_len\s*,"
+    r"\s*MLAN_MAX_SAE_PASSWORD_LENGTH\s*\)",
+    "sec->param.passphrase.psk.sae_password.sae_password_len",
+    passphrase_ioctl,
+    count=1,
+)
+review_require(
+    "I5",
+    not sae_password_snapshot_is_bounded(i5_get_clamp_removed),
+    "I5 SAE invariant accepts an unclamped GET response length",
+)
 
 require("spinlock_t urb_submit_lock;" in usb_h,
         "USB card lacks the submit/stop serialization lock")
@@ -954,7 +1396,16 @@ def sdio_oob_gpio_mapping_is_compatible(body: str) -> bool:
     body = body.replace('"nxp,wifi-oob-int"', "NXP_WIFI_OOB_INT")
     body = body.replace('"nxp,wifi-wake-host"', "NXP_WIFI_WAKE_HOST")
     code = c_code(body)
+    compact = re.sub(r"\s+", "", code)
+    fallback_is_guarded = re.search(
+        r"if\(!node\)(?:\{)?"
+        r"node=of_find_compatible_node\(NULL,NULL,NXP_WIFI_WAKE_HOST\);"
+        r"(?:\})?",
+        compact,
+    ) is not None
     return (
+        fallback_is_guarded
+        and
         ordered(
             code,
             "of_find_compatible_node(NULL, NULL, NXP_WIFI_OOB_INT)",
@@ -992,6 +1443,19 @@ for old, new, label in (
         not sdio_oob_gpio_mapping_is_compatible(mutation),
         f"SDIO OOB GPIO invariant accepts missing {label}",
     )
+
+detached_gpio_fallback = sdio_request_gpio.replace(
+    'if (!node)\n\t\tnode = of_find_compatible_node(NULL, NULL, '
+    '"nxp,wifi-wake-host");',
+    'if (!node)\n\t\t;\n\tnode = of_find_compatible_node(NULL, NULL, '
+    '"nxp,wifi-wake-host");',
+    1,
+)
+review_require(
+    "M1",
+    not sdio_oob_gpio_mapping_is_compatible(detached_gpio_fallback),
+    "M1 SDIO OOB invariant accepts a detached unconditional fallback",
+)
 
 
 require(

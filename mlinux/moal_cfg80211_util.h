@@ -527,11 +527,6 @@ struct woal_apf_ctx {
 	u32 prog_size; /* last installed program length */
 	u32 gen; /* increments on every install */
 
-	/* Pre-allocated buffers for performance */
-	u8 *tmp_ram; /* temp buffer for packet processing */
-	u8 *shim_buf; /* pre-allocated L2 header shim buffer */
-	u32 shim_buf_len; /* size of shim buffer */
-
 	ktime_t installed_at; /* for FILTER_AGE_SECONDS */
 	u32 pkts_since_install; /* NEW: counts packets after install */
 	/* simple mode flags for CTS: */

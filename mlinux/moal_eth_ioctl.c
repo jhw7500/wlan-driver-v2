@@ -2812,6 +2812,7 @@ static int woal_setget_priv_passphrase(moal_private *priv, t_u8 *respbuf,
 	t_u8 *mac = NULL;
 	mlan_status status = MLAN_STATUS_SUCCESS;
 	t_u8 sae_password[MLAN_MAX_SAE_PASSWORD_LENGTH + 1] = {0};
+	t_u32 sae_password_len = 0;
 	ENTER();
 
 	if (!priv->phandle->card_info->embedded_supp) {
@@ -2920,26 +2921,19 @@ static int woal_setget_priv_passphrase(moal_private *priv, t_u8 *respbuf,
 				break;
 			}
 			sec->param.passphrase.psk_type = MLAN_PSK_SAE_PASSWORD;
-			moal_memcpy_ext(priv->phandle, sae_password,
-					sec->param.passphrase.psk.sae_password
-						.sae_password,
-					MLAN_MAX_SAE_PASSWORD_LENGTH,
-					MLAN_MAX_SAE_PASSWORD_LENGTH);
-			sae_password[MLAN_MAX_SAE_PASSWORD_LENGTH] = '\0';
+			sae_password_len = strlen(end);
 			moal_memcpy_ext(
 				priv->phandle,
-				sec->param.passphrase.psk.sae_password
-					.sae_password,
-				end,
-				sizeof(sec->param.passphrase.psk.sae_password
-					       .sae_password),
+				sec->param.passphrase.psk.sae_password.sae_password,
+				end, sae_password_len,
 				sizeof(sec->param.passphrase.psk.sae_password
 					       .sae_password));
 			sec->param.passphrase.psk.sae_password.sae_password_len =
-				strlen(end);
-			PRINTM(MINFO, "sae_password=%s, len=%d\n",
-			       sec->param.passphrase.psk.sae_password
-				       .sae_password,
+				sae_password_len;
+			moal_memcpy_ext(priv->phandle, sae_password, end,
+					sae_password_len, sizeof(sae_password) - 1);
+			sae_password[sae_password_len] = '\0';
+			PRINTM(MINFO, "sae_password=%s, len=%d\n", sae_password,
 			       (int)sec->param.passphrase.psk.sae_password
 				       .sae_password_len);
 		} else {
@@ -2960,6 +2954,17 @@ static int woal_setget_priv_passphrase(moal_private *priv, t_u8 *respbuf,
 	if (status != MLAN_STATUS_SUCCESS) {
 		ret = -EFAULT;
 		goto done;
+	}
+	if (req->action == MLAN_ACT_GET &&
+	    sec->param.passphrase.psk_type == MLAN_PSK_SAE_PASSWORD) {
+		sae_password_len = MIN(
+			sec->param.passphrase.psk.sae_password.sae_password_len,
+			MLAN_MAX_SAE_PASSWORD_LENGTH);
+		moal_memcpy_ext(
+			priv->phandle, sae_password,
+			sec->param.passphrase.psk.sae_password.sae_password,
+			sae_password_len, sizeof(sae_password) - 1);
+		sae_password[sae_password_len] = '\0';
 	}
 
 	memset(respbuf, 0, respbuflen);
@@ -2991,9 +2996,10 @@ static int woal_setget_priv_passphrase(moal_private *priv, t_u8 *respbuf,
 		len += snprintf(
 			respbuf + len, CMD_BUF_LEN, "passphrase:%s\n",
 			sec->param.passphrase.psk.passphrase.passphrase);
-	if (sec->param.passphrase.psk_type == MLAN_PSK_SAE_PASSWORD)
-		len += snprintf(respbuf + len, CMD_BUF_LEN, "sae_password:%s\n",
-				sae_password);
+	if (sec->param.passphrase.psk_type == MLAN_PSK_SAE_PASSWORD &&
+	    len < respbuflen)
+		len += scnprintf(respbuf + len, respbuflen - len,
+				 "sae_password:%s\n", sae_password);
 
 	ret = len;
 done:
