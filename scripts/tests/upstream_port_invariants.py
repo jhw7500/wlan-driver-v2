@@ -102,6 +102,7 @@ eth_ioctl_c = read("mlinux/moal_eth_ioctl.c")
 pcie_c = read("mlinux/moal_pcie.c")
 sdio_h = read("mlinux/moal_sdio.h")
 sdio_c = read("mlinux/moal_sdio_mmc.c")
+sdio_request_gpio = c_function(sdio_c, "static int woal_request_gpio")
 mlan_misc_c = read("mlan/mlan_misc.c")
 mlan_decl = read("mlan/mlan_decl.h")
 moal_decl = read("mlinux/mlan_decl.h")
@@ -947,6 +948,50 @@ def sdio_source_flag_tracks_disable_result(body: str) -> bool:
 
 def sdio_oob_resume_uses_drained_token(body: str) -> bool:
     return "enable_irq(card->oob_irq)" not in c_code(body)
+
+
+def sdio_oob_gpio_mapping_is_compatible(body: str) -> bool:
+    body = body.replace('"nxp,wifi-oob-int"', "NXP_WIFI_OOB_INT")
+    body = body.replace('"nxp,wifi-wake-host"', "NXP_WIFI_WAKE_HOST")
+    code = c_code(body)
+    return (
+        ordered(
+            code,
+            "of_find_compatible_node(NULL, NULL, NXP_WIFI_OOB_INT)",
+            "if (!node)",
+            "of_find_compatible_node(NULL, NULL, NXP_WIFI_WAKE_HOST)",
+            "if (!node)",
+            "return -ENODEV",
+            "irq = irq_of_parse_and_map(node, 0)",
+            "of_node_put(node)",
+            "if (!irq)",
+            "return -ENXIO",
+            "card->oob_irq = irq",
+            "return 0",
+        )
+        and code.count("NXP_WIFI_OOB_INT") == 1
+        and code.count("NXP_WIFI_WAKE_HOST") == 1
+    )
+
+
+require(
+    sdio_oob_gpio_mapping_is_compatible(sdio_request_gpio),
+    "SDIO OOB GPIO lookup lacks preferred/fallback mapping hygiene",
+)
+
+for old, new, label in (
+    ('node = of_find_compatible_node(NULL, NULL, "nxp,wifi-oob-int");',
+     "node = NULL;", "preferred binding"),
+    ('node = of_find_compatible_node(NULL, NULL, "nxp,wifi-wake-host");',
+     "node = NULL;", "board fallback"),
+    ("if (!irq)\n\t\treturn -ENXIO;", "", "zero IRQ rejection"),
+    ("of_node_put(node);", "", "DT node release"),
+):
+    mutation = sdio_request_gpio.replace(old, new, 1)
+    require(
+        not sdio_oob_gpio_mapping_is_compatible(mutation),
+        f"SDIO OOB GPIO invariant accepts missing {label}",
+    )
 
 
 require(

@@ -742,12 +742,19 @@ static int woal_request_gpio(sdio_mmc_card *card, t_u8 oob_gpio)
 {
 #if defined(IMX_SUPPORT)
 	struct device_node *node;
+	int irq;
 
 	node = of_find_compatible_node(NULL, NULL, "nxp,wifi-oob-int");
 	if (!node)
-		return -1;
-	card->oob_irq = irq_of_parse_and_map(node, 0);
-	PRINTM(MMSG, "SDIO OOB IRQ: %d", card->oob_irq);
+		node = of_find_compatible_node(NULL, NULL, "nxp,wifi-wake-host");
+	if (!node)
+		return -ENODEV;
+	irq = irq_of_parse_and_map(node, 0);
+	of_node_put(node);
+	if (!irq)
+		return -ENXIO;
+	card->oob_irq = irq;
+	PRINTM(MMSG, "SDIO OOB IRQ: %d\n", card->oob_irq);
 	return 0;
 #else
 	return -1;
