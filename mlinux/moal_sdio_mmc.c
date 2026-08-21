@@ -538,6 +538,43 @@ static int oob_sdio_irq_unregister(sdio_mmc_card *card)
 }
 
 /**
+ * @brief Detach all software owners after terminal hardware cleanup fails.
+ *
+ * This is a last-resort lifetime barrier.  Normal teardown must disable the
+ * function source first; terminal callers use this only after function
+ * disable/reset/retry could not prove the device source quiet.  Keeping the
+ * action or ordered queue alive would let either dereference a freed card.
+ */
+static void woal_sdio_force_detach_irq(sdio_mmc_card *card)
+{
+	struct workqueue_struct *workqueue;
+	struct sdio_func *func;
+	bool registered;
+
+	if (!card || !card->func)
+		return;
+	func = card->func;
+
+	WRITE_ONCE(card->sdio_func_intr_enabled, MFALSE);
+	registered = xchg(&card->irq_registered, MFALSE) == MTRUE;
+	if (registered)
+		synchronize_irq(card->oob_irq);
+	workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
+	if (workqueue)
+		flush_workqueue(workqueue);
+	woal_sdio_oob_irq_release(card);
+	func->irq_handler = NULL;
+	if (registered) {
+		disable_irq_wake(card->oob_irq);
+		devm_free_irq(&func->dev, card->oob_irq, card);
+	}
+	if (workqueue) {
+		WRITE_ONCE(card->sdio_oob_irq_workqueue, NULL);
+		destroy_workqueue(workqueue);
+	}
+}
+
+/**
  *  @brief This function enable interrupt in SDIO Func0 SDIO_CCCR_IENx
  *
  *  @param func    a pointer to struct sdio_func
@@ -1981,10 +2018,12 @@ static void woal_sdiommc_unregister_dev(moal_handle *handle)
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 		if (ext_intmode && oob_ret) {
 			oob_ret = woal_sdio_release_irq(card);
-			if (oob_ret)
+			if (oob_ret) {
 				PRINTM(MFATAL,
-				       "OOB unregister retry failed: ret=%d\n",
+				       "OOB unregister retry failed; force software detach: ret=%d\n",
 				       oob_ret);
+				woal_sdio_force_detach_irq(card);
+			}
 		}
 #endif
 
@@ -2020,6 +2059,14 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 	func = card->func;
 	sdio_claim_host(func);
 
+	/* Finish fallible bus setup before exposing either IRQ action. */
+	ret = sdio_set_block_size(card->func, handle->sdio_blk_size);
+	if (ret) {
+		PRINTM(MERROR,
+		       "sdio_set_block_seize(): cannot set SDIO block size\n");
+		goto release_host;
+	}
+
 	/* Request the SDIO IRQ */
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
 	if (moal_extflg_isset(handle, EXT_INTMODE)) {
@@ -2037,15 +2084,9 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 			release_ret = woal_sdio_release_irq(card);
 			if (release_ret) {
 				PRINTM(MFATAL,
-				       "OOB source cleanup failed; quarantine card: ret=%d\n",
+				       "OOB source cleanup failed; force software detach: ret=%d\n",
 				       release_ret);
-				/* A retained action/WQ still dereferences card and handle.
-				 * Keep the SDIO driver bound so remove can retry terminal
-				 * cleanup instead of entering the normal free unwind.
-				 */
-				sdio_set_drvdata(func, card);
-				LEAVE();
-				return MLAN_STATUS_PENDING;
+				woal_sdio_force_detach_irq(card);
 			}
 			handle->card = NULL;
 			LEAVE();
@@ -2075,32 +2116,11 @@ static mlan_status woal_sdiommc_register_dev(moal_handle *handle)
 		goto release_host;
 	}
 
-	/* Set block size */
-	ret = sdio_set_block_size(card->func, handle->sdio_blk_size);
-	if (ret) {
-		PRINTM(MERROR,
-		       "sdio_set_block_seize(): cannot set SDIO block size\n");
-		ret = MLAN_STATUS_FAILURE;
-		goto release_irq;
-	}
-
 	sdio_release_host(func);
 	sdio_set_drvdata(func, card);
 
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
-
-release_irq:
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)
-	if (moal_extflg_isset(handle, EXT_INTMODE)) {
-		sdio_release_host(func);
-		woal_sdio_release_irq(card);
-		handle->card = NULL;
-		LEAVE();
-		return MLAN_STATUS_FAILURE;
-	} else
-#endif
-		sdio_release_irq(func);
 release_host:
 	sdio_release_host(func);
 	handle->card = NULL;

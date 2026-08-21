@@ -177,6 +177,9 @@ sdio_oob_interrupt = c_function(sdio_c, "static irqreturn_t oob_sdio_irq")
 sdio_oob_unregister = c_function(
     sdio_c, "static int oob_sdio_irq_unregister"
 )
+sdio_oob_force_detach = c_function(
+    sdio_c, "static void woal_sdio_force_detach_irq"
+)
 sdio_oob_register = c_function(
     sdio_c, "static int oob_sdio_irq_register"
 )
@@ -219,6 +222,7 @@ for name, body in (
     ("SDIO OOB interrupt", sdio_oob_interrupt),
     ("SDIO OOB register", sdio_oob_register),
     ("SDIO OOB unregister", sdio_oob_unregister),
+    ("SDIO OOB forced detach", sdio_oob_force_detach),
     ("SDIO function interrupt disable", sdio_func_intr_disable),
     ("SDIO OOB release", sdio_release_irq),
     ("SDIO OOB claim", sdio_claim_irq),
@@ -750,15 +754,36 @@ def sdio_oob_claim_retains_ambiguous_source(body: str) -> bool:
     )
 
 
+def sdio_oob_force_detach_drains_software_owners(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return ordered(
+        code,
+        "WRITE_ONCE(card->sdio_func_intr_enabled,MFALSE);",
+        "registered=xchg(&card->irq_registered,MFALSE)==MTRUE;",
+        "synchronize_irq(card->oob_irq);",
+        "flush_workqueue(workqueue);",
+        "woal_sdio_oob_irq_release(card);",
+        "devm_free_irq(&func->dev,card->oob_irq,card);",
+        "WRITE_ONCE(card->sdio_oob_irq_workqueue,NULL);",
+        "destroy_workqueue(workqueue);",
+    )
+
+
 def sdio_claim_error_is_released_after_host(body: str) -> bool:
     code = re.sub(r"\s+", "", c_code(body))
     claim = code.find("ret=woal_sdio_claim_irq(card,woal_sdio_interrupt);")
     if claim < 0:
         return False
-    block_size = code.find("sdio_set_block_size", claim)
-    if block_size < 0:
+    tail = code[claim:]
+    return_markers = [
+        (tail.find(marker), marker)
+        for marker in ("returnMLAN_STATUS_FAILURE;", "return;")
+        if tail.find(marker) >= 0
+    ]
+    if not return_markers:
         return False
-    tail = code[claim:block_size]
+    failure_return, marker = min(return_markers)
+    tail = tail[:failure_return + len(marker)]
     error_check = tail.find("if(ret)")
     return (
         error_check >= 0 and
@@ -773,35 +798,62 @@ def sdio_claim_error_is_released_after_host(body: str) -> bool:
     )
 
 
-def sdio_register_quarantines_cleanup_failure(body: str) -> bool:
+def sdio_register_sets_block_size_before_irq(body: str) -> bool:
     code = re.sub(r"\s+", "", c_code(body))
-    return ordered(
-        code,
-        "release_ret=woal_sdio_release_irq(card);",
-        "if(release_ret){",
-        "sdio_set_drvdata(func,card);",
-        "returnMLAN_STATUS_PENDING;",
-        "handle->card=NULL;",
-        "returnMLAN_STATUS_FAILURE;",
+    block_size = code.find(
+        "ret=sdio_set_block_size(card->func,handle->sdio_blk_size);"
+    )
+    oob_claim = code.find(
+        "ret=woal_sdio_claim_irq(card,woal_sdio_interrupt);"
+    )
+    inband_claim = code.find(
+        "ret=sdio_claim_irq(func,woal_sdio_interrupt);"
+    )
+    return (
+        block_size >= 0 and
+        block_size < oob_claim and
+        block_size < inband_claim and
+        "gotorelease_irq;" not in code and
+        "release_irq:" not in code
     )
 
 
-def add_card_preserves_sdio_quarantine(body: str) -> bool:
+def sdio_register_detaches_cleanup_failure(body: str) -> bool:
     code = re.sub(r"\s+", "", c_code(body))
-    return ordered(
-        code,
-        "status=handle->ops.register_dev(handle);",
-        "if(status==MLAN_STATUS_PENDING&&IS_SD(handle->card_type)){",
-        "handle->driver_status=MTRUE;",
-        "handle->hardware_status=HardwareStatusNotReady;",
-        "MOAL_REL_SEMAPHORE(&AddRemoveCardSem);",
-        "returnhandle;",
-        "if(status!=MLAN_STATUS_SUCCESS)",
-        "gotoerr_registerdev;",
+    start = code.find("release_ret=woal_sdio_release_irq(card);")
+    end = code.find("returnMLAN_STATUS_FAILURE;", start)
+    if start < 0 or end < 0:
+        return False
+    cleanup = code[start:end + len("returnMLAN_STATUS_FAILURE;")]
+    return (
+        ordered(
+            cleanup,
+            "release_ret=woal_sdio_release_irq(card);",
+            "if(release_ret){",
+            "woal_sdio_force_detach_irq(card);",
+            "handle->card=NULL;",
+            "returnMLAN_STATUS_FAILURE;",
+        ) and
+        "returnMLAN_STATUS_PENDING;" not in cleanup and
+        "sdio_set_drvdata(func,card);" not in cleanup
     )
 
 
-def sdio_unregister_retries_after_function_disable(body: str) -> bool:
+def add_card_rejects_register_failure(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    return (
+        ordered(
+            code,
+            "status=handle->ops.register_dev(handle);",
+            "if(status!=MLAN_STATUS_SUCCESS)",
+            "gotoerr_registerdev;",
+        ) and
+        "status==MLAN_STATUS_PENDING&&IS_SD(handle->card_type)" not in code and
+        "QuarantineSDIOcard" not in code
+    )
+
+
+def sdio_unregister_detaches_after_terminal_retry(body: str) -> bool:
     code = re.sub(r"\s+", "", c_code(body))
     return ordered(
         code,
@@ -813,7 +865,10 @@ def sdio_unregister_retries_after_function_disable(body: str) -> bool:
         "WRITE_ONCE(card->sdio_func_intr_enabled,MFALSE);",
         "sdio_release_host(card->func);",
         "oob_ret=woal_sdio_release_irq(card);",
+        "if(oob_ret){",
+        "woal_sdio_force_detach_irq(card);",
         "sdio_set_drvdata(card->func,NULL);",
+        "card->handle=NULL;",
     )
 
 
@@ -946,20 +1001,28 @@ require(
     "SDIO OOB claim frees an action after ambiguous source-enable failure",
 )
 require(
+    sdio_oob_force_detach_drains_software_owners(sdio_oob_force_detach),
+    "SDIO OOB forced detach can leave an IRQ action or workqueue owner live",
+)
+require(
     sdio_claim_error_is_released_after_host(sdio_register_dev),
     "SDIO register failure does not release an ambiguous OOB source after host unlock",
 )
 require(
-    sdio_register_quarantines_cleanup_failure(sdio_register_dev),
-    "SDIO register cleanup failure enters normal card/handle unwind",
+    sdio_register_sets_block_size_before_irq(sdio_register_dev),
+    "SDIO register exposes an IRQ action before block-size setup can fail",
 )
 require(
-    add_card_preserves_sdio_quarantine(add_card),
-    "SDIO add-card cleanup frees a quarantined OOB action owner",
+    sdio_register_detaches_cleanup_failure(sdio_register_dev),
+    "SDIO register cleanup can retain action/WQ owners or quarantine status",
 )
 require(
-    sdio_unregister_retries_after_function_disable(sdio_unregister_dev),
-    "SDIO unregister does not retry retained OOB action cleanup after function disable",
+    add_card_rejects_register_failure(add_card),
+    "add-card overloads register pending as a partially initialized SDIO owner",
+)
+require(
+    sdio_unregister_detaches_after_terminal_retry(sdio_unregister_dev),
+    "SDIO unregister can free owners after terminal OOB retry failure",
 )
 require(
     sdio_claim_error_is_released_after_host(sdio_reset_hw),
@@ -1091,6 +1154,15 @@ require(
     ),
     "SDIO OOB claim invariant accepts missing ambiguous-source callback",
 )
+force_detach_action_removed = sdio_oob_force_detach.replace(
+    "devm_free_irq(&func->dev, card->oob_irq, card);", "", 1
+)
+require(
+    not sdio_oob_force_detach_drains_software_owners(
+        force_detach_action_removed
+    ),
+    "SDIO forced-detach invariant accepts a retained IRQ action",
+)
 register_claim_cleanup_removed = sdio_register_dev.replace(
     "release_ret = woal_sdio_release_irq(card);", "release_ret = 0;", 1
 )
@@ -1100,32 +1172,39 @@ require(
     ),
     "SDIO register invariant accepts missing ambiguous-source cleanup",
 )
-register_quarantine_return_removed = sdio_register_dev.replace(
-    "return MLAN_STATUS_PENDING;", "return MLAN_STATUS_FAILURE;", 1
+register_block_size_removed = sdio_register_dev.replace(
+    "ret = sdio_set_block_size(card->func, handle->sdio_blk_size);", "", 1
 )
 require(
-    not sdio_register_quarantines_cleanup_failure(
-        register_quarantine_return_removed
-    ),
-    "SDIO register invariant accepts normal unwind after cleanup failure",
+    not sdio_register_sets_block_size_before_irq(register_block_size_removed),
+    "SDIO register invariant accepts missing pre-IRQ block-size setup",
 )
-add_card_quarantine_owner_removed = add_card.replace(
-    "return handle;", "return NULL;", 1
+register_force_detach_removed = sdio_register_dev.replace(
+    "woal_sdio_force_detach_irq(card);", "", 1
 )
 require(
-    not add_card_preserves_sdio_quarantine(
-        add_card_quarantine_owner_removed
+    not sdio_register_detaches_cleanup_failure(
+        register_force_detach_removed
     ),
-    "SDIO add-card invariant accepts dropping quarantined owner lifetime",
+    "SDIO register invariant accepts a retained action after cleanup failure",
 )
-unregister_retry_removed = sdio_unregister_dev.replace(
-    "oob_ret = woal_sdio_release_irq(card);", "oob_ret = 0;", 2
+add_card_register_unwind_removed = add_card.replace(
+    "goto err_registerdev;", "", 1
 )
 require(
-    not sdio_unregister_retries_after_function_disable(
-        unregister_retry_removed
+    not add_card_rejects_register_failure(
+        add_card_register_unwind_removed
     ),
-    "SDIO unregister invariant accepts missing retained-action retry",
+    "add-card invariant accepts a register failure without normal unwind",
+)
+unregister_force_detach_removed = sdio_unregister_dev.replace(
+    "woal_sdio_force_detach_irq(card);", "", 1
+)
+require(
+    not sdio_unregister_detaches_after_terminal_retry(
+        unregister_force_detach_removed
+    ),
+    "SDIO unregister invariant accepts owner free after retry failure",
 )
 reset_claim_cleanup_removed = sdio_reset_hw.replace(
     "(void)woal_sdio_release_irq(card);", "", 1
