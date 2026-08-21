@@ -746,8 +746,6 @@ static int woal_request_gpio(sdio_mmc_card *card, t_u8 oob_gpio)
 
 	node = of_find_compatible_node(NULL, NULL, "nxp,wifi-oob-int");
 	if (!node)
-		node = of_find_compatible_node(NULL, NULL, "nxp,wifi-wake-host");
-	if (!node)
 		return -ENODEV;
 	irq = irq_of_parse_and_map(node, 0);
 	of_node_put(node);

@@ -1488,25 +1488,13 @@ def sdio_oob_resume_uses_drained_token(body: str) -> bool:
     return "enable_irq(card->oob_irq)" not in c_code(body)
 
 
-def sdio_oob_gpio_mapping_is_compatible(body: str) -> bool:
+def sdio_oob_gpio_mapping_is_transport_specific(body: str) -> bool:
     body = body.replace('"nxp,wifi-oob-int"', "NXP_WIFI_OOB_INT")
-    body = body.replace('"nxp,wifi-wake-host"', "NXP_WIFI_WAKE_HOST")
     code = c_code(body)
-    compact = re.sub(r"\s+", "", code)
-    fallback_is_guarded = re.search(
-        r"if\(!node\)(?:\{)?"
-        r"node=of_find_compatible_node\(NULL,NULL,NXP_WIFI_WAKE_HOST\);"
-        r"(?:\})?",
-        compact,
-    ) is not None
     return (
-        fallback_is_guarded
-        and
         ordered(
             code,
             "of_find_compatible_node(NULL, NULL, NXP_WIFI_OOB_INT)",
-            "if (!node)",
-            "of_find_compatible_node(NULL, NULL, NXP_WIFI_WAKE_HOST)",
             "if (!node)",
             "return -ENODEV",
             "irq = irq_of_parse_and_map(node, 0)",
@@ -1517,40 +1505,50 @@ def sdio_oob_gpio_mapping_is_compatible(body: str) -> bool:
             "return 0",
         )
         and code.count("NXP_WIFI_OOB_INT") == 1
-        and code.count("NXP_WIFI_WAKE_HOST") == 1
+        and code.count("of_find_compatible_node(") == 1
+        and '"nxp,wifi-wake-host"' not in body
     )
 
 
 require(
-    sdio_oob_gpio_mapping_is_compatible(sdio_request_gpio),
-    "SDIO OOB GPIO lookup lacks preferred/fallback mapping hygiene",
+    sdio_oob_gpio_mapping_is_transport_specific(sdio_request_gpio),
+    "SDIO transport IRQ lookup aliases the suspend-only wake binding",
 )
 
 for old, new, label in (
     ('node = of_find_compatible_node(NULL, NULL, "nxp,wifi-oob-int");',
      "node = NULL;", "preferred binding"),
-    ('node = of_find_compatible_node(NULL, NULL, "nxp,wifi-wake-host");',
-     "node = NULL;", "board fallback"),
     ("if (!irq)\n\t\treturn -ENXIO;", "", "zero IRQ rejection"),
     ("of_node_put(node);", "", "DT node release"),
 ):
     mutation = sdio_request_gpio.replace(old, new, 1)
     require(
-        not sdio_oob_gpio_mapping_is_compatible(mutation),
+        not sdio_oob_gpio_mapping_is_transport_specific(mutation),
         f"SDIO OOB GPIO invariant accepts missing {label}",
     )
 
-detached_gpio_fallback = sdio_request_gpio.replace(
+wake_binding_alias = sdio_request_gpio.replace(
+    'if (!node)\n\t\treturn -ENODEV;',
     'if (!node)\n\t\tnode = of_find_compatible_node(NULL, NULL, '
-    '"nxp,wifi-wake-host");',
-    'if (!node)\n\t\t;\n\tnode = of_find_compatible_node(NULL, NULL, '
-    '"nxp,wifi-wake-host");',
+    '"nxp,wifi-wake-host");\n\tif (!node)\n\t\treturn -ENODEV;',
     1,
 )
 review_require(
     "M1",
-    not sdio_oob_gpio_mapping_is_compatible(detached_gpio_fallback),
-    "M1 SDIO OOB invariant accepts a detached unconditional fallback",
+    not sdio_oob_gpio_mapping_is_transport_specific(wake_binding_alias),
+    "M1 SDIO transport invariant accepts the suspend-only wake binding",
+)
+
+unknown_binding_alias = sdio_request_gpio.replace(
+    'if (!node)\n\t\treturn -ENODEV;',
+    'if (!node)\n\t\tnode = of_find_compatible_node(NULL, NULL, '
+    '"vendor,other-irq");\n\tif (!node)\n\t\treturn -ENODEV;',
+    1,
+)
+review_require(
+    "M2",
+    not sdio_oob_gpio_mapping_is_transport_specific(unknown_binding_alias),
+    "M2 SDIO transport invariant accepts an unreviewed binding alias",
 )
 
 
