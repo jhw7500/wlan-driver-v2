@@ -792,10 +792,12 @@ static void woal_pcie_remove(struct pci_dev *dev)
 	if (card->handle)
 		WRITE_ONCE(card->handle->surprise_removed, MTRUE);
 	spin_unlock_bh(&card->reset_lock);
+	(void)woal_invalidate_deferred_pcie_reset(dev);
 	cancel_work_sync(&card->reset_work);
 	handle = card->handle;
 	if (!handle) {
 		PRINTM(MINFO, "PCIE card handle removed\n");
+		(void)woal_invalidate_deferred_pcie_reset(dev);
 		woal_pcie_cleanup(card);
 		kfree(card);
 		LEAVE();
@@ -811,6 +813,10 @@ static void woal_pcie_remove(struct pci_dev *dev)
 	woal_unregist_oob_wakeup_irq(card->handle);
 #endif /* IMX_SUPPORT */
 	woal_remove_card(card);
+	/* Close the queue-publication race with the first invalidation above:
+	 * proc admission may have held AddRemoveCardSem while remove started.
+	 */
+	(void)woal_invalidate_deferred_pcie_reset(dev);
 	woal_pcie_cleanup(card);
 	kfree(card);
 

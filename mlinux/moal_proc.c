@@ -925,6 +925,8 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	char *databuf = NULL;
 	char *line = NULL;
 	int ret = 0;
+	int handle_index;
+	bool card_sem_held = false;
 	gfp_t flag;
 
 	t_u32 config_data = 0;
@@ -943,14 +945,6 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	if (!MODULE_GET) {
 		LEAVE();
 		return 0;
-	}
-
-	if (handle->fw_reseting) {
-		PRINTM(MERROR,
-		       "Firmware reset in progress, ignore proc file write\n");
-		MODULE_PUT;
-		LEAVE();
-		return -EINVAL;
 	}
 
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
@@ -972,11 +966,44 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		MODULE_PUT;
 		kfree(databuf);
 		LEAVE();
-		return 0;
+		return -EFAULT;
 	}
 	databuf[count] = '\0';
+
+	/* Proc rundown waits for an admitted writer, while card teardown owns
+	 * AddRemoveCardSem.  Never join that wait cycle: either this callback
+	 * becomes the complete card-lifetime transaction, or it fails busy.
+	 */
+	if (MOAL_ACQ_SEMAPHORE_NOBLOCK(&AddRemoveCardSem)) {
+		MODULE_PUT;
+		kfree(databuf);
+		LEAVE();
+		return -EBUSY;
+	}
+	card_sem_held = true;
+	for (handle_index = 0; handle_index < MAX_MLAN_ADAPTER;
+	     handle_index++)
+		if (m_handle[handle_index] == handle)
+			break;
+	if (handle_index == MAX_MLAN_ADAPTER ||
+	    READ_ONCE(driver_exit_in_progress) ||
+	    READ_ONCE(handle->surprise_removed) || handle->fw_reseting ||
+	    !handle->driver_init
+#ifdef PCIE
+	    || (IS_PCIE(handle->card_type) &&
+		woal_deferred_pcie_reset_pending(handle))
+#endif
+	) {
+		PRINTM(MERROR,
+		       "Card teardown or firmware reset in progress, ignore proc file write\n");
+		ret = -EBUSY;
+		goto done;
+	}
+
 	line = databuf;
-	if (!strncmp(databuf, "soft_reset", strlen("soft_reset"))) {
+	if (count > strlen("soft_reset") &&
+	    !strncmp(databuf, "soft_reset", strlen("soft_reset")) &&
+	    databuf[strlen("soft_reset")] == '=') {
 		line += strlen("soft_reset") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		PRINTM(MINFO, "soft_reset: %d\n", (int)config_data);
@@ -985,12 +1012,14 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		else
 			PRINTM(MERROR, "Could not perform soft reset\n");
 	}
-	if (!strncmp(databuf, "drv_mode", strlen("drv_mode"))) {
+	if (count > strlen("drv_mode") &&
+	    !strncmp(databuf, "drv_mode", strlen("drv_mode")) &&
+	    databuf[strlen("drv_mode")] == '=') {
 		line += strlen("drv_mode") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		PRINTM(MINFO, "drv_mode: %d\n", (int)config_data);
 		if (config_data != (t_u32)handle->params.drv_mode)
-			if (woal_switch_drv_mode(handle, config_data) !=
+			if (woal_switch_drv_mode_locked(handle, config_data) !=
 			    MLAN_STATUS_SUCCESS) {
 				PRINTM(MERROR, "Could not switch drv mode\n");
 				ret = -EIO;
@@ -1061,7 +1090,7 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 			config_data = FW_RELOAD_SDIO_INBAND_RESET;
 #endif
 		PRINTM(MMSG, "Request fw_reload=%d\n", config_data);
-		ret = woal_request_fw_reload(handle, config_data);
+		ret = woal_request_fw_reload_from_proc(handle, config_data);
 	}
 	if (!strncmp(databuf, "drop_point=", strlen("drop_point="))) {
 		line += strlen("drop_point") + 1;
@@ -1100,7 +1129,9 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		PRINTM(MCMND, "hssetpara=%s\n", line);
 		woal_process_proc_hssetpara(handle, line);
 	}
-	if (!strncmp(databuf, "rf_test_mode", strlen("rf_test_mode"))) {
+	if (count > strlen("rf_test_mode") &&
+	    !strncmp(databuf, "rf_test_mode", strlen("rf_test_mode")) &&
+	    databuf[strlen("rf_test_mode")] == '=') {
 		line += strlen("rf_test_mode") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		PRINTM(MINFO, "RF test mode: %d\n", (int)config_data);
@@ -1186,12 +1217,18 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	if (cmd && !handle->rf_test_mode)
 		PRINTM(MERROR, "RF test mode is disabled\n");
 
-	if (!strncmp(databuf, "antcfg", strlen("antcfg"))) {
+	if (count > strlen("antcfg") &&
+	    !strncmp(databuf, "antcfg", strlen("antcfg")) &&
+	    databuf[strlen("antcfg")] == '=') {
 		line += strlen("antcfg") + 1;
 		if (woal_priv_set_tx_rx_ant(handle, line) !=
 		    MLAN_STATUS_SUCCESS)
 			PRINTM(MERROR, "Could not set Antenna Diversity!!\n");
 	}
+
+done:
+	if (card_sem_held)
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	MODULE_PUT;
 	kfree(databuf);
 	LEAVE();

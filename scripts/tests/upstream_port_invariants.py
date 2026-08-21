@@ -76,8 +76,39 @@ tx_submit = c_function(usb_c, "mlan_status woal_write_data_async")
 unlink = c_function(usb_c, "static void woal_usb_unlink_urb")
 resubmit = c_function(usb_c, "mlan_status woal_resubmit_urbs")
 remove_card = c_function(main_c, "mlan_status woal_remove_card")
+free_handle = c_function(main_c, "void woal_free_moal_handle")
 post_reset = c_function(main_c, "static int woal_post_reset")
-fw_reload = c_function(main_c, "int woal_request_fw_reload")
+fw_reload = c_function(main_c, "static int woal_request_fw_reload_internal")
+switch_drv_mode_locked = c_function(
+    main_c, "mlan_status woal_switch_drv_mode_locked"
+)
+switch_drv_mode_internal = c_function(
+    main_c, "static mlan_status woal_switch_drv_mode_internal"
+)
+fw_reload_from_proc = c_function(
+    main_c, "int woal_request_fw_reload_from_proc"
+)
+deferred_pcie_reset = c_function(
+    main_c, "static void woal_deferred_pcie_reset"
+)
+hang_worker = c_function(main_c, "static void woal_hang_work_queue")
+process_hang = c_function(main_c, "void woal_process_hang")
+deferred_pcie_pending = c_function(
+    main_c, "bool woal_deferred_pcie_reset_pending"
+)
+fw_reload_from_hang = c_function(
+    main_c, "static int woal_request_fw_reload_from_hang"
+)
+queue_deferred_pcie_reset = c_function(
+    main_c, "static int woal_queue_deferred_pcie_reset"
+)
+invalidate_deferred_pcie_reset = c_function(
+    main_c, "bool woal_invalidate_deferred_pcie_reset"
+)
+deferred_pcie_target_trylock = c_function(
+    main_c, "static bool woal_deferred_pcie_target_trylock"
+)
+pcie_remove = c_function(pcie_c, "static void woal_pcie_remove")
 reset_intf = c_function(main_c, "mlan_status woal_reset_intf")
 config_write = c_function(proc_c, "static ssize_t woal_config_write")
 
@@ -100,12 +131,21 @@ require(monitor_start >= 0 and monitor_end >= 0 and
 require("goto done" not in monitor_cleanup,
         "monitor stop failure can still bypass mandatory radiotap netdev cleanup")
 for operation in ("woal_cancel_scan(", "woal_get_bss_info(",
-                  "woal_cancel_hs(", "woal_disconnect("):
+                  "woal_cancel_hs("):
     operation_pos = reset_intf.find(operation)
     failure_tail = reset_intf[operation_pos:operation_pos + 700]
     require(operation_pos >= 0 and
             ordered(failure_tail, operation, "if (!gated)", "goto done;"),
             f"{operation[:-1]} failure does not continue teardown only on the gated path")
+disconnect_positions = [match.start() for match in
+                        re.finditer(r"\bwoal_disconnect\(", reset_intf)]
+require(len(disconnect_positions) == 2,
+        "interface reset no longer has both single/all-interface disconnect paths")
+for index, operation_pos in enumerate(disconnect_positions, start=1):
+    failure_tail = reset_intf[operation_pos:operation_pos + 700]
+    require(ordered(failure_tail, "woal_disconnect(", "if (!gated)",
+                    "goto done;"),
+            f"disconnect path {index} can abort gated teardown")
 require(ordered(reset_intf, "memset(&bss_info, 0, sizeof(bss_info));",
                 "woal_get_bss_info(", "if (bss_info.is_hs_configured)"),
         "gated interface reset can consume uninitialized BSS information")
@@ -114,19 +154,163 @@ require(ordered(post_reset, "handle->driver_status = MFALSE;",
                 "handle->hardware_status = HardwareStatusReady;",
                 "moal_bridge_pending_invalidate_handle(handle)"),
         "post-reset rebuild starts before the IOCTL/hardware gates are reopened")
+require(ordered(free_handle, "if (handle->is_tp_acnt_timer_set)",
+                "woal_cancel_timer(&handle->tp_acnt.timer)",
+                "handle->is_tp_acnt_timer_set = MFALSE", "kfree(handle)"),
+        "terminal handle free does not synchronously stop TP accounting")
 
-fw_reset_guard = re.search(
-    r"if\s*\(handle->fw_reseting\)\s*\{(?P<body>.*?)\n\t\}",
-    config_write,
-    re.DOTALL,
-)
-require(fw_reset_guard is not None and
-        "MODULE_PUT" in fw_reset_guard.group("body"),
+require(ordered(config_write,
+                "READ_ONCE(handle->surprise_removed) || handle->fw_reseting",
+                "ret = -EBUSY;", "goto done;", "done:",
+                "MOAL_REL_SEMAPHORE(&AddRemoveCardSem)", "MODULE_PUT;"),
         "firmware-reset rejection leaks the config writer's module reference")
 require(ordered(config_write, "if (!count || count > PAGE_SIZE)",
                 "databuf = kzalloc(count + 1, flag);",
                 "databuf[count] = '\\0';"),
         "config writes are not bounded and NUL terminated before parsing")
+copy_failure = re.search(
+    r"if\s*\(copy_from_user\(databuf, buf, count\)\)\s*\{"
+    r"(?P<body>.*?)\n\t\}",
+    config_write,
+    re.DOTALL,
+)
+require(copy_failure is not None and
+        "return -EFAULT;" in copy_failure.group("body"),
+        "config user-copy fault is not reported as -EFAULT")
+require(ordered(config_write, "copy_from_user(databuf, buf, count)",
+                "MOAL_ACQ_SEMAPHORE_NOBLOCK(&AddRemoveCardSem)",
+                "handle->fw_reseting", "!handle->driver_init",
+                "woal_deferred_pcie_reset_pending(handle)",
+                "woal_switch_drv_mode_locked(handle, config_data)",
+                "woal_request_fw_reload_from_proc(handle, config_data)",
+                "MOAL_REL_SEMAPHORE(&AddRemoveCardSem)"),
+        "config writes can wait behind or race card teardown")
+require(switch_drv_mode_locked and
+        "MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)" not in
+        switch_drv_mode_locked,
+        "proc driver-mode switching recursively acquires the card semaphore")
+require(ordered(switch_drv_mode_internal, "handle->fw_reseting",
+                "handle->driver_status", "goto exit;"),
+        "driver-mode switching lacks a post-ownership terminal gate")
+require(ordered(fw_reload, "READ_ONCE(phandle->surprise_removed)",
+                "phandle->fw_reseting", "phandle->driver_status",
+                "goto done;"),
+        "generic firmware reload lacks a post-ownership terminal gate")
+require(ordered(fw_reload_from_proc,
+                "woal_request_fw_reload_internal(phandle, mode, MTRUE, MTRUE)"),
+        "proc firmware reload does not preserve caller-owned card serialization")
+require(ordered(deferred_pcie_reset, "wait_for_completion(&reset->published)",
+                "cancelled = reset->cancelled", "if (cancelled)",
+                "device_trylock(&reset->peer_pdev->dev)",
+                "woal_deferred_pcie_target_trylock(reset->pdev)",
+                "cancelled = reset->cancelled",
+                "reset->pdev->driver != reset->driver",
+                "pci_reset_function_locked(reset->pdev)",
+                "woal_deferred_pcie_target_unlock(reset->pdev)",
+                "device_unlock(&reset->peer_pdev->dev)",
+                "list_del_init(&reset->pending)",
+                "pci_dev_put(reset->peer_pdev)",
+                "pci_dev_put(reset->pdev)", "kfree(reset)"),
+        "proc-triggered PCIe FLR is not deferred beyond proc callback rundown")
+require("struct pci_driver *driver;" in main_c and
+        "bool cancelled;" in main_c and
+        all(needle in invalidate_deferred_pcie_reset for needle in
+            ("pending->pdev == pdev", "pending->key_pdev == pdev",
+             "pending->peer_pdev == pdev", "pending->cancelled = true",
+             "wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL")) and
+        ordered(pcie_remove, "card->reset_stopping = true",
+                "woal_invalidate_deferred_pcie_reset(dev)",
+                "cancel_work_sync(&card->reset_work)",
+                "woal_remove_card(card)",
+                "woal_invalidate_deferred_pcie_reset(dev)",
+                "woal_pcie_cleanup(card)") and
+        "pci_dev_trylock(pdev)" in deferred_pcie_target_trylock and
+        "pci_cfg_access_trylock(pdev)" in deferred_pcie_target_trylock and
+        "device_trylock(&pdev->dev)" in deferred_pcie_target_trylock,
+        "deferred PCIe FLR can survive unbind or reset a replacement binding")
+require(ordered(queue_deferred_pcie_reset,
+                "reset->driver = pdev->driver", "if (!reset->driver)",
+                "list_for_each_entry(pending",
+                "return -EBUSY;", "list_add_tail(&reset->pending",
+                "queue_work(hang_workqueue, &reset->work)",
+                "woal_send_auto_recovery_start_event(event_handle)",
+                "spin_lock_irqsave(&deferred_pcie_reset_lock",
+                "if (!reset->cancelled)",
+                "wifi_status = WIFI_STATUS_FW_RELOAD",
+                "spin_unlock_irqrestore(&deferred_pcie_reset_lock",
+                "complete(&reset->published)"),
+        "queued PCIe FLR lacks a canonical DBDC pending gate")
+stale_error = deferred_pcie_reset.find("if (ret)")
+stale_cleanup = deferred_pcie_reset.find(
+    "spin_lock_irqsave(&deferred_pcie_reset_lock", stale_error
+)
+require(stale_error >= 0 and stale_cleanup > stale_error and
+        ordered(deferred_pcie_reset[stale_error:],
+                "spin_lock_irqsave(&deferred_pcie_reset_lock",
+                "if (reset->cancelled)", "stale = true",
+                "if (!stale)",
+                "wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL",
+                "spin_unlock_irqrestore(&deferred_pcie_reset_lock") and
+        "if (!stale)" not in
+        deferred_pcie_reset[stale_error:stale_cleanup],
+        "cancelled deferred FLR can overwrite a successful replacement binding")
+require("if (!(defer_pcie_reset && mode == FW_RELOAD_PCIE_RESET))" in
+        fw_reload,
+        "rejected deferred PCIe FLR can publish a false recovery-start event")
+legacy_flr_guard = fw_reload.find(
+    "#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0)"
+)
+legacy_flr_reject = fw_reload.find("return -EOPNOTSUPP;", legacy_flr_guard)
+recovery_start = fw_reload.find("woal_send_auto_recovery_start_event(handle)")
+require(legacy_flr_guard >= 0 and legacy_flr_reject > legacy_flr_guard and
+        recovery_start > legacy_flr_reject,
+        "PCIe mode-4 can reset without locked reset callbacks on old kernels")
+require('alloc_ordered_workqueue("MOAL_HANG_WORK_QUEUE"' in main_c,
+        "deferred PCIe FLR workqueue is not explicitly ordered")
+auto_reload = hang_worker[hang_worker.find("if (auto_fw_reload)"):]
+auto_handoff = auto_reload.find("woal_request_fw_reload_from_hang(")
+auto_release = auto_reload.find("MOAL_REL_SEMAPHORE(&AddRemoveCardSem)")
+require(ordered(hang_worker, "woal_deferred_pcie_reset_pending(handle)",
+                "woal_clean_up(handle)",
+                "woal_request_fw_reload_from_hang(") and
+        auto_handoff >= 0 and auto_release > auto_handoff and
+        "woal_request_fw_reload_deferred(" not in auto_reload and
+        ordered(fw_reload_from_hang,
+                "woal_request_fw_reload_internal(phandle, mode, MTRUE, MTRUE)"),
+        "automatic recovery can dereference an unpinned handle or bypass "
+        "canonical deferred-reset admission")
+require(ordered(auto_reload, "if (ret)",
+                "woal_deferred_pcie_reset_pending(handle)",
+                "if (!recovery_owned)", "moal_bridge_deinit(handle)",
+                "wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL",
+                "handle->driver_status = MTRUE",
+                "handle->hardware_status = HardwareStatusNotReady",
+                "handle->fw_reseting = MTRUE",
+                "woal_send_auto_recovery_failure_event(handle)",
+                "if (ref_handle)",
+                "MOAL_REL_SEMAPHORE(&AddRemoveCardSem)"),
+        "automatic handoff failure can leave a cleaned adapter non-terminal")
+require(ordered(process_hang, "woal_deferred_pcie_reset_pending(handle)",
+                "reset_handle = handle") and
+        all(needle in deferred_pcie_pending for needle in
+            ("pending->pdev == pdev", "pending->key_pdev == pdev",
+             "pending->peer_pdev == pdev")),
+        "hang publication can queue behind an already accepted DBDC FLR")
+deferred_call = fw_reload.find("ret = woal_queue_deferred_pcie_reset(")
+deferred_return = fw_reload.find("return ret;", deferred_call)
+require(deferred_call >= 0 and deferred_return > deferred_call and
+        "wifi_status = previous_wifi_status;" not in
+        fw_reload[deferred_call:deferred_return],
+        "deferred admission failure can overwrite active recovery status")
+for keyword in ("soft_reset", "drv_mode", "rf_test_mode", "antcfg"):
+    delimited_parser = re.search(
+        rf'if\s*\(\s*count\s*>\s*strlen\("{keyword}"\)\s*&&\s*'
+        rf'!strncmp\(databuf,\s*"{keyword}",\s*strlen\("{keyword}"\)\)\s*'
+        rf'&&\s*databuf\[strlen\("{keyword}"\)\]\s*==\s*\'=\'\s*\)',
+        config_write,
+    )
+    require(delimited_parser is not None,
+            f"exact or malformed {keyword} write can advance beyond its value buffer")
 for keyword, minimum in (("tx_antenna", "tx_antenna"),
                          ("rx_antenna", "rx_antenna"),
                          ("radio_mode", "radio_mode="),
@@ -193,6 +377,9 @@ require("[DBG-RXDROP]" not in bridge_c and "[DBG-RXDROP]" not in shim_c,
         "production RXDROP printk markers remain enabled")
 require("void woal_rx_acct_max(atomic_long_t *max, long us);" in main_h,
         "woal_rx_acct_max lacks a shared prototype")
+require("bool woal_deferred_pcie_reset_pending(moal_handle *handle);" in
+        main_h,
+        "config writers cannot observe an accepted deferred PCIe FLR")
 require("extern void woal_rx_acct_max" not in sdio_c,
         "SDIO retains a file-local extern for woal_rx_acct_max")
 require(re.search(r"static mlan_status woal_do_flr\s*\(", pcie_c) is None,

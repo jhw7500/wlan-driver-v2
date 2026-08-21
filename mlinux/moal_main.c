@@ -1026,6 +1026,230 @@ static int woal_bpf(struct net_device *dev, struct netdev_bpf *xdp);
 static moal_handle *reset_handle;
 /** Hang workqueue */
 static struct workqueue_struct *hang_workqueue;
+static int woal_request_fw_reload_from_hang(moal_handle *phandle, t_u8 mode);
+#ifdef PCIE
+struct woal_deferred_pcie_reset {
+	struct work_struct work;
+	struct list_head pending;
+	struct completion published;
+	struct pci_dev *pdev;
+	struct pci_dev *key_pdev;
+	struct pci_dev *peer_pdev;
+	struct pci_driver *driver;
+	bool cancelled;
+};
+static LIST_HEAD(deferred_pcie_resets);
+static DEFINE_SPINLOCK(deferred_pcie_reset_lock);
+
+/* The caller supplies a currently live callback handle.  Pending entries own
+ * all pci_dev references, so pointer comparison remains valid under the list
+ * lock without retaining any moal/card pointer in deferred work.
+ */
+bool woal_deferred_pcie_reset_pending(moal_handle *handle)
+{
+	struct woal_deferred_pcie_reset *pending;
+	pcie_service_card *card;
+	struct pci_dev *pdev;
+	unsigned long flags;
+	bool found = false;
+
+	if (!handle || !handle->card)
+		return false;
+	card = (pcie_service_card *)handle->card;
+	pdev = READ_ONCE(card->dev);
+	if (!pdev)
+		return false;
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	list_for_each_entry(pending, &deferred_pcie_resets, pending) {
+		if (pending->pdev == pdev || pending->key_pdev == pdev ||
+		    pending->peer_pdev == pdev) {
+			found = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	return found;
+}
+
+bool woal_invalidate_deferred_pcie_reset(struct pci_dev *pdev)
+{
+	struct woal_deferred_pcie_reset *pending;
+	unsigned long flags;
+	bool invalidated = false;
+
+	if (!pdev)
+		return false;
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	list_for_each_entry(pending, &deferred_pcie_resets, pending) {
+		if ((pending->pdev == pdev || pending->key_pdev == pdev ||
+		     pending->peer_pdev == pdev) &&
+		    !pending->cancelled) {
+			pending->cancelled = true;
+			invalidated = true;
+		}
+	}
+	if (invalidated)
+		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	return invalidated;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
+static bool woal_deferred_pcie_target_trylock(struct pci_dev *pdev)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+	return pci_dev_trylock(pdev);
+#else
+	if (!pci_cfg_access_trylock(pdev))
+		return false;
+	if (device_trylock(&pdev->dev))
+		return true;
+	pci_cfg_access_unlock(pdev);
+#endif
+	return false;
+}
+
+static void woal_deferred_pcie_target_unlock(struct pci_dev *pdev)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+	pci_dev_unlock(pdev);
+#else
+	device_unlock(&pdev->dev);
+	pci_cfg_access_unlock(pdev);
+#endif
+}
+#endif
+
+static void woal_deferred_pcie_reset(struct work_struct *work)
+{
+	struct woal_deferred_pcie_reset *reset =
+		container_of(work, struct woal_deferred_pcie_reset, work);
+	unsigned long flags;
+	bool peer_locked = false;
+	bool cancelled;
+	bool stale = false;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
+	bool target_locked = false;
+#endif
+	int ret;
+
+	wait_for_completion(&reset->published);
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	cancelled = reset->cancelled;
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	if (cancelled) {
+		stale = true;
+		ret = -ECANCELED;
+		goto done;
+	}
+	if (reset->peer_pdev && reset->peer_pdev != reset->pdev) {
+		if (!device_trylock(&reset->peer_pdev->dev)) {
+			ret = -EAGAIN;
+			goto done;
+		}
+		peer_locked = true;
+	}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
+	if (!woal_deferred_pcie_target_trylock(reset->pdev)) {
+		ret = -EAGAIN;
+		goto done;
+	}
+	target_locked = true;
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	cancelled = reset->cancelled;
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	if (cancelled || reset->pdev->driver != reset->driver ||
+	    !pci_get_drvdata(reset->pdev)) {
+		stale = true;
+		ret = -ESTALE;
+		goto done;
+	}
+	ret = pci_reset_function_locked(reset->pdev);
+#else
+	ret = -EOPNOTSUPP;
+#endif
+done:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
+	if (target_locked)
+		woal_deferred_pcie_target_unlock(reset->pdev);
+#endif
+	if (peer_locked)
+		device_unlock(&reset->peer_pdev->dev);
+	if (ret) {
+		PRINTM(MERROR, "%s: PCIe function reset failed: %d\n",
+		       __func__, ret);
+		spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+		if (reset->cancelled)
+			stale = true;
+		if (!stale)
+			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+		spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	}
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	list_del_init(&reset->pending);
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	if (reset->peer_pdev)
+		pci_dev_put(reset->peer_pdev);
+	pci_dev_put(reset->key_pdev);
+	pci_dev_put(reset->pdev);
+	kfree(reset);
+}
+
+/* Consumes all caller references only when queueing succeeds.  key_pdev is
+ * the canonical primary of a DBDC transaction and prevents primary/companion
+ * proc nodes from publishing overlapping FLRs.
+ */
+static int woal_queue_deferred_pcie_reset(struct pci_dev *pdev,
+					  struct pci_dev *key_pdev,
+					  struct pci_dev *peer_pdev,
+					  moal_handle *event_handle)
+{
+	struct woal_deferred_pcie_reset *reset;
+	struct woal_deferred_pcie_reset *pending;
+	unsigned long flags;
+
+	if (!hang_workqueue)
+		return -ESHUTDOWN;
+	reset = kzalloc(sizeof(*reset), GFP_KERNEL);
+	if (!reset)
+		return -ENOMEM;
+	reset->pdev = pdev;
+	reset->key_pdev = key_pdev;
+	reset->peer_pdev = peer_pdev;
+	reset->driver = pdev->driver;
+	if (!reset->driver) {
+		kfree(reset);
+		return -ENODEV;
+	}
+	INIT_LIST_HEAD(&reset->pending);
+	init_completion(&reset->published);
+	INIT_WORK(&reset->work, woal_deferred_pcie_reset);
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	list_for_each_entry(pending, &deferred_pcie_resets, pending) {
+		if (pending->key_pdev == key_pdev) {
+			spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+			kfree(reset);
+			return -EBUSY;
+		}
+	}
+	list_add_tail(&reset->pending, &deferred_pcie_resets);
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	if (!queue_work(hang_workqueue, &reset->work)) {
+		spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+		list_del_init(&reset->pending);
+		spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+		kfree(reset);
+		return -EBUSY;
+	}
+	woal_send_auto_recovery_start_event(event_handle);
+	spin_lock_irqsave(&deferred_pcie_reset_lock, flags);
+	if (!reset->cancelled)
+		wifi_status = WIFI_STATUS_FW_RELOAD;
+	spin_unlock_irqrestore(&deferred_pcie_reset_lock, flags);
+	complete(&reset->published);
+	return 0;
+}
+#endif
 /** Hang work */
 static struct work_struct hang_work;
 /** Serializes module-exit gate with hang work publication. */
@@ -1486,6 +1710,7 @@ static void woal_hang_work_queue(struct work_struct *work)
 	int auto_fw_reload;
 	t_u8 reload_mode = 0;
 	t_u16 card_type;
+	bool recovery_owned = false;
 
 	ENTER();
 	spin_lock_irqsave(&hang_work_lock, flags);
@@ -1517,6 +1742,20 @@ static void woal_hang_work_queue(struct work_struct *work)
 		return;
 	}
 
+#ifdef PCIE
+	/* A proc-triggered FLR may have been accepted after this hang work was
+	 * published. Do not tear down the same adapter before the ordered FLR
+	 * worker takes ownership of recovery.
+	 */
+	if (IS_PCIE(handle->card_type) &&
+	    woal_deferred_pcie_reset_pending(handle)) {
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+		woal_clear_hang_handle(handle);
+		LEAVE();
+		return;
+	}
+#endif
+
 	auto_fw_reload = handle->params.auto_fw_reload;
 	card_type = handle->card_type;
 	cfg80211_wext = handle->params.cfg80211_wext;
@@ -1536,10 +1775,9 @@ static void woal_hang_work_queue(struct work_struct *work)
 	woal_flush_workqueue(handle);
 
 	if (auto_fw_reload) {
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 		if (IS_SD(card_type)) {
 			PRINTM(MMSG, "WIFI auto_fw_reload: fw_reload=1\n");
-			ret = woal_request_fw_reload(
+			ret = woal_request_fw_reload_from_hang(
 				handle, FW_RELOAD_SDIO_INBAND_RESET);
 		}
 #ifdef PCIE
@@ -1548,25 +1786,47 @@ static void woal_hang_work_queue(struct work_struct *work)
 			    AUTO_FW_RELOAD_PCIE_PDN_FROM_USERSPACE) {
 				PRINTM(MMSG,
 				       "WIFI auto_fw_reload: fw_reload=7\n");
-				ret = woal_request_fw_reload(
+				ret = woal_request_fw_reload_from_hang(
 					handle,
 					FW_RELOAD_PCIE_PDN_FROM_USERSPACE);
 			} else if (auto_fw_reload &
 				   AUTO_FW_RELOAD_PCIE_INBAND_RESET) {
 				PRINTM(MMSG,
 				       "WIFI auto_fw_reload: fw_reload=6\n");
-				ret = woal_request_fw_reload(
+				ret = woal_request_fw_reload_from_hang(
 					handle, FW_RELOAD_PCIE_INBAND_RESET);
 			} else {
 				PRINTM(MMSG,
 				       "WIFI auto_fw_reload: fw_reload=4\n");
-				ret = woal_request_fw_reload(handle,
-							     FW_RELOAD_PCIE_RESET);
+				ret = woal_request_fw_reload_from_hang(
+					handle, FW_RELOAD_PCIE_RESET);
 			}
 		}
 #endif
-		if (ret)
+		if (ret) {
 			PRINTM(MERROR, "hang recovery handoff failed: %d\n", ret);
+#ifdef PCIE
+			if (IS_PCIE(card_type))
+				recovery_owned =
+					woal_deferred_pcie_reset_pending(handle);
+#endif
+			if (!recovery_owned) {
+				moal_bridge_deinit(handle);
+				wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
+				handle->driver_status = MTRUE;
+				handle->hardware_status = HardwareStatusNotReady;
+				handle->fw_reseting = MTRUE;
+				woal_send_auto_recovery_failure_event(handle);
+				if (ref_handle) {
+					moal_bridge_deinit(ref_handle);
+					ref_handle->driver_status = MTRUE;
+					ref_handle->hardware_status =
+						HardwareStatusNotReady;
+					ref_handle->fw_reseting = MTRUE;
+				}
+			}
+		}
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 		woal_clear_hang_handle(handle);
 		LEAVE();
 		return;
@@ -1644,6 +1904,14 @@ void woal_process_hang(moal_handle *handle)
 		LEAVE();
 		return;
 	}
+#ifdef PCIE
+	if (IS_PCIE(handle->card_type) &&
+	    woal_deferred_pcie_reset_pending(handle)) {
+		spin_unlock_irqrestore(&hang_work_lock, flags);
+		LEAVE();
+		return;
+	}
+#endif
 	if (reset_handle == NULL) {
 		PRINTM(MMSG, "Start to process hanging\n");
 		reset_handle = handle;
@@ -2956,6 +3224,15 @@ void woal_free_moal_handle(moal_handle *handle)
 	}
 #endif
 
+	/* TP accounting is initialized on demand and is not part of
+	 * woal_init_sw()'s timer inventory.  A reset-rebuild failure can arrive
+	 * here without the normal remove path, so make the final handle free its
+	 * synchronous cancellation barrier.
+	 */
+	if (handle->is_tp_acnt_timer_set) {
+		woal_cancel_timer(&handle->tp_acnt.timer);
+		handle->is_tp_acnt_timer_set = MFALSE;
+	}
 	if (handle->is_fw_dump_timer_set) {
 		woal_cancel_timer(&handle->fw_dump_timer);
 		handle->is_fw_dump_timer_set = MFALSE;
@@ -15907,7 +16184,9 @@ static mlan_status woal_drv_mode_resume_bus(moal_handle *handle)
  *  @return        MLAN_STATUS_SUCCESS /MLAN_STATUS_FAILURE
  * /MLAN_STATUS_PENDING
  */
-mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode)
+static mlan_status woal_switch_drv_mode_internal(moal_handle *handle,
+						 t_u32 mode,
+						 t_u8 card_sem_owned)
 {
 	unsigned int i;
 	mlan_status status = MLAN_STATUS_FAILURE;
@@ -15921,8 +16200,13 @@ mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode)
 
 	ENTER();
 
-	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
+	if (!card_sem_owned &&
+	    MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem))
 		goto exit_sem_err;
+	if (READ_ONCE(driver_exit_in_progress) ||
+	    READ_ONCE(handle->surprise_removed) || handle->fw_reseting ||
+	    handle->driver_status)
+		goto exit;
 
 	if (woal_update_drv_tbl(handle, mode) != MLAN_STATUS_SUCCESS) {
 		PRINTM(MERROR, "Could not update driver mode table!\n");
@@ -16094,7 +16378,8 @@ mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode)
 	if (status != MLAN_STATUS_SUCCESS)
 		goto exit;
 	handle->fw_reseting = MFALSE;
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	if (!card_sem_owned)
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 	return status;
 exit:
@@ -16126,10 +16411,21 @@ exit:
 		handle->hardware_status = HardwareStatusNotReady;
 		wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
 	}
-	MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+	if (!card_sem_owned)
+		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 exit_sem_err:
 	LEAVE();
 	return status;
+}
+
+mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode)
+{
+	return woal_switch_drv_mode_internal(handle, mode, MFALSE);
+}
+
+mlan_status woal_switch_drv_mode_locked(moal_handle *handle, t_u32 mode)
+{
+	return woal_switch_drv_mode_internal(handle, mode, MTRUE);
 }
 #endif
 
@@ -16526,7 +16822,9 @@ out:
  *
  *  @return        0--success, otherwise failure
  */
-int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
+static int woal_request_fw_reload_internal(moal_handle *phandle, t_u8 mode,
+					   t_u8 card_sem_owned,
+					   t_u8 defer_pcie_reset)
 {
 	int ret = 0;
 	int post_ret;
@@ -16541,7 +16839,13 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 
 #ifdef PCIE
 	ppcie_service_card card = NULL;
+	ppcie_service_card key_card = NULL;
+	ppcie_service_card peer_card = NULL;
 	struct pci_dev *pdev = NULL;
+	struct pci_dev *key_pdev = NULL;
+	struct pci_dev *peer_pdev = NULL;
+	moal_handle *key_handle = NULL;
+	moal_handle *peer_handle = NULL;
 #endif
 	moal_handle *handle = phandle;
 	moal_handle *ref_handle = NULL;
@@ -16551,6 +16855,18 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		LEAVE();
 		return -EINVAL;
 	}
+#ifdef PCIE
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0)
+	/* Deferred mode-4 requires reset callbacks to run while the target PCI
+	 * device lock is held.  Older kernels provide neither that callback
+	 * contract nor pci_reset_function_locked().
+	 */
+	if (mode == FW_RELOAD_PCIE_RESET) {
+		LEAVE();
+		return -EOPNOTSUPP;
+	}
+#endif
+#endif
 	if ((handle->params.indrstcfg & 0xff) == 1) {
 		if (mode == FW_RELOAD_SDIO_INBAND_RESET ||
 		    mode == FW_RELOAD_PCIE_RESET ||
@@ -16588,8 +16904,10 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 	}
 
 	previous_wifi_status = wifi_status;
-	woal_send_auto_recovery_start_event(handle);
-	wifi_status = WIFI_STATUS_FW_RELOAD;
+	if (!(defer_pcie_reset && mode == FW_RELOAD_PCIE_RESET)) {
+		woal_send_auto_recovery_start_event(handle);
+		wifi_status = WIFI_STATUS_FW_RELOAD;
+	}
 #ifdef PCIE
 	if (mode == FW_RELOAD_PCIE_RESET) {
 		/* Do not dereference the caller-provided handle until the global card
@@ -16597,7 +16915,8 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		 * released before the PCI reset helper: PCI reset callbacks acquire it
 		 * themselves.  A PCI-device reference pins the only object used after
 		 * that release while PCI core serializes reset against driver removal. */
-		if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
+		if (!card_sem_owned &&
+		    MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
 			LEAVE();
 			return -ERESTARTSYS;
 		}
@@ -16611,7 +16930,8 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		    !handle->card) {
 			PRINTM(MMSG,
 			       "Ignore fw reload, driver not initialized\n");
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 			LEAVE();
 			return -EFAULT;
 		}
@@ -16619,23 +16939,129 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		spin_lock_bh(&card->reset_lock);
 		if (card->reset_stopping) {
 			spin_unlock_bh(&card->reset_lock);
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 			LEAVE();
 			return -ESHUTDOWN;
 		}
 		spin_unlock_bh(&card->reset_lock);
 		if (!card->dev) {
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 			LEAVE();
 			return -ENODEV;
 		}
 		pdev = pci_dev_get(card->dev);
 		if (!pdev) {
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 			LEAVE();
 			return -ENODEV;
 		}
-		wifi_status = WIFI_STATUS_FW_RELOAD;
+		if (!defer_pcie_reset)
+			wifi_status = WIFI_STATUS_FW_RELOAD;
+		if (defer_pcie_reset) {
+			key_handle = handle;
+			if (handle->second_mac && handle->pref_mac)
+				key_handle = (moal_handle *)handle->pref_mac;
+			for (index = 0; index < MAX_MLAN_ADAPTER; index++)
+				if (m_handle[index] == key_handle)
+					break;
+			if (index == MAX_MLAN_ADAPTER ||
+			    READ_ONCE(key_handle->surprise_removed) ||
+			    key_handle->fw_reseting || !key_handle->driver_init ||
+			    !IS_PCIE(key_handle->card_type) || !key_handle->card) {
+				if (!card_sem_owned)
+					MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+				pci_dev_put(pdev);
+				LEAVE();
+				return -ENODEV;
+			}
+			key_card = (pcie_service_card *)key_handle->card;
+			spin_lock_bh(&key_card->reset_lock);
+			if (key_card->reset_stopping || !key_card->dev) {
+				spin_unlock_bh(&key_card->reset_lock);
+				if (!card_sem_owned)
+					MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+				pci_dev_put(pdev);
+				LEAVE();
+				return -ESHUTDOWN;
+			}
+			key_pdev = pci_dev_get(key_card->dev);
+			spin_unlock_bh(&key_card->reset_lock);
+			if (!key_pdev) {
+				if (!card_sem_owned)
+					MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+				pci_dev_put(pdev);
+				LEAVE();
+				return -ENODEV;
+			}
+			if (handle->pref_mac) {
+				peer_handle = (moal_handle *)handle->pref_mac;
+				for (index = 0; index < MAX_MLAN_ADAPTER; index++)
+					if (m_handle[index] == peer_handle)
+						break;
+				if (index == MAX_MLAN_ADAPTER ||
+				    READ_ONCE(peer_handle->surprise_removed) ||
+				    peer_handle->fw_reseting ||
+				    !peer_handle->driver_init ||
+				    !IS_PCIE(peer_handle->card_type) ||
+				    !peer_handle->card) {
+					if (!card_sem_owned)
+						MOAL_REL_SEMAPHORE(
+							&AddRemoveCardSem);
+					pci_dev_put(key_pdev);
+					pci_dev_put(pdev);
+					LEAVE();
+					return -ENODEV;
+				}
+				peer_card = (pcie_service_card *)peer_handle->card;
+				spin_lock_bh(&peer_card->reset_lock);
+				if (peer_card->reset_stopping || !peer_card->dev) {
+					spin_unlock_bh(&peer_card->reset_lock);
+					if (!card_sem_owned)
+						MOAL_REL_SEMAPHORE(
+							&AddRemoveCardSem);
+					pci_dev_put(key_pdev);
+					pci_dev_put(pdev);
+					LEAVE();
+					return -ESHUTDOWN;
+				}
+				peer_pdev = pci_dev_get(peer_card->dev);
+				spin_unlock_bh(&peer_card->reset_lock);
+				if (!peer_pdev) {
+					if (!card_sem_owned)
+						MOAL_REL_SEMAPHORE(
+							&AddRemoveCardSem);
+					pci_dev_put(key_pdev);
+					pci_dev_put(pdev);
+					LEAVE();
+					return -ENODEV;
+				}
+			}
+			ret = woal_queue_deferred_pcie_reset(
+				pdev, key_pdev, peer_pdev, handle);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (ret) {
+				if (peer_pdev)
+					pci_dev_put(peer_pdev);
+				pci_dev_put(key_pdev);
+				pci_dev_put(pdev);
+			} else
+				PRINTM(MMSG,
+				       "PCIe FLR accepted for asynchronous execution\n");
+			LEAVE();
+			return ret;
+		}
+		/* PCI callbacks recursively acquire AddRemoveCardSem.  Only the
+		 * deferred proc path may arrive with caller-owned serialization.
+		 */
+		if (card_sem_owned) {
+			pci_dev_put(pdev);
+			LEAVE();
+			return -EDEADLK;
+		}
 		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 		/* The try variant prevents a hot-remove callback which already owns
 		 * the PCI device lock from deadlocking in cancel_work_sync(hang_work). */
@@ -16655,7 +17081,8 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		LEAVE();
 		return ret;
 	} else if (mode == FW_RELOAD_PCIE_INBAND_RESET) {
-		if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
+		if (!card_sem_owned &&
+		    MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
 			LEAVE();
 			return -ERESTARTSYS;
 		}
@@ -16669,14 +17096,16 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		    !handle->ops.card_reset) {
 			PRINTM(MMSG,
 			       "Ignore fw reload, driver not initialized\n");
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 			LEAVE();
 			return -EFAULT;
 		}
 		wifi_status = WIFI_STATUS_FW_RELOAD;
 		ret = handle->ops.card_reset(handle) == MLAN_STATUS_SUCCESS ?
 			      0 : -EBUSY;
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+		if (!card_sem_owned)
+			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 		if (ret)
 			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
 		LEAVE();
@@ -16690,7 +17119,8 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 #endif
 #ifdef SDIO
 	if (mode == FW_RELOAD_SDIO_INBAND_RESET) {
-		if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
+		if (!card_sem_owned &&
+		    MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
 			LEAVE();
 			return -ERESTARTSYS;
 		}
@@ -16704,14 +17134,16 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		    !handle->ops.card_reset) {
 			PRINTM(MMSG,
 			       "Ignore fw reload, driver not initialized\n");
-			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+			if (!card_sem_owned)
+				MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 			LEAVE();
 			return -EFAULT;
 		}
 		wifi_status = WIFI_STATUS_FW_RELOAD;
 		ret = handle->ops.card_reset(handle) == MLAN_STATUS_SUCCESS ?
 			      0 : -EBUSY;
-		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
+		if (!card_sem_owned)
+			MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 		if (ret)
 			wifi_status = WIFI_STATUS_FW_RECOVERY_FAIL;
 		LEAVE();
@@ -16745,11 +17177,12 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 		return -EFAULT;
 	}
 #endif
-	if (MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
+	if (!card_sem_owned &&
+	    MOAL_ACQ_SEMAPHORE_BLOCK(&AddRemoveCardSem)) {
 		LEAVE();
 		return -ERESTARTSYS;
 	}
-	card_sem_held = true;
+	card_sem_held = !card_sem_owned;
 
 	/* Generic reload is one AddRemoveCardSem transaction.  Revalidate the
 	 * caller and its DBDC companion only after acquiring the semaphore: a
@@ -16761,7 +17194,9 @@ int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
 			break;
 		}
 	}
-	if (!phandle_registered) {
+	if (!phandle_registered || READ_ONCE(driver_exit_in_progress) ||
+	    READ_ONCE(phandle->surprise_removed) || phandle->fw_reseting ||
+	    phandle->driver_status) {
 		ret = -ENODEV;
 		goto done;
 	}
@@ -16891,6 +17326,21 @@ done:
 		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
 	LEAVE();
 	return ret;
+}
+
+int woal_request_fw_reload(moal_handle *phandle, t_u8 mode)
+{
+	return woal_request_fw_reload_internal(phandle, mode, MFALSE, MFALSE);
+}
+
+int woal_request_fw_reload_from_proc(moal_handle *phandle, t_u8 mode)
+{
+	return woal_request_fw_reload_internal(phandle, mode, MTRUE, MTRUE);
+}
+
+static int woal_request_fw_reload_from_hang(moal_handle *phandle, t_u8 mode)
+{
+	return woal_request_fw_reload_internal(phandle, mode, MTRUE, MTRUE);
 }
 
 /**
@@ -17055,8 +17505,8 @@ static int woal_init_module(void)
 #else
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)
 	hang_workqueue =
-		alloc_workqueue("MOAL_HANG_WORK_QUEUE",
-				WQ_HIGHPRI | WQ_MEM_RECLAIM | WQ_UNBOUND, 1);
+		alloc_ordered_workqueue("MOAL_HANG_WORK_QUEUE",
+					WQ_HIGHPRI | WQ_MEM_RECLAIM);
 #else
 	hang_workqueue = create_workqueue("MOAL_HANG_WORK_QUEUE");
 #endif

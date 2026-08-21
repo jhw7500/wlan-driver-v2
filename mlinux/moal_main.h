@@ -4388,6 +4388,8 @@ mlan_status woal_broadcast_event(moal_private *priv, t_u8 *payload, t_u32 len);
 #ifdef CONFIG_PROC_FS
 /** switch driver mode */
 mlan_status woal_switch_drv_mode(moal_handle *handle, t_u32 mode);
+/** switch driver mode while the caller owns AddRemoveCardSem */
+mlan_status woal_switch_drv_mode_locked(moal_handle *handle, t_u32 mode);
 #endif
 
 int woal_check_media_connected(t_void *pmoal);
@@ -4430,6 +4432,13 @@ mlan_status woal_set_get_gen_ie(moal_private *priv, t_u32 action,
 mlan_status woal_request_soft_reset(moal_handle *handle);
 #endif
 int woal_request_fw_reload(moal_handle *phandle, t_u8 mode);
+#ifdef PCIE
+bool woal_deferred_pcie_reset_pending(moal_handle *handle);
+bool woal_invalidate_deferred_pcie_reset(struct pci_dev *pdev);
+#endif
+#ifdef CONFIG_PROC_FS
+int woal_request_fw_reload_from_proc(moal_handle *phandle, t_u8 mode);
+#endif
 void woal_quiesce_reset_work(moal_handle *handle);
 void woal_cancel_hang_work(moal_handle *handle);
 
