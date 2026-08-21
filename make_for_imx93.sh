@@ -71,6 +71,11 @@ elif [ "$1" = "all" ]; then
     make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANEVENT_CFLAGS}"
 else
+    # mapp Makefiles do not track compiler/architecture changes.  Remove any
+    # host or other-target objects before the default cross-build so make
+    # cannot reuse an incompatible userspace executable.
+    make -C mapp/mlanutl clean
+    make -C mapp/mlanevent clean
     "$SCRIPT_DIR/scripts/obj_cache_swap.sh" imx93
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \

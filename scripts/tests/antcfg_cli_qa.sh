@@ -12,6 +12,10 @@ fail() {
 	exit 1
 }
 
+# mlanutl's flat object directory does not encode the compiler architecture.
+# A preceding target build may therefore leave aarch64 objects that host QA
+# cannot execute; establish a host-clean fixture before compiling the CLI.
+make -C "$ROOT/mapp/mlanutl" clean >/dev/null
 make -C "$ROOT/mapp/mlanutl" mlanutl >/dev/null
 
 cat >"$TMP/ioctl_capture.c" <<'EOF'
