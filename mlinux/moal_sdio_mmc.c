@@ -295,8 +295,9 @@ static void woal_sdio_interrupt(struct sdio_func *func)
 	}
 	spin_lock_bh(&card->reset_lock);
 	handle = card->handle;
-	if (!handle || card->drv_mode_quiesced || card->reset_stopping ||
-	    READ_ONCE(driver_exit_in_progress)) {
+	/* Module exit closes reset/hang producers before FUNC_SHUTDOWN.  Keep
+	 * command-response IRQs alive until remove closes the transport gate. */
+	if (!handle || card->drv_mode_quiesced) {
 		spin_unlock_bh(&card->reset_lock);
 		LEAVE();
 		return;
@@ -387,18 +388,14 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 	}
 
 	spin_lock_bh(&card->reset_lock);
-	producer_enabled = !card->drv_mode_quiesced &&
-			   !card->reset_stopping &&
-			   !READ_ONCE(driver_exit_in_progress) && card->func &&
+	producer_enabled = !card->drv_mode_quiesced && card->func &&
 			   card->func->card;
 	mmc_card = producer_enabled ? card->func->card : NULL;
 	spin_unlock_bh(&card->reset_lock);
 
 	for (i = 0; mmc_card && i < mmc_card->sdio_funcs; i++) {
 		spin_lock_bh(&card->reset_lock);
-		producer_enabled = !card->drv_mode_quiesced &&
-				   !card->reset_stopping &&
-				   !READ_ONCE(driver_exit_in_progress);
+		producer_enabled = !card->drv_mode_quiesced;
 		spin_unlock_bh(&card->reset_lock);
 		if (!producer_enabled)
 			break;
@@ -418,9 +415,7 @@ static void woal_sdio_oob_irq_work(struct work_struct *work)
 	 * Do not undo that terminal quiesce by re-enabling the shared GPIO IRQ
 	 * after the gate changed while this work item was running. */
 	spin_lock_bh(&card->reset_lock);
-	producer_enabled = !card->drv_mode_quiesced &&
-			   !card->reset_stopping &&
-			   !READ_ONCE(driver_exit_in_progress);
+	producer_enabled = !card->drv_mode_quiesced;
 	if (producer_enabled && card->irq_registered && !card->irq_enabled) {
 		card->irq_enabled = MTRUE;
 		reenable_irq = true;
@@ -447,8 +442,6 @@ static irqreturn_t oob_sdio_irq(int irq, void *dev_id)
 
 	workqueue = READ_ONCE(card->sdio_oob_irq_workqueue);
 	if (!READ_ONCE(card->drv_mode_quiesced) &&
-	    !READ_ONCE(card->reset_stopping) &&
-	    !READ_ONCE(driver_exit_in_progress) &&
 	    READ_ONCE(card->sdio_func_intr_enabled) &&
 	    READ_ONCE(card->irq_registered) && workqueue) {
 		disable_irq_nosync(card->oob_irq);
@@ -1128,6 +1121,7 @@ void woal_sdio_remove(struct sdio_func *func)
 			 * queues drained by woal_remove_card().  Stop it while card and
 			 * handle are still valid so it cannot race teardown or kfree. */
 			spin_lock_bh(&card->reset_lock);
+			WRITE_ONCE(card->drv_mode_quiesced, true);
 			card->reset_stopping = true;
 			spin_unlock_bh(&card->reset_lock);
 			cancel_work_sync(&card->reset_work);

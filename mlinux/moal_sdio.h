@@ -219,7 +219,7 @@ typedef struct _sdio_mmc_card {
 	t_u8 work_flags;
 	/** reset producer gate; protected by reset_lock */
 	bool reset_stopping;
-	/** driver-mode IRQ/OOB producer gate; protected by reset_lock */
+	/** driver-mode/remove IRQ/OOB transport gate; protected by reset_lock */
 	bool drv_mode_quiesced;
 	/** serializes reset and driver-mode producer gates */
 	spinlock_t reset_lock;

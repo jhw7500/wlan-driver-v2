@@ -118,6 +118,15 @@ deferred_pcie_target_trylock = c_function(
     main_c, "static bool woal_deferred_pcie_target_trylock"
 )
 pcie_remove = c_function(pcie_c, "static void woal_pcie_remove")
+cleanup_module = c_function(main_c, "static void woal_cleanup_module")
+sdio_interrupt = c_function(
+    sdio_c, "static void woal_sdio_interrupt"
+)
+sdio_oob_work = c_function(
+    sdio_c, "static void woal_sdio_oob_irq_work"
+)
+sdio_oob_interrupt = c_function(sdio_c, "static irqreturn_t oob_sdio_irq")
+sdio_remove = c_function(sdio_c, "void woal_sdio_remove")
 add_card = c_function(main_c, "moal_handle *woal_add_card")
 reset_intf = c_function(main_c, "mlan_status woal_reset_intf")
 config_write = c_function(proc_c, "static ssize_t woal_config_write")
@@ -443,6 +452,52 @@ for bus, source, signature in (
     flr = c_function(source, signature)
     require(ordered(flr, "(void)woal_reset_intf(", "woal_clean_up(handle)"),
             f"{bus} FLR still aborts before cleanup when reset IOCTLs are gated")
+
+exit_gate_precedes_shutdown = ordered(
+    cleanup_module,
+    "WRITE_ONCE(driver_exit_in_progress, 1)",
+    "woal_shutdown_fw(",
+)
+reset_gate_precedes_shutdown = ordered(
+    cleanup_module,
+    "woal_quiesce_reset_work(m_handle[index])",
+    "woal_shutdown_fw(",
+)
+require(
+    not (
+        (exit_gate_precedes_shutdown and
+         "driver_exit_in_progress" in sdio_interrupt) or
+        (reset_gate_precedes_shutdown and
+         "reset_stopping" in sdio_interrupt)
+    ),
+    "SDIO command-response IRQ is gated before module-exit firmware shutdown",
+)
+require(
+    all(
+        not (
+            (exit_gate_precedes_shutdown and
+             "driver_exit_in_progress" in body) or
+            (reset_gate_precedes_shutdown and
+             "reset_stopping" in body)
+        )
+        for body in (sdio_oob_work, sdio_oob_interrupt)
+    ),
+    "SDIO OOB command-response path is gated before firmware shutdown",
+)
+require(
+    ordered(
+        sdio_remove,
+        "spin_lock_bh(&card->reset_lock)",
+        "WRITE_ONCE(card->drv_mode_quiesced, true)",
+        "card->reset_stopping = true",
+        "spin_unlock_bh(&card->reset_lock)",
+        "cancel_work_sync(&card->reset_work)",
+        "card->handle->surprise_removed = MTRUE",
+        "sdio_claim_host(func)",
+        "sdio_release_host(func)",
+    ),
+    "SDIO remove does not close and synchronize the transport IRQ gate",
+)
 
 for name, body in (("RX", rx_submit), ("TX", tx_submit)):
     require(ordered(body, "spin_lock_irqsave(&cardp->urb_submit_lock",
