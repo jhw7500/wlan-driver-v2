@@ -936,7 +936,6 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 #endif
 	moal_handle *ref_handle = NULL;
 	t_u32 cmd = 0;
-	t_u32 tmp_count = 0;
 	int copy_len;
 	moal_private *priv = NULL;
 
@@ -949,19 +948,21 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 	if (handle->fw_reseting) {
 		PRINTM(MERROR,
 		       "Firmware reset in progress, ignore proc file write\n");
+		MODULE_PUT;
 		LEAVE();
 		return -EINVAL;
 	}
 
 	flag = (in_atomic() || irqs_disabled()) ? GFP_ATOMIC : GFP_KERNEL;
-
-	if (!woal_secure_add(&count, 1, &tmp_count, TYPE_UINT32)) {
-		PRINTM(MERROR, "%s:count param overflow\n", __func__);
+	if (!count || count > PAGE_SIZE) {
+		MODULE_PUT;
 		LEAVE();
 		return -EINVAL;
 	}
-	databuf = kzalloc(tmp_count, flag);
+	/* +1 keeps databuf NUL terminated for the string parsers below */
+	databuf = kzalloc(count + 1, flag);
 	if (databuf == NULL) {
+		MODULE_PUT;
 		LEAVE();
 		return -ENOMEM;
 	}
@@ -1108,32 +1109,38 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 			    MLAN_STATUS_SUCCESS)
 				PRINTM(MERROR, "Could not set RF test mode\n");
 	}
-	if (!strncmp(databuf, "tx_antenna", strlen("tx_antenna"))) {
+	if (!strncmp(databuf, "tx_antenna", strlen("tx_antenna")) &&
+	    count > strlen("tx_antenna")) {
 		line += strlen("tx_antenna") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_TX_ANT;
 	}
-	if (!strncmp(databuf, "rx_antenna", strlen("rx_antenna"))) {
+	if (!strncmp(databuf, "rx_antenna", strlen("rx_antenna")) &&
+	    count > strlen("rx_antenna")) {
 		line += strlen("rx_antenna") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RX_ANT;
 	}
-	if (!strncmp(databuf, "radio_mode", strlen("radio_mode"))) {
+	if (!strncmp(databuf, "radio_mode", strlen("radio_mode")) &&
+	    count > strlen("radio_mode=")) {
 		line += strlen("radio_mode") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RADIO_MODE_CFG;
 	}
-	if (!strncmp(databuf, "channel", strlen("channel"))) {
+	if (!strncmp(databuf, "channel", strlen("channel")) &&
+	    count > strlen("channel")) {
 		line += strlen("channel") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_CHAN;
 	}
-	if (!strncmp(databuf, "band", strlen("band"))) {
+	if (!strncmp(databuf, "band", strlen("band")) &&
+	    count > strlen("band")) {
 		line += strlen("band") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_BAND_AG;
 	}
-	if (!strncmp(databuf, "bw", strlen("bw"))) {
+	if (!strncmp(databuf, "bw", strlen("bw")) &&
+	    count > strlen("bw")) {
 		line += strlen("bw") + 1;
 		config_data = (t_u32)woal_string_to_number(line);
 		cmd = MFG_CMD_RF_CHANNELBW;
@@ -1858,7 +1865,7 @@ mlan_status woal_root_proc_init(void)
 	}
 
 	/* create /proc/mwlan/wifi_status */
-	proc_create_data(STATUS_PROC, 0666, proc_mwlan, &wifi_status_proc_fops,
+	proc_create_data(STATUS_PROC, 0444, proc_mwlan, &wifi_status_proc_fops,
 			 NULL);
 
 	LEAVE();
@@ -1948,7 +1955,7 @@ void woal_proc_init(moal_handle *handle)
 
 	strncpy(config_proc_dir, "config", sizeof(config_proc_dir));
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
-	r = proc_create_data(config_proc_dir, 0666, handle->proc_wlan,
+	r = proc_create_data(config_proc_dir, 0644, handle->proc_wlan,
 			     &config_proc_fops, handle);
 #else
 	r = create_proc_entry(config_proc_dir, 0644, handle->proc_wlan);

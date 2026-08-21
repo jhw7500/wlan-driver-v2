@@ -3603,11 +3603,14 @@ static mlan_status __woal_do_sdiommc_flr(moal_handle *handle, bool prepare,
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
 	mlan_disable_host_int(handle->pmlan_adapter);
-	if (woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE) !=
-	    MLAN_STATUS_SUCCESS) {
-		status = MLAN_STATUS_FAILURE;
-		goto exit;
-	}
+	/* surprise_removed is already published above, so every IOCTL
+	 * woal_reset_intf() issues is rejected by design: moal_ioctl.c gates all
+	 * sub-commands but GET_DEBUG_INFO and MISC_WARM_RESET on
+	 * surprise_removed || driver_status.  Its failure therefore says nothing
+	 * about the device, and treating it as fatal aborts the reset before the
+	 * FW re-download, leaving the adapter permanently NotReady.  Ignore it and
+	 * continue, as the vendor base does; the errors it logs are expected here. */
+	(void)woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE);
 	woal_clean_up(handle);
 
 	/* Shutdown firmware */

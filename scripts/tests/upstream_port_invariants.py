@@ -78,6 +78,80 @@ resubmit = c_function(usb_c, "mlan_status woal_resubmit_urbs")
 remove_card = c_function(main_c, "mlan_status woal_remove_card")
 post_reset = c_function(main_c, "static int woal_post_reset")
 fw_reload = c_function(main_c, "int woal_request_fw_reload")
+reset_intf = c_function(main_c, "mlan_status woal_reset_intf")
+config_write = c_function(proc_c, "static ssize_t woal_config_write")
+
+for path, source in (("mlinux/moal_main.c", main_c),
+                     ("mlinux/moal_proc.c", proc_c)):
+    require(re.search(r"^(?:<<<<<<<|=======|>>>>>>>)", source,
+                      re.MULTILINE) is None,
+            f"{path} retains an unresolved merge marker")
+
+require("gated = handle->surprise_removed || handle->driver_status;" in
+        reset_intf,
+        "interface reset does not distinguish gated teardown from healthy IOCTL failure")
+monitor_start = reset_intf.find("if (handle->mon_if)")
+monitor_end = reset_intf.find("handle->mon_if = NULL;", monitor_start)
+monitor_cleanup = reset_intf[monitor_start:monitor_end]
+require(monitor_start >= 0 and monitor_end >= 0 and
+        ordered(monitor_cleanup, "woal_set_net_monitor(",
+                "netif_device_detach(", "unregister_netdev("),
+        "monitor reset no longer cleans up the radiotap netdev after stop failure")
+require("goto done" not in monitor_cleanup,
+        "monitor stop failure can still bypass mandatory radiotap netdev cleanup")
+for operation in ("woal_cancel_scan(", "woal_get_bss_info(",
+                  "woal_cancel_hs(", "woal_disconnect("):
+    operation_pos = reset_intf.find(operation)
+    failure_tail = reset_intf[operation_pos:operation_pos + 700]
+    require(operation_pos >= 0 and
+            ordered(failure_tail, operation, "if (!gated)", "goto done;"),
+            f"{operation[:-1]} failure does not continue teardown only on the gated path")
+require(ordered(reset_intf, "memset(&bss_info, 0, sizeof(bss_info));",
+                "woal_get_bss_info(", "if (bss_info.is_hs_configured)"),
+        "gated interface reset can consume uninitialized BSS information")
+
+require(ordered(post_reset, "handle->driver_status = MFALSE;",
+                "handle->hardware_status = HardwareStatusReady;",
+                "moal_bridge_pending_invalidate_handle(handle)"),
+        "post-reset rebuild starts before the IOCTL/hardware gates are reopened")
+
+fw_reset_guard = re.search(
+    r"if\s*\(handle->fw_reseting\)\s*\{(?P<body>.*?)\n\t\}",
+    config_write,
+    re.DOTALL,
+)
+require(fw_reset_guard is not None and
+        "MODULE_PUT" in fw_reset_guard.group("body"),
+        "firmware-reset rejection leaks the config writer's module reference")
+require(ordered(config_write, "if (!count || count > PAGE_SIZE)",
+                "databuf = kzalloc(count + 1, flag);",
+                "databuf[count] = '\\0';"),
+        "config writes are not bounded and NUL terminated before parsing")
+for keyword, minimum in (("tx_antenna", "tx_antenna"),
+                         ("rx_antenna", "rx_antenna"),
+                         ("radio_mode", "radio_mode="),
+                         ("channel", "channel"),
+                         ("band", "band"),
+                         ("bw", "bw")):
+    guarded_parser = re.search(
+        rf'if\s*\(\s*!strncmp\(databuf,\s*"{keyword}",\s*'
+        rf'strlen\("{keyword}"\)\)\s*&&\s*count\s*>\s*'
+        rf'strlen\("{minimum}"\)\s*\)',
+        config_write,
+    )
+    require(guarded_parser is not None,
+            f"config parser can advance past a short {keyword} write")
+require("proc_create_data(STATUS_PROC, 0444" in proc_c,
+        "wifi_status proc entry is still writable")
+require("proc_create_data(config_proc_dir, 0644" in proc_c,
+        "config proc entry remains world-writable")
+
+for bus, source, signature in (
+        ("PCIe", pcie_c, "static mlan_status __woal_do_flr"),
+        ("SDIO", sdio_c, "static mlan_status __woal_do_sdiommc_flr")):
+    flr = c_function(source, signature)
+    require(ordered(flr, "(void)woal_reset_intf(", "woal_clean_up(handle)"),
+            f"{bus} FLR still aborts before cleanup when reset IOCTLs are gated")
 
 for name, body in (("RX", rx_submit), ("TX", tx_submit)):
     require(ordered(body, "spin_lock_irqsave(&cardp->urb_submit_lock",
