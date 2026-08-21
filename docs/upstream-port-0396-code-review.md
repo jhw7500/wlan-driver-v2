@@ -3,9 +3,9 @@
 ## 판정 범위와 최종 상태
 
 이 문서의 최종 **source/test validation HEAD**는
-`1499c4c7f6a0fa8b3edd195f9e1c8d55b98e1216`이다. 이 문서를 갱신하는 후속
+`4a5fe74c4f838371852bca8936d7267c45ea8518`이다. 이 문서를 갱신하는 후속
 documentation commit은 source/test 파일을 바꾸지 않으므로 코드 판정 기준은 계속
-`1499c4c`이다.
+`4a5fe74c`이다.
 
 최종 판정은 **host/source validated, architecture CLEAR, target-runtime WATCH**다.
 초기 독립 검토가 BLOCK으로 분류한 source-proven USB submit-after-kill 결함, 후속
@@ -31,6 +31,7 @@ hardware pass를 뜻하지 않는다.
 | reconciliation review fixes | `609749f07d00c49b4659b8cc55e13ff287a8da1a` |
 | automated-review residual fixes | `1e2e4a337d52d1e53e2149b5fa7e30c19ac0e984` |
 | OTP delimiter follow-up | `1499c4c7f6a0fa8b3edd195f9e1c8d55b98e1216` |
+| i.MX93 userspace cross-build isolation | `4a5fe74c4f838371852bca8936d7267c45ea8518` |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
 갖는 non-fast-forward merge다. clean-port first-parent 범위의 upstream integration
@@ -86,6 +87,12 @@ merge는 둘이다. upstream base/tip과 `origin/main` 모두 최종 source HEAD
     실패하는 RED를 확인하고, 길이 literal 오타를 고친 뒤 GREEN을 확인했다.
     `1499c4c` 이후 같은 감사의 mismatch는 0이고 targeted code review는 `APPROVE`,
     architecture re-review는 `CLEAR`다.
+12. 실제 `make_for_imx93.sh` 검증은 이전 host QA의 x86-64 `mlanutl` object/binary를
+    flat `mapp/mlanutl` build directory에서 재사용해 aarch64 `objcopy`가 거절하는
+    문제를 재현했다. `4a5fe74c`는 기본 target build 전에 `mlanutl`과 `mlanevent`를
+    clean하고, host `antcfg` QA도 반대 방향의 stale aarch64 object를 먼저 제거한다.
+    fake toolchain으로 실제 script call order를 실행하는 regression test는 수정 전
+    RED와 수정 후 GREEN을 보였고 scoped code review는 `APPROVE`다.
 
 이 chronology의 source/architecture 판정은 current tree의 fresh review에 근거한다.
 target firmware와 hardware stress 결과는 별도이며 계속 **WATCH/open**이다.
@@ -257,14 +264,16 @@ source architecture BLOCK이 아니며, 실제 board/firmware에서 확인할 ta
 
 1. `scripts/tests/upstream_port_invariants.py` lifecycle/ABI/boundary assertions;
 2. real bundled CLI와 ioctl capture shim을 사용한 `antcfg_cli_qa.sh`;
-3. adversarial bridge static/mutation suite;
-4. mirrored `mlan_ioctl.h` byte comparison.
+3. default i.MX93 build의 userspace-clean ordering을 실행하는 `make_for_imx93_qa.sh`;
+4. adversarial bridge static/mutation suite;
+5. mirrored `mlan_ioctl.h` byte comparison.
 
 fresh final run은 exit 0이며 최소 다음 결과를 포함했다.
 
 ```text
 upstream_port_invariants=PASS
 antcfg_cli_qa=PASS
+make_for_imx93_qa=PASS
 upstream_port_final_checks=PASS
 ```
 
@@ -273,7 +282,7 @@ bridge suite의 quiet-`grep` nondeterminism은 source assertion 실패가 아니
 결함이었다. `1dd14bf`는 fixed/extended quiet predicates를, `3b9c8f8`은 남은
 plain quiet predicates와 binary `strings` symbol check를 deterministic input
 형태로 바꿨다. assertions/mutations와 full-consuming awk/tr pipelines는 바꾸지
-않았다. `1499c4c`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
+않았다. `4a5fe74c`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
 0이었고 `upstream_port_final_checks=PASS`로 종료했다.
 
 초기 build warning 중 다음 source warning은 모두 수정되었다.
@@ -327,6 +336,36 @@ exit 0을 확인했다. `.moal_main.o.cmd`에는 `-DFWDUMP_VIA_PRINT`가 있고
 이 hash/size/vermagic는 fresh controller artifact evidence이며 module load 또는
 target traffic pass를 뜻하지 않는다.
 
+### i.MX93 cross-build
+
+Yocto SDK `/shared/fsl-imx-wayland/6.6-nanbield`와 다음 i.MX93 kernel tree에서
+실제 기본 경로를 실행했다.
+
+```text
+/opt/sda/imx93/imx-6.6.3-1.0.0-build/build_fsl-imx-wayland/tmp/work/imx93_11x11_lpddr4x_evk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
+```
+
+```text
+rtk ./make_for_imx93.sh  # exit 0
+```
+
+host CLI QA가 x86-64 objects를 남긴 직후에도 script가 두 userspace tree를 clean하고
+다음 산출물을 aarch64로 다시 생성했다.
+
+| artifact | bytes | SHA-256 |
+|---|---:|---|
+| `bin_wlan/mlan_imx93.ko` | 992,720 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` |
+| `bin_wlan/moal_imx93.ko` | 1,976,144 | `976813e044791ae75b8eb08390ba9fd7f8a049d650223ae486e845ba472dda5a` |
+| `bin_wlan/mlanutl_imx93` | 400,968 | `127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` |
+| `bin_wlan/mlanevent_imx93` | 68,144 | `3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` |
+
+두 module은 ARM aarch64 relocatable ELF이고 `moal_imx93.ko` vermagic은
+`6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload modversions aarch64`다.
+userspace binary 둘도 ARM aarch64 ELF다. cross `mlanutl` compile에는 기존 코드의
+`fgets` return-value 1건과 fortified `memcpy`/`strncpy` array-bound 2건, 총 3개
+warning이 남으므로 이 target build를 warning-free라고 부르지 않는다. 이 증적은
+cross-build 성공이지 module load나 hardware runtime pass가 아니다.
+
 ### Userspace와 mirrored headers
 
 ```text
@@ -348,7 +387,7 @@ fresh `mlanutl` build는 compiler warning 없이 완료되었지만 device ioctl
 - latest `origin/main` ancestry: exit 0;
 - clean-port first-parent merge count: `2` (upstream integration `cc7f79d`, latest-main reconciliation `45f593e`);
 - exact conflict-marker match count: `0`;
-- reconciliation/source range `45f593e..1499c4c`의 `git diff --check`: exit 0;
+- reconciliation/source range `45f593e..4a5fe74c`의 `git diff --check`: exit 0;
 - documentation commit을 포함한 `45f593e..HEAD`도 post-commit check로 확인한다.
 
 whole local integration range의 default check는 별개다.
@@ -387,7 +426,7 @@ pass 또는 유효한 target result로 기록하지 않는다.
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
 | VHT/HE/rate | stored-map round-trip, HE encode/decode, 26-word bitmap | firmware persistence/power-table variance | association IE, HE groups 0–14, reconnect persistence |
-| build/QA | clean module/userspace builds and deterministic static gate | target toolchain/load environment | deployed module load, symbols, traffic |
+| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build | target module load/firmware environment | deployed module load, symbols, traffic |
 
 ## `mapp/` ownership boundary
 
@@ -431,6 +470,6 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 최종 상태는 **source/test validation complete at `1499c4c`, architecture
+따라서 최종 상태는 **source/test validation complete at `4a5fe74c`, architecture
 CLEAR, target-runtime WATCH/open**이다. 독립 code-review `APPROVE`와 architecture
 `CLEAR`는 current source tree에 대한 판정이며 hardware pass로 해석하지 않는다.
