@@ -2,18 +2,23 @@
 
 ## 판정 범위와 최종 상태
 
-이 문서의 최종 **source/test validation HEAD**는
-`4a5fe74c4f838371852bca8936d7267c45ea8518`이다. 이 문서를 갱신하는 후속
+이 문서의 최종 **source/test/target validation HEAD**는
+`734f75bf02a3e5ac4c84a696d8a873ed11247ce3`이다. 이 문서를 갱신하는 후속
 documentation commit은 source/test 파일을 바꾸지 않으므로 코드 판정 기준은 계속
-`4a5fe74c`이다.
+`734f75b`이다.
 
-최종 판정은 **host/source validated, architecture CLEAR, target-runtime WATCH**다.
+최종 판정은 **host/source validated, code-review APPROVE, architecture WATCH,
+i.MX93 SDIO module-reload slice PASS, remaining target-runtime WATCH**다.
 초기 독립 검토가 BLOCK으로 분류한 source-proven USB submit-after-kill 결함, 후속
 scoped residual, 그리고 latest-main reconciliation 뒤 발견된 proc/reset 동시성 결함을
-수정했다. 최종 독립 code reviewer는 `APPROVE`, architecture reviewer는 `CLEAR`를
-발행했다. 다만 USB/PCIe/SDIO lifecycle과 firmware/board별 정책은 실제 target에서만
-판정할 수 있으므로 runtime gate는 계속 열려 있다. 여기서 architecture `CLEAR`는
-hardware pass를 뜻하지 않는다.
+수정했다. 이어진 SDIO OOB lifecycle 검토의 BLOCK/HIGH도 `812a65b..734f75b`에서
+수정했다. 최종 독립 code reviewer는 `APPROVE`, architecture reviewer는 software
+lifetime BLOCK이 닫혔음을 확인하고 terminal hardware all-fail의 shared-line
+liveness만 `WATCH`로 남겼다. 결정 규칙상 전체 review 권고는 `COMMENT`이며
+unqualified merge-ready 판정은 하지 않는다. USB/PCIe/SDIO lifecycle과 firmware/board별 정책은 실제 target에서만
+판정할 수 있으므로 나머지 runtime gate는 계속 열려 있다. 여기서 i.MX93 PASS는
+SD9098 in-band module unload/reload, DBDC enumeration, STA reconnect와 기본 CLI/traffic
+slice에 한정되며 전체 USB/PCIe/SDIO/OOB/RF hardware pass를 뜻하지 않는다.
 
 | 항목 | 고정 값 |
 |---|---|
@@ -32,6 +37,12 @@ hardware pass를 뜻하지 않는다.
 | automated-review residual fixes | `1e2e4a337d52d1e53e2149b5fa7e30c19ac0e984` |
 | OTP delimiter follow-up | `1499c4c7f6a0fa8b3edd195f9e1c8d55b98e1216` |
 | i.MX93 userspace cross-build isolation | `4a5fe74c4f838371852bca8936d7267c45ea8518` |
+| SDIO module-exit command-response fix | `50cbe67295d2fe8e7b91b7a714849cc427add724` |
+| SDIO OOB lifecycle hardening | `812a65b7ee832e242f80e35847ed9777800ab4ae` |
+| SDIO OOB transactional source transitions | `80dc84841046dd2b0d0919f1a3083ea57ce2cfe2` |
+| SDIO OOB owner-preservation intermediate | `f67dd21a833f79357d9010b6164a5ef370b5b06b` |
+| terminal OOB software-detach | `e526b8bb2f580a45b46e589337a0923214e9bf2b` |
+| SD9098 cross-function callback barrier | `734f75bf02a3e5ac4c84a696d8a873ed11247ce3` |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
 갖는 non-fast-forward merge다. clean-port first-parent 범위의 upstream integration
@@ -93,9 +104,47 @@ merge는 둘이다. upstream base/tip과 `origin/main` 모두 최종 source HEAD
     clean하고, host `antcfg` QA도 반대 방향의 stale aarch64 object를 먼저 제거한다.
     fake toolchain으로 실제 script call order를 실행하는 regression test는 수정 전
     RED와 수정 후 GREEN을 보였고 scoped code review는 `APPROVE`다.
+13. i.MX93 target에서 기존 local teardown hardening이 module exit 초기에 올리는
+    `driver_exit_in_progress`/`reset_stopping`을 SDIO command-response IRQ gate로도
+    사용하여 `FUNC_SHUTDOWN [0xaa]`가 매번 timeout되는 것을 재현했다. 외부
+    `wifi_logger_temp`를 멈추면 `DS_GET_SENSOR_TEMP [0x227]` timeout만 사라져 두
+    원인을 분리했다. 먼저 shutdown 전 producer gate와 IRQ gate의 결합을 거절하는
+    invariant가 기존 코드에서 RED임을 확인했다. `50cbe67`은 recovery producer gate와
+    transport gate를 분리하고 실제 SDIO remove에서만 `drv_mode_quiesced`를 올린다.
+    수정 뒤 invariant/final checks, exact i.MX93 build와 target의 연속 reload가
+    GREEN/PASS였다.
+14. 후속 SDIO/OOB 동시성 검토는 두 결함을 BLOCK으로 분류했다. 첫째,
+    `queue_work()==false` fallback이 hard-IRQ 문맥에서 `enable_irq()`를 호출했다.
+    둘째, CCCR function interrupt disable이 실패해도 callback/source 상태를 지우고
+    IRQ action과 workqueue를 해제했다. 각 결함을 먼저 source mutation으로 RED
+    재현했다. `812a65b`는 coalesced token 반환을 같은 ordered workqueue의 별도
+    process-context work로 넘기고, callback clear를 CCCR write 성공 뒤로 이동한다.
+    unregister 실패 시 action/queue를 유지하며 terminal release는 해당 SDIO function
+    전체 disable이 성공한 뒤에만 action teardown을 재시도한다. final checks,
+    checkpatch 0/0, exact i.MX93 build와 target의 logger-active
+    `50cbe67→812a65b→812a65b` reload는 PASS였다.
+15. `80dc848`은 source-enable write가 오류를 반환해도 실제 device에 도달했을 수 있는
+    ambiguous claim에서 callback/action/WQ를 보존하고 host unlock 뒤 terminal cleanup을
+    수행한다. driver-mode quiesce의 function-source disable 실패 시 같은 device가 계속
+    current라면 transport gate를 다시 열어 live level source가 닫힌 gate 뒤에서 storm하지
+    않게 했다. mutation/final checks와 exact i.MX93 build는 PASS였다.
+16. 첫 후속안 `f67dd21`은 cleanup 실패 owner를 partial handle로 quarantine했지만,
+    독립 검토가 최종 retry 실패의 owner free, Android 초기화 비대칭, block-size 후속 실패를
+    BLOCK/HIGH로 판정했다. `e526b8b`은 quarantine/PENDING overload를 제거하고 fallible
+    block-size 설정을 IRQ 노출 앞으로 옮겼다. 모든 hardware cleanup이 실패하는 terminal
+    경로는 registration gate, IRQ synchronize, local WQ flush, token balance 뒤 action과 WQ를
+    강제 software-detach하여 module text/card/handle UAF보다 hardware liveness를 우선한다.
+17. 재검토는 SD9098 sibling OOB worker가 모든 function callback을 MMC host 아래 dispatch하는
+    cross-action 경계를 추가로 발견했다. `734f75b`은 local drain 뒤 같은 MMC host를 claim하여
+    handler와 drvdata를 함께 끊고 host release 뒤 action/WQ를 해제한다. reset도 block-size를
+    확인한 뒤에만 OOB/in-band IRQ를 재등록한다. 각 장벽은 RED/GREEN mutation으로 고정했고,
+    final checks와 변경 object를 실제 재컴파일한 i.MX93 build는 PASS였다. 최종 두 독립 lane은
+    code `APPROVE`, architecture `WATCH`를 발행했다. WATCH는 모든 hardware disable/reset이
+    실패한 terminal 경우 물리 level-low source가 남을 수 있는 availability 위험이다.
 
 이 chronology의 source/architecture 판정은 current tree의 fresh review에 근거한다.
-target firmware와 hardware stress 결과는 별도이며 계속 **WATCH/open**이다.
+검증한 SDIO reload slice 밖의 target firmware/hardware stress는 별도이며 계속
+**WATCH/open**이다.
 
 ## Upstream coverage와 손상 branch 배제
 
@@ -233,6 +282,32 @@ invalidation은 실패 상태를 먼저 게시하고 worker의 최종 status wri
 lock 아래에서 cancellation을 재검사하므로 성공한 rebind 상태를 stale worker가
 덮어쓰지 않는다.
 
+### SDIO module-exit command-response 수명
+
+`woal_cleanup_module()`은 module exit를 게시하고 hang/reset work producer를
+`AddRemoveCardSem` 획득 전에 drain한다. 이 ordering은 reset worker와 semaphore의
+deadlock을 막기 위해 필요하지만, 그 producer-stop 상태는 뒤이어 전송하는 disconnect,
+deep-sleep 및 `MLAN_FUNC_SHUTDOWN` IOCTL의 SDIO 응답까지 막아서는 안 된다.
+
+따라서 SDIO transport는 다음처럼 분리했다.
+
+- `driver_exit_in_progress`와 `reset_stopping`은 새 hang/reset/recovery work의 admission을
+  중단한다.
+- in-band IRQ와 OOB GPIO/work는 module-exit producer gate만으로 반환하지 않고,
+  `drv_mode_quiesced`가 닫힐 때까지 command response를 MLAN에 전달한다.
+- 실제 `woal_sdio_remove()`는 `reset_lock` 아래에서 먼저
+  `drv_mode_quiesced=true`와 `reset_stopping=true`를 게시하고 reset work를 취소한다.
+  이어 `surprise_removed`를 게시한 뒤 MMC host claim/release barrier로 이미 진입한
+  callback을 기다린다.
+- OOB 경로도 같은 transport gate를 확인하므로 remove 또는 driver-mode quiesce 뒤
+  새 work를 queue/re-enable하지 않는다. 이미 queue된 work는 gate를 다시 확인하고,
+  unregister helper가 IRQ disable과 workqueue flush를 수행한다.
+
+source invariant는 cleanup의 producer gate가 shutdown보다 앞설 때 in-band/OOB
+command-response path가 같은 gate를 소비하면 실패한다. 별도 invariant는 SDIO remove가
+transport gate를 닫고 reset work 취소와 host barrier를 순서대로 수행하는지 검사한다.
+실제 target은 in-band IRQ 구성이고 OOB/driver-mode 경쟁은 아직 target WATCH다.
+
 ### bridge, PCIe/SDIO 및 target policy
 
 `mlinux/moal_bridge.c`는 build object이며 runtime switch, pending identity,
@@ -282,7 +357,7 @@ bridge suite의 quiet-`grep` nondeterminism은 source assertion 실패가 아니
 결함이었다. `1dd14bf`는 fixed/extended quiet predicates를, `3b9c8f8`은 남은
 plain quiet predicates와 binary `strings` symbol check를 deterministic input
 형태로 바꿨다. assertions/mutations와 full-consuming awk/tr pipelines는 바꾸지
-않았다. `4a5fe74c`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
+않았다. `734f75b`의 fresh aggregate run도 bridge mutation suite 전체를 포함해 exit
 0이었고 `upstream_port_final_checks=PASS`로 종료했다.
 
 초기 build warning 중 다음 source warning은 모두 수정되었다.
@@ -315,6 +390,16 @@ retry가 기존 4.13 compatibility branch 안에 들어가면서 보고되는
 4.13/5.14 호환 전처리 pair, 7건은 기존에 널리 사용되는 field identifier
 `fw_reseting`의 spelling warning이다. 호환 kernel range와 기존 field 이름을
 유지하기 위해 남겼다.
+
+SDIO lifecycle production/test diff `50cbe67..812a65b`의 kernel
+`checkpatch.pl --no-tree --no-signoff` 결과는 **0 errors, 0 warnings, 922 lines
+checked**다.
+
+후속 terminal-lifetime diff `80dc848..734f75b`의 같은 checkpatch 결과는
+**0 errors, 4 warnings, 506 lines checked**다. 네 warning은 multi-kernel compatibility를
+위해 추가된 두 `LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 0)` 분기에서 발생한
+`LINUX_VERSION_CODE`/`CONSTANT_COMPARISON` pair다. 최종 callback-barrier follow-up
+`e526b8b..734f75b`만 검사하면 **0 errors, 0 warnings, 135 lines checked**다.
 
 ## Fresh final validation evidence
 
@@ -355,7 +440,7 @@ host CLI QA가 x86-64 objects를 남긴 직후에도 script가 두 userspace tre
 | artifact | bytes | SHA-256 |
 |---|---:|---|
 | `bin_wlan/mlan_imx93.ko` | 992,720 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` |
-| `bin_wlan/moal_imx93.ko` | 1,976,144 | `976813e044791ae75b8eb08390ba9fd7f8a049d650223ae486e845ba472dda5a` |
+| `bin_wlan/moal_imx93.ko` | 1,978,680 | `569a0cb30a4b08689def8405fd84122ac36f7f924c8fe7d59948b25cda16d7f5` |
 | `bin_wlan/mlanutl_imx93` | 400,968 | `127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` |
 | `bin_wlan/mlanevent_imx93` | 68,144 | `3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` |
 
@@ -365,6 +450,62 @@ userspace binary 둘도 ARM aarch64 ELF다. cross `mlanutl` compile에는 기존
 `fgets` return-value 1건과 fortified `memcpy`/`strncpy` array-bound 2건, 총 3개
 warning이 남으므로 이 target build를 warning-free라고 부르지 않는다. 이 증적은
 cross-build 성공이지 module load나 hardware runtime pass가 아니다.
+
+### i.MX93 SD9098 target runtime
+
+controller 기준 2026-08-21에 `root@192.168.214.5`에서 검증했다. target clock은
+2026-08-17로 어긋나 있으므로 evidence 파일의 wall-clock보다 marker와 module hash를
+판정 기준으로 사용했다. target은 NXP i.MX93 11x11 EVK, aarch64,
+`6.6.3-lts-next-gccf0a99701a7-dirty`이고, SSH return route는 WLAN이 아닌 `eth0`였다.
+따라서 reload 중 mlan0 연결 손실이 controller control path를 숨기지 않았다.
+
+SD9098은 같은 MMC card의 function 1/2로 probe되었다. `mlan0`은 설정상 활성 STA,
+`mlan1`은 설정상 비활성 companion이므로 검증 상태는 `mlan0 UP/connected`,
+`mlan1 present/DOWN`이다. firmware는 `cts/sd9098_wlan_v1.bin`, runtime version은
+`17.92.1.p149.115 ... MM6X17543.p18 ... FP92`였다.
+
+배포 전에는 기존 `/opt/wlan` 네 artifact와 설정/상태를 별도 보존했다. original
+baseline backup과 이번 수정 직전 543.p18 backup을 모두 남겼고, 각 reload에는
+systemd transient rollback timer를 먼저 걸었다. 성공 판정 뒤 timer는 모두 중지했으며
+최종 target file/module 상태는 다음과 같다.
+
+| 항목 | 결과 |
+|---|---|
+| loaded `mlan`/`moal` version | `543.p18` / `543.p18` |
+| active `mlan_imx93.ko` SHA-256 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` |
+| active `moal_imx93.ko` SHA-256 | `569a0cb30a4b08689def8405fd84122ac36f7f924c8fe7d59948b25cda16d7f5` |
+| module vermagic | exact target `6.6.3-lts-next-gccf0a99701a7-dirty ... aarch64` |
+| services | `wifi_init`, `wpa_supplicant@mlan0`, `wifi_bridge@mlan0`, `wifi_logger_temp` active |
+| rollback timer | inactive; persistent backups present |
+
+최종 `734f75b` 배포에서는 검증된 `812a65b`에서 새 후보로 한 번 전환하고, 이어서
+새 후보를 자기 자신으로 한 번 더 reload했다. 두 cycle 모두 실제 서비스 상태처럼
+`wifi_logger_temp`를 active로 유지했다. old-to-new는 20초, new-to-new는 19초에 service
+restart와 STA reconnect가 완료되었다. 첫 marker 이후 dmesg에서
+`FUNC_SHUTDOWN [0xaa]` timeout, `DS_GET_SENSOR_TEMP [0x227]` timeout, `BUG`, `WARNING`,
+`Oops`, `Call Trace`, `KASAN`, `lockdep`, `use-after-free`, `general protection fault`
+match는 모두 0이었다.
+
+두 interface의 `mlanutl ... version`은 exit 0으로 같은 FP92/543.p18 version을
+반환했다. target-test ping과 별도 stabilized final-health ping은 모두 20/20, 0% loss였고
+마지막 평균은 1.820ms였다.
+최종 mlan0은
+SSID 연결과 `LOWER_UP`, mlan1은 의도한 disabled/DOWN 상태를 유지했다.
+
+최종 배포 직전 backup은
+`/opt/wlan/backup/pre-sdio-callback-barrier-734f75b-20260821T185516KST`에 보존했다. 새 target
+원시 증적은 `/opt/wlan/staging/port-0396-734f75b/target-test.log`,
+`dmesg-old-new-new.txt`, `journal-old-new-new.txt`, `final-health.log`에 보존했다.
+사설 SSID/BSSID가 포함될 수 있어 repository에
+추가하지 않았다.
+
+이 결과가 증명하는 범위는 SDIO in-band unload/reload, DBDC enumeration, STA reconnect,
+version CLI와 짧은 ICMP smoke다. OOB interrupt mode, suspend/resume, SDIO reset/FLR,
+장시간 traffic, uAP/RF/management stress는 실행하지 않았으므로 PASS에 포함하지 않는다.
+active module configuration은 `intmode`를 지정하지 않아 default `intmode=0`이고,
+`/proc/interrupts`에는 board wake용 `wifi_oob_wakeup`만 있으며 driver action
+`nxp_oob_sdio_irq`는 없었다. 따라서 `734f75b`의 OOB token/failure 경로는 compile/static
+검증만 있으며 이 target run으로 runtime 증명되지 않는다.
 
 ### Userspace와 mirrored headers
 
@@ -387,7 +528,7 @@ fresh `mlanutl` build는 compiler warning 없이 완료되었지만 device ioctl
 - latest `origin/main` ancestry: exit 0;
 - clean-port first-parent merge count: `2` (upstream integration `cc7f79d`, latest-main reconciliation `45f593e`);
 - exact conflict-marker match count: `0`;
-- reconciliation/source range `45f593e..4a5fe74c`의 `git diff --check`: exit 0;
+- reconciliation/source range `45f593e..734f75b`의 `git diff --check`: exit 0;
 - documentation commit을 포함한 `45f593e..HEAD`도 post-commit check로 확인한다.
 
 whole local integration range의 default check는 별개다.
@@ -421,12 +562,12 @@ pass 또는 유효한 target result로 기록하지 않는다.
 |---|---|---|---|
 | USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | traffic 중 unplug/unload/suspend, resubmit fault, mode reload, KASAN/lockdep |
 | bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency | PCIe FLR/AER/in-band 및 SDIO/OOB reset stress |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; terminal all-hardware-fail shared level-source liveness; OOB runtime | i.MX93 SDIO in-band reload PASS; PCIe FLR/AER 및 `intmode=1` SDIO/OOB reset/fault-injection stress 필요 |
 | management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 diagnostics, root-owner-write config mode 0644, card-lifetime writer transaction, exact command/OTP delimiter boundaries, per-handle dump pathname snapshots | unload/read, frame-volume/privacy, synchronous dump I/O와 whole-dump allocation | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
 | VHT/HE/rate | stored-map round-trip, HE encode/decode, 26-word bitmap | firmware persistence/power-table variance | association IE, HE groups 0–14, reconnect persistence |
-| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build | target module load/firmware environment | deployed module load, symbols, traffic |
+| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build/load | board별 firmware/transport environment | i.MX93 SD9098 load/version/ping PASS; 나머지 board/transport 필요 |
 
 ## `mapp/` ownership boundary
 
@@ -439,16 +580,19 @@ decoding 및 standalone STA/UAP build다.
 포함된다는 이유만으로 검증되었다고 보지 않는다. 해당 product tool마다 별도 owner,
 ABI review 및 target execution evidence가 필요하다.
 
-## Target-only exit gates
+## 남은 target-only exit gates
 
-다음 항목은 모두 **미통과 또는 미실행 target gate**이며 이 문서는 hardware pass를
-주장하지 않는다.
+i.MX93/SD9098에서 current HEAD를 대상으로 old-to-new/new-to-new in-band module
+reload 2회, DBDC interface enumeration, STA reconnect, version CLI와 짧은 traffic
+smoke는 통과했다. 다음 항목은 여전히 **미통과 또는
+미실행 target gate**이며 이 문서는 그 범위의 hardware pass를 주장하지 않는다.
 
 1. USB disconnect/unplug, unload, suspend traffic, resubmit failure, firmware
    reload/mode rebuild, pending counters, KASAN/lockdep.
 2. PCIe FLR/AER/in-band reset을 bridge active, suspend/unload 및 unbind/rebind 경쟁과
    함께 실행하고 stale worker가 새 binding/status를 바꾸지 않는지 확인.
-3. SDIO/OOB reset/FLR 및 bridge owner restore.
+3. SDIO OOB mode, reset/FLR, driver-mode rebuild 및 bridge owner restore. 일반 in-band
+   module unload/reload command-response gate는 이번 i.MX93에서 통과했다.
 4. USB/PCIe/SDIO suspend/resume를 traffic과 pending bridge switch에 결합.
 5. STA/uAP association, roaming, AP start/stop, host-MLME/P2P management masks.
 6. UAP channel-track/AGCS/channel-switch-count GET/SET 및 firmware trace.
@@ -470,6 +614,11 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 최종 상태는 **source/test validation complete at `4a5fe74c`, architecture
-CLEAR, target-runtime WATCH/open**이다. 독립 code-review `APPROVE`와 architecture
-`CLEAR`는 current source tree에 대한 판정이며 hardware pass로 해석하지 않는다.
+따라서 현재 상태는 **source/test/target-slice validation complete at `734f75b`,
+independent code-review APPROVE, architecture WATCH, i.MX93 SDIO reload slice PASS,
+remaining target-runtime WATCH/open**이다. 결정 규칙에 따른 전체 review 권고는
+`COMMENT`이고 Draft PR을 unqualified merge-ready로 올리지 않는다. 남은 architecture
+WATCH는 모든 source/function/reset cleanup이 실패한 terminal 경우 물리 level-low source가
+shared line에 남을 수 있다는 availability 위험이며, software action/WQ/card/handle lifetime
+BLOCK은 닫혔다. target PASS는 위에 명시한 SD9098 in-band reload/STA smoke 범위로만
+해석한다.
