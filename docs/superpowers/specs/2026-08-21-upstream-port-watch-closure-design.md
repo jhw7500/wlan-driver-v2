@@ -18,6 +18,21 @@ Execution advanced the source/test qualification HEAD to
 uses subject `docs: record OOB WATCH qualification`; independent reviews, push,
 Draft PR update, and merge decisions remain controller-owned follow-up work.
 
+## Final review evidence scopes
+
+- final fixed host build source `f11420820bc73196eee837a9896f120b86364b57`:
+  rebuilt on the controller with the i.MX93 SDK after the APF/Android/SAE final
+  fixes; it was never staged, installed, or loaded on the target.
+- c464 target-staged OOB attempt source `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`:
+  retained as inactive and unqualified staging evidence only.
+- historical 734f75b evidence source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`:
+  limited to the previously executed bounded in-band reload/STA slice.
+
+No target access occurred during the final-review fix wave. The active target
+state therefore remains the restored pre-qualification in-band `543.p18` backup;
+OOB runtime remains NOT EXECUTED — `0/10` cycles, and suspend/traffic-dependent
+slices remain `BLOCKED_BY_PREREQUISITE`.
+
 ## Fixed pre-execution target facts
 
 - Target: i.MX93, with SSH carried by the wired `eth0` management path.

@@ -2,12 +2,13 @@
 
 ## 판정 범위와 최종 상태
 
-이 문서의 최종 **source/test qualification HEAD**는
-`c4644eee070c3a735e83037fdefdfbaf3d74ea8e`이다. 이 commit은 i.MX 경로에
-preferred `nxp,wifi-oob-int`/fallback `nxp,wifi-wake-host` DT lookup, node-reference
-release, zero-IRQ rejection과 mutation-tested lifecycle hygiene를 추가한다. 최종
-문서화 commit은 이 문서와 binding design만 바꾸는
-`docs: record OOB WATCH qualification` commit이며 source/test 판정 기준을 바꾸지 않는다.
+이 문서의 최종 **fixed source/test qualification HEAD**는
+`f11420820bc73196eee837a9896f120b86364b57`이다. 이 commit은 APF install/
+interpreter/RX scratch lifetime, Android build truth value, SAE response snapshot과
+관련 executable invariants를 마지막 review 범위에서 보강한다. 이 wave에서는
+target에 접근하지 않았다. `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`는
+i.MX OOB binding 변경의 target-staged attempt source로만 남으며 inactive,
+unqualified이다. 후속 문서화 commit은 source artifact를 변경하지 않는다.
 
 최종 판정은 **host/source validated; OOB runtime BLOCKED_BY_PLATFORM;
 architecture WATCH; traffic qualification BLOCKED_BY_PREREQUISITE; cleanup
@@ -41,8 +42,9 @@ PM 또는 장시간 traffic runtime PASS를 뜻하지 않는다.
 | SDIO OOB owner-preservation intermediate | `f67dd21a833f79357d9010b6164a5ef370b5b06b` |
 | terminal OOB software-detach | `e526b8bb2f580a45b46e589337a0923214e9bf2b` |
 | SD9098 cross-function callback barrier | `734f75bf02a3e5ac4c84a696d8a873ed11247ce3` |
-| OOB binding qualification source/test | `c4644eee070c3a735e83037fdefdfbaf3d74ea8e` |
-| OOB WATCH qualification documentation | this commit: `docs: record OOB WATCH qualification` |
+| OOB binding target-staged attempt | `c4644eee070c3a735e83037fdefdfbaf3d74ea8e` (inactive/unqualified) |
+| final APF/Android/SAE review fixes | `f11420820bc73196eee837a9896f120b86364b57` (host/source only) |
+| final evidence documentation | follow-up docs commit; no artifact content change |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
 갖는 non-fast-forward merge다. clean-port first-parent 범위의 upstream integration
@@ -61,8 +63,10 @@ merge는 둘이다. upstream base/tip과 `origin/main` 모두 최종 source HEAD
 preferred/fallback ordering, fallback availability, DT node release, zero mapped IRQ
 rejection과 관련 lifecycle mutations를 고정한다.
 
-Task 2의 exact i.MX93 candidate는 다음과 같다. 이 identity는 build/staging 증적이며
-active install 또는 hardware qualification을 의미하지 않는다.
+### Target-staged OOB attempt (source `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`; inactive and unqualified)
+
+Task 2의 exact i.MX93 candidate는 다음과 같다. 이 identity는 과거 build/staging
+증적이며 active install 또는 hardware qualification을 의미하지 않는다.
 
 | artifact | bytes | SHA-256 | vermagic / version |
 |---|---:|---|---|
@@ -495,7 +499,25 @@ checked**다.
 
 ## Fresh final validation evidence
 
-### External modules
+### Final fixed host-produced i.MX93 cross-build (source `f11420820bc73196eee837a9896f120b86364b57`; host-only, never target-staged)
+
+final-review fix를 포함한 immutable source commit에서 exact `./make_for_imx93.sh`를
+host/controller에서 실행했고 exit `0`을 기록했다. 다음 네 artifact는 이 final fixed
+host build의 신규 결과이며 target에 stage, install 또는 load하지 않았다.
+
+| artifact | bytes | SHA-256 | vermagic / version |
+|---|---:|---|---|
+| `bin_wlan/mlan_imx93.ko` | 992,720 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` | `6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload modversions aarch64`; `543.p18` |
+| `bin_wlan/moal_imx93.ko` | 1,978,536 | `f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3` | `6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload modversions aarch64`; `543.p18` |
+| `bin_wlan/mlanutl_imx93` | 400,968 | `127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` | ARM aarch64 executable; version not embedded as a module field |
+| `bin_wlan/mlanevent_imx93` | 68,144 | `3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` | ARM aarch64 executable; version not embedded as a module field |
+
+두 module은 ARM aarch64 relocatable ELF이고 두 userspace artifact는 ARM aarch64
+executable이다. build에는 기존 `mlanutl` warning 3건(unchecked `fgets`, fortified
+`memcpy` bounds, fortified `strncpy` bounds)이 남았으며 warning-free로 표현하지
+않는다. host에 `vmlinux`가 없어 BTF generation은 skip되었다.
+
+### Historical controller external-module build (source `3b9c8f8d7a06552bce3d94aa8b7967be04eb5f18`; host-only)
 
 clean external-module build는
 `/lib/modules/6.8.0-111-generic/build`, `ARCH=x86_64`에서 exit 0이었다.
@@ -513,10 +535,12 @@ exit 0을 확인했다. `.moal_main.o.cmd`에는 `-DFWDUMP_VIA_PRINT`가 있고
 이 hash/size/vermagic는 fresh controller artifact evidence이며 module load 또는
 target traffic pass를 뜻하지 않는다.
 
-### i.MX93 cross-build
+### Historical target evidence (source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`)
 
-Yocto SDK `/shared/fsl-imx-wayland/6.6-nanbield`와 다음 i.MX93 kernel tree에서
-실제 기본 경로를 실행했다.
+이 섹션의 artifact와 runtime 결과는 exact source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`에
+한정된 과거 in-band evidence이다. Yocto SDK
+`/shared/fsl-imx-wayland/6.6-nanbield`와 다음 i.MX93 kernel tree에서 기본 경로를
+실행했다.
 
 ```text
 /opt/sda/imx93/imx-6.6.3-1.0.0-build/build_fsl-imx-wayland/tmp/work/imx93_11x11_lpddr4x_evk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
@@ -543,7 +567,7 @@ userspace binary 둘도 ARM aarch64 ELF다. cross `mlanutl` compile에는 기존
 warning이 남으므로 이 target build를 warning-free라고 부르지 않는다. 이 증적은
 cross-build 성공이지 module load나 hardware runtime pass가 아니다.
 
-### Prior i.MX93 SD9098 in-band runtime (`734f75b`)
+#### Bounded i.MX93 SD9098 in-band runtime
 
 controller 기준 2026-08-21에 private wired-management path로 검증했다. target clock은
 2026-08-17로 어긋나 있으므로 evidence 파일의 wall-clock보다 marker와 module hash를
@@ -703,14 +727,16 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 현재 상태는 **source/test qualification complete at `c4644eee`, OOB
+따라서 현재 상태는 **host/source validation complete at `f114208`, OOB
 runtime BLOCKED_BY_PLATFORM, architecture WATCH, traffic qualification
 BLOCKED_BY_PREREQUISITE, cleanup COMPLETE/ACCEPTED**다. 이전 `734f75b` SD9098 in-band
-reload/STA smoke PASS는 historical bounded slice로 유지되지만 c464 candidate의 OOB,
-PM 또는 long-traffic PASS로 승격되지 않는다. terminal all-hardware-failure item도 별도
+reload/STA smoke PASS는 historical bounded slice로 유지되지만 c464 attempt나 f114 host
+build의 OOB, PM 또는 long-traffic PASS로 승격되지 않는다. terminal
+all-hardware-failure item도 별도
 `BLOCKED_BY_PLATFORM`이며 static/live substitute는 physical-source quiescence를 증명하지
 않는다. USB와 PCIe는 `BLOCKED_BY_HARDWARE`다.
 
-최종 target은 restored in-band `543.p18` backup이고 c464 candidate는 staged-only,
-inactive, unqualified다. Draft PR #27은 Draft로 남아야 하고 이 문서 commit은 controller의
+최종 target은 restored pre-qualification in-band `543.p18` backup이고 c464 attempt는
+staged-only, inactive, unqualified다. f114 final fixed host build은 target에 전송하지 않았다.
+Draft PR #27은 Draft로 남아야 하고 이 문서 commit은 controller의
 후속 independent review, push 또는 PR 갱신을 대신하지 않는다.

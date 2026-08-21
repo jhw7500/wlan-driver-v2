@@ -118,6 +118,10 @@ mlan_decl = read("mlan/mlan_decl.h")
 moal_decl = read("mlinux/mlan_decl.h")
 makefile = read("Makefile")
 kconfig = read("Kconfig")
+port_review_doc = read("docs/upstream-port-0396-code-review.md")
+watch_design_doc = read(
+    "docs/superpowers/specs/2026-08-21-upstream-port-watch-closure-design.md"
+)
 
 apf_set_filter = c_function(
     cfg80211_util_c, "static int woal_cfg80211_subcmd_set_packet_filter"
@@ -549,6 +553,98 @@ review_require(
     "I5",
     not sae_password_snapshot_is_bounded(i5_get_clamp_removed),
     "I5 SAE invariant accepts an unclamped GET response length",
+)
+
+
+def artifact_evidence_is_unambiguously_scoped(review: str, design: str) -> bool:
+    final_source = "f11420820bc73196eee837a9896f120b86364b57"
+    final_heading = re.search(
+        r"^### Final fixed host-produced i\.MX93 cross-build "
+        r"\(source `([0-9a-f]{40})`; host-only, never target-staged\)$",
+        review,
+        re.MULTILINE,
+    )
+    c464_heading = (
+        "### Target-staged OOB attempt "
+        "(source `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`; "
+        "inactive and unqualified)"
+    )
+    historical_heading = (
+        "### Historical target evidence "
+        "(source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`)"
+    )
+    if not final_heading:
+        return False
+    final_start = final_heading.end()
+    final_end = review.find("\n### ", final_start)
+    if final_end < 0:
+        return False
+    final_section = review[final_start:final_end]
+    final_commit = final_heading.group(1)
+    return (
+        final_commit == final_source
+        and all(
+            evidence in final_section
+            for evidence in (
+                "`bin_wlan/mlan_imx93.ko`",
+                "992,720",
+                "0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396",
+                "`bin_wlan/moal_imx93.ko`",
+                "1,978,536",
+                "f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3",
+                "`bin_wlan/mlanutl_imx93`",
+                "400,968",
+                "127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3",
+                "`bin_wlan/mlanevent_imx93`",
+                "68,144",
+                "3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05",
+                "SHA-256",
+                "vermagic",
+                "version",
+                "6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload "
+                "modversions aarch64",
+                "543.p18",
+            )
+        )
+        and c464_heading in review
+        and historical_heading in review
+        and f"final fixed host build source `{final_commit}`" in design
+        and "c464 target-staged OOB attempt source "
+            "`c4644eee070c3a735e83037fdefdfbaf3d74ea8e`" in design
+        and "historical 734f75b evidence source "
+            "`734f75bf02a3e5ac4c84a696d8a873ed11247ce3`" in design
+        and "NOT EXECUTED — `0/10` cycles" in design
+        and "BLOCKED_BY_PREREQUISITE" in design
+        and "pre-qualification in-band `543.p18` backup" in design
+    )
+
+
+review_require(
+    "M2",
+    artifact_evidence_is_unambiguously_scoped(port_review_doc, watch_design_doc),
+    "M2 artifact identities are not separated into exact host/c464/734f75b scopes",
+)
+m2_stale_final_hash = port_review_doc.replace(
+    "f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3",
+    "ea0ec9ad1d53fd98433ff549752be671181443e7fc52de11ac4236410afaa328",
+    1,
+)
+review_require(
+    "M2",
+    not artifact_evidence_is_unambiguously_scoped(
+        m2_stale_final_hash, watch_design_doc
+    ),
+    "M2 artifact invariant accepts the c464 moal hash as final host evidence",
+)
+m2_qualified_c464 = port_review_doc.replace(
+    "; inactive and unqualified)", "; target-qualified)", 1
+)
+review_require(
+    "M2",
+    not artifact_evidence_is_unambiguously_scoped(
+        m2_qualified_c464, watch_design_doc
+    ),
+    "M2 artifact invariant accepts a target-qualified c464 label",
 )
 
 require("spinlock_t urb_submit_lock;" in usb_h,
