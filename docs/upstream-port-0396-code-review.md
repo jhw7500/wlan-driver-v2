@@ -3,21 +3,21 @@
 ## 판정 범위와 최종 상태
 
 이 문서의 최종 **fixed source/test qualification HEAD**는
-`f11420820bc73196eee837a9896f120b86364b57`이다. 이 commit은 APF install/
-interpreter/RX scratch lifetime, Android build truth value, SAE response snapshot과
-관련 executable invariants를 마지막 review 범위에서 보강한다. 이 wave에서는
-target에 접근하지 않았다. `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`는
-i.MX OOB binding 변경의 target-staged attempt source로만 남으며 inactive,
-unqualified이다. 후속 문서화 commit은 source artifact를 변경하지 않는다.
+`e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`이다. `f11420820bc73196eee837a9896f120b86364b57`의
+최종 후보를 타겟에 한 번 더 적용해 원인을 수집한 결과, `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`가
+SDIO transport binding `nxp,wifi-oob-int`와 suspend-only wake binding
+`nxp,wifi-wake-host`를 fallback으로 합친 것이 잘못임을 확인했다. `e1c9f49`는 해당
+alias를 제거하고 transport lookup이 단 하나의 명시적 binding만 허용하도록 mutation
+invariant를 강화한다.
 
-최종 판정은 **host/source validated; OOB runtime BLOCKED_BY_PLATFORM;
-architecture WATCH; traffic qualification BLOCKED_BY_PREREQUISITE; cleanup
-COMPLETE/ACCEPTED**다. 이전 독립 code review의 `APPROVE`와 terminal hardware
-all-fail shared-line `WATCH`는 source chronology의 선행 기록이다. `c4644eee`에 대한
-독립 후속 review, push와 Draft PR 갱신은 controller 소유이므로 이 commit은 그 결과를
-선취하지 않는다. Draft PR #27은 Draft로 유지해야 하며 merge-ready 판정을 하지 않는다.
-이전 i.MX93 in-band reload PASS는 아래에 명시한 과거 slice에만 적용되고, 이번 OOB,
-PM 또는 장시간 traffic runtime PASS를 뜻하지 않는다.
+최종 판정은 **host/source validated; candidate activation FAIL at the invalid binding
+alias; corrected OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE because the target lacks
+`nxp,wifi-oob-int`; architecture WATCH; traffic qualification
+BLOCKED_BY_PREREQUISITE; cleanup COMPLETE/ACCEPTED**다. 수정 diff의 독립 2-lane review는
+code `APPROVE`, architecture `CLEAR`이며 Critical/Important finding은 0건이다. terminal
+hardware all-fail shared-line `WATCH`는 별도 source chronology로 유지한다. Draft PR #27은
+Draft로 유지하고 merge-ready 판정을 하지 않는다. 이전 i.MX93 in-band reload PASS는
+아래에 명시한 과거 slice에만 적용되며 OOB, PM 또는 장시간 traffic runtime PASS가 아니다.
 
 | 항목 | 고정 값 |
 |---|---|
@@ -42,8 +42,9 @@ PM 또는 장시간 traffic runtime PASS를 뜻하지 않는다.
 | SDIO OOB owner-preservation intermediate | `f67dd21a833f79357d9010b6164a5ef370b5b06b` |
 | terminal OOB software-detach | `e526b8bb2f580a45b46e589337a0923214e9bf2b` |
 | SD9098 cross-function callback barrier | `734f75bf02a3e5ac4c84a696d8a873ed11247ce3` |
-| OOB binding target-staged attempt | `c4644eee070c3a735e83037fdefdfbaf3d74ea8e` (inactive/unqualified) |
-| final APF/Android/SAE review fixes | `f11420820bc73196eee837a9896f120b86364b57` (host/source only) |
+| invalid OOB/wake binding alias | `c4644eee070c3a735e83037fdefdfbaf3d74ea8e` (target failure source; reverted semantically) |
+| final APF/Android/SAE review fixes | `f11420820bc73196eee837a9896f120b86364b57` (second target-staged candidate source) |
+| transport/wake binding separation | `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436` (host/source validated; not target-staged) |
 | final evidence documentation | follow-up docs commit; no artifact content change |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
@@ -56,12 +57,19 @@ merge는 둘이다. upstream base/tip과 `origin/main` 모두 최종 source HEAD
 
 ### Source, tests, and candidate identity
 
-`c4644eee`의 invariant는 production C 변경 전 실제로
-`FAIL: SDIO OOB GPIO lookup lacks preferred/fallback mapping hygiene`와 exit `1`을
-기록했다. implementation 뒤 같은 invariant는 `upstream_port_invariants=PASS`, exit
-`0`이었고 aggregate `upstream_port_final_checks.sh`도 exit `0`으로 끝났다. 이는
-preferred/fallback ordering, fallback availability, DT node release, zero mapped IRQ
-rejection과 관련 lifecycle mutations를 고정한다.
+`c4644eee`의 기존 RED/GREEN은 preferred/fallback lookup 자체를 고정했지만 두 binding의
+서로 다른 의미를 검증하지 못했다. exact upstream `0396cfb`는
+`woal_request_gpio()`에서 `nxp,wifi-oob-int`만 사용하고,
+`woal_regist_oob_wakeup_irq()`에서 `nxp,wifi-wake-host`를 별도로 사용한다. 타겟도
+in-band baseline에서 후자 action 두 개만 등록하고 transport action은 등록하지 않는다.
+
+`e1c9f49` 수정에서는 production C를 바꾸기 전에 새 invariant가 실제로
+`FAIL: SDIO transport IRQ lookup aliases the suspend-only wake binding`과 exit `1`을
+기록했다. fallback 제거 뒤 GREEN을 확인했다. 독립 review가 임의의 다른 binding alias도
+허용할 수 있음을 지적해 M3 mutation을 추가했고, 먼저
+`FAIL: M3 SDIO transport invariant accepts an unreviewed binding alias`를 확인한 뒤 lookup
+count를 정확히 하나로 제한해 GREEN을 확인했다. aggregate final checks, checkpatch
+0 errors/0 warnings와 exact i.MX93 build도 통과했다.
 
 ### Target-staged OOB attempt (source `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`; inactive and unqualified)
 
@@ -90,26 +98,52 @@ Task 7 exact-tree 재검증에서도 `upstream_port_final_checks.sh`와
 `make_for_imx93.sh`는 각각 exit `0`이었고 build warning은 같은 세 건뿐이었다.
 `build pristine`은 호출하지 않았고 이 결과를 pristine/warning-free라고 부르지 않는다.
 
-### Rollout, platform stop, and runtime matrix
+### Second target-staged OOB attempt (source `f11420820bc73196eee837a9896f120b86364b57`; inactive and failed activation)
+
+최종 host-review 수정까지 포함한 두 번째 후보는 다음 identity로 stage/install되었다.
+
+| artifact | bytes | SHA-256 | vermagic / version |
+|---|---:|---|---|
+| `bin_wlan/mlan_imx93.ko` | 992,720 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` | `543.p18` |
+| `bin_wlan/moal_imx93.ko` | 1,978,536 | `f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3` | exact target aarch64 vermagic; `543.p18` |
+| `bin_wlan/mlanutl_imx93` | 400,968 | `127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` | ARM aarch64 executable |
+| `bin_wlan/mlanevent_imx93` | 68,144 | `3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` | ARM aarch64 executable |
+
+이 후보는 activation health gate를 통과하지 못했으며 현재 active target artifact가 아니다.
+
+### Rollout, root cause, and runtime matrix
 
 Task 3은 fresh backup과 immutable stage를 만들고 exact candidate manifest를 검증한
 뒤 baseline-only rollback rehearsal을 exit `0`으로 완료했다. rehearsal은 두 module
 version `543.p18`, 4/4 service, 2/2 SDIO function, in-band configuration, backup equality
 5/5와 rollback completion을 확인했다. named 90-minute rollback timer도 arm/prove했다.
 
-Task 4는 candidate/config active write 뒤 첫 bounded `wifi_init.service` restart에서
-중단됐다. production `wifi_checker`가 의도한 module-reload netdev gap을 `fw_crash`로
-분류했고 reboot policy가 바로 그 취소된 initial restart에서 board reboot를 승인했다.
-Task 4 script 자체에는 reboot, shutdown 또는 kexec action이 없었다. previous-boot
-kernel journal은 사용할 수 없었으므로 candidate가 잠시 load되었는지와 그 boot의
-kernel behavior는 unknown이며 OOB success나 driver defect 어느 쪽도 주장하지 않는다.
-Target wall-clock은 controller chronology와 어긋나므로 순서는 target wall-clock 날짜가
-아니라 event marker와 run ordering으로 판정한다.
+첫 `c4644eee` attempt는 transport lookup이 target의 wake-only node를 fallback으로
+선택한 뒤 OOB IRQ를 매핑했으나 `SDIO_GPIO_INT_CONFIG [0x88]`가 timeout됐다. 당시
+production checker가 netdev 부재를 `fw_crash`로 분류해 기존 reboot policy가 reboot을
+승인했다.
+
+두 번째 `f114208` attempt에서는 승인된 범위로 checker와 firmware watcher를 먼저
+중지하고 rollback timer를 arm했다. 같은 OOB IRQ mapping 직후 같은 command가 두 번
+timeout됐고 `Firmware Init Failed`/`woal_add_card failed`가 이어졌다. 첫
+`wifi_init.service`는 status 75로 실패해 emergency condition에서 제외됐으며 activation
+trap이 baseline rollback을 시작했다. 그러나 실패한 카드 상태는 module/config 복원만으로
+회복되지 않았고 baseline restart도 firmware init 실패 후 status 1을 반환했다. 그 결과
+`wifi_init.service`의 기존 `OnFailure=wlan_emergency_reboot.service`가 reboot을 승인했다.
+이는 감시 서비스 오판이 아니라 동일 transport-command failure 뒤의 정상 복구 정책이다.
+
+지속 snapshot journal과 reboot state는 두 attempt에서 같은 command timeout을 증명한다.
+exact upstream은 transport와 wake binding을 별도로 유지하고 target에는
+`nxp,wifi-oob-int`가 없으므로, `c4644eee` fallback은 플랫폼 적응이 아니라 잘못된 의미
+alias였다. corrected source는 해당 binding이 없는 target에서 IRQ 등록 전에 `-ENODEV`로
+fail-fast한다. target wall-clock은 controller chronology와 어긋나므로 event marker,
+uptime 및 boot ID를 함께 사용했다.
 
 | runtime slice | execution | classification / evidence boundary |
 |---|---|---|
-| Initial OOB/DBDC health | **NOT EXECUTED** | initial restart safety stop 뒤 health gate 미도달 |
-| Initial OOB action count | **NOT EXECUTED** | action-registration assertion 미도달; current in-band absence와 혼동하지 않음 |
+| Candidate activation | **FAIL** | 두 attempt 모두 `SDIO_GPIO_INT_CONFIG` timeout 뒤 firmware init 실패 |
+| Initial OOB/DBDC health | **NOT EXECUTED** | activation health gate 미도달 |
+| Initial OOB action count | **PARTIAL ONLY** | IRQ mapping message는 있었으나 healthy action/traffic assertion 미도달 |
 | Traffic IRQ delta | **NOT EXECUTED** | healthy-OOB prerequisite 미충족 |
 | Idle IRQ-storm sample | **NOT EXECUTED** | healthy-OOB prerequisite 미충족 |
 | Traffic-active teardown/reload | **NOT EXECUTED — 0/10** | cycle loop 미도달 |
@@ -127,11 +161,11 @@ BLOCKED_BY_PREREQUISITE; cleanup COMPLETE/ACCEPTED**다.
 
 ### Restored baseline and cleanup proof
 
-최종 target은 c464 candidate가 아니라 pre-qualification in-band `543.p18` backup이다.
+최종 target은 c464/f114 candidate가 아니라 pre-qualification in-band `543.p18` backup이다.
 active module 두 개, utility 두 개와 parameter file의 다섯 artifact가 backup과 exact
 match하고, OOB/`intmode`는 absent이며, required services와 SDIO functions는 healthy다.
-Candidate와 `wifi_mod_para.oob`, manifests, backup/stage/rollback evidence는 retained지만
-candidate는 staged-only, inactive, unqualified 상태다.
+DBDC netdev와 STA association도 복구됐다. Candidate와 `wifi_mod_para.oob`, manifests,
+backup/stage/rollback evidence는 retained하지만 candidate는 inactive/unqualified 상태다.
 
 packaged `/lib/modules`의 `mlan.ko`와 `moal.ko`는 inactive vendor `437.p3` copy로
 그대로 남았다. cleanup 전후 SHA-256은 각각
@@ -139,12 +173,10 @@ packaged `/lib/modules`의 `mlan.ko`와 `moal.ko`는 inactive vendor `437.p3` co
 `db57ffa6ce14ac8cb589b8b7bf61db83a7f68c97436d5ba1e3efb41896b1eff8`로 동일했고,
 qualification은 이 packaged tree를 쓰거나 덮어쓰지 않았다.
 
-stage ownership을 재검증한 뒤 Task 3 original timer와 Task 4 rearmed timer를 모두
-stop했다. 두 timer는 inactive이고 final wildcard active count와 stage-associated active
-count는 모두 `0`이다. post-stop baseline/stage/vendor gate가 통과한 뒤
-`/run/mwifiex-oob-watch.env`를 제거했다. raw `reset-failed` status는 별도로 보존되지
-않았지만 binding proof는 timer inactivity와 zero-active enumeration이다. backup/stage
-증적은 retained했다.
+두 번째 reboot으로 volatile env, maintenance marker와 transient timer는 사라졌고 active
+timer count는 0이다. reboot 뒤 fresh baseline gate는 artifact equality 5/5, required
+service 6/6 active, SDIO function 2/2, DBDC netdev/STA, OOB action 0, `intmode=1` line 0을
+확인했다. packaged vendor copies도 변경되지 않았다. backup/stage 증적은 retained했다.
 
 ## 최종 review chronology
 
@@ -237,6 +269,21 @@ count는 모두 `0`이다. post-stop baseline/stage/vendor gate가 통과한 뒤
     final checks와 변경 object를 실제 재컴파일한 i.MX93 build는 PASS였다. 최종 두 독립 lane은
     code `APPROVE`, architecture `WATCH`를 발행했다. WATCH는 모든 hardware disable/reset이
     실패한 terminal 경우 물리 level-low source가 남을 수 있는 availability 위험이다.
+18. `c4644eee`는 target DT에 transport binding이 없다는 사실을 driver-side fallback으로
+    우회하려 했으나, upstream이 분리한 wake-only binding을 continuous SDIO transport IRQ로
+    재사용했다. 첫 target attempt는 OOB IRQ mapping 뒤 `SDIO_GPIO_INT_CONFIG` timeout과
+    checker-triggered reboot으로 끝났다. 당시 미확보했던 previous-boot journal을 persistent
+    snapshot에서 복원해 candidate failure가 reboot보다 먼저였음을 확인했다.
+19. `f114208` candidate를 checker/watcher 정지 및 자동 rollback timer 아래 다시 적용해 같은
+    command timeout과 firmware init failure를 재현했다. rollback은 baseline file을 복원했지만
+    card가 warm module reload로 회복되지 않아 baseline `wifi_init`도 실패했고 기존
+    `OnFailure` policy가 reboot을 승인했다. reboot 뒤 baseline equality와 service/DBDC/STA
+    health는 모두 복구됐다. 동일 실패가 두 번 반복됐으므로 추가 target retry는 중단했다.
+20. `e1c9f49`는 wake binding fallback을 제거하고 transport lookup을 한 binding으로 제한한다.
+    semantic-alias RED/GREEN과 arbitrary-alias M3 RED/GREEN, aggregate final checks, exact
+    i.MX93 build 및 checkpatch 0/0을 확인했다. 독립 review 결과는 code `APPROVE`,
+    architecture `CLEAR`, Critical/Important 0건이다. corrected artifact는 target에 다시
+    stage하지 않았다.
 
 이 chronology의 source/architecture 판정은 current tree의 fresh review에 근거한다.
 검증한 SDIO reload slice 밖의 target firmware/hardware stress는 별도이며 계속
@@ -499,11 +546,12 @@ checked**다.
 
 ## Fresh final validation evidence
 
-### Final fixed host-produced i.MX93 cross-build (source `f11420820bc73196eee837a9896f120b86364b57`; host-only, never target-staged)
+### Second target-staged i.MX93 cross-build (source `f11420820bc73196eee837a9896f120b86364b57`; failed activation, now inactive)
 
 final-review fix를 포함한 immutable source commit에서 exact `./make_for_imx93.sh`를
-host/controller에서 실행했고 exit `0`을 기록했다. 다음 네 artifact는 이 final fixed
-host build의 신규 결과이며 target에 stage, install 또는 load하지 않았다.
+host/controller에서 실행했고 exit `0`을 기록했다. 다음 네 artifact는 이후 target에
+stage/install되어 bounded activation을 시도했지만 firmware init gate에서 실패했고,
+reboot 뒤 baseline으로 복구됐다.
 
 | artifact | bytes | SHA-256 | vermagic / version |
 |---|---:|---|---|
@@ -516,6 +564,22 @@ host build의 신규 결과이며 target에 stage, install 또는 load하지 않
 executable이다. build에는 기존 `mlanutl` warning 3건(unchecked `fgets`, fortified
 `memcpy` bounds, fortified `strncpy` bounds)이 남았으며 warning-free로 표현하지
 않는다. host에 `vmlinux`가 없어 BTF generation은 skip되었다.
+
+### Corrected transport-binding i.MX93 cross-build (source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`; host-only)
+
+잘못된 wake-binding alias를 제거한 exact source에서 `./make_for_imx93.sh`를 다시 실행해
+exit `0`을 기록했다. 이 artifact는 fail-fast source/build evidence이며 target에는
+stage/install/load하지 않았다.
+
+| artifact | bytes | SHA-256 | vermagic / version |
+|---|---:|---|---|
+| `bin_wlan/mlan_imx93.ko` | 992,720 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` | `6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload modversions aarch64`; `543.p18` |
+| `bin_wlan/moal_imx93.ko` | 1,978,448 | `482de059b6c1ee2c9c8145c326efbecd8341a5bc0ef5eebde905908a0dc5f498` | `6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload modversions aarch64`; `543.p18` |
+| `bin_wlan/mlanutl_imx93` | 400,968 | `127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` | ARM aarch64 executable |
+| `bin_wlan/mlanevent_imx93` | 68,144 | `3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` | ARM aarch64 executable |
+
+production/test diff checkpatch 결과는 0 errors, 0 warnings, 97 lines checked다. build에는
+동일한 known `mlanutl` warning 3건이 남는다.
 
 ### Historical controller external-module build (source `3b9c8f8d7a06552bce3d94aa8b7967be04eb5f18`; host-only)
 
@@ -675,12 +739,12 @@ pass 또는 유효한 target result로 기록하지 않는다.
 |---|---|---|---|
 | USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | traffic 중 unplug/unload/suspend, resubmit fault, mode reload, KASAN/lockdep |
 | bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; terminal all-hardware-fail shared level-source liveness; OOB runtime | historical i.MX93 SDIO in-band reload는 bounded slice에서 통과; PCIe FLR/AER 및 `intmode=1` SDIO/OOB reset/fault-injection stress 필요 |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; terminal all-hardware-fail shared level-source liveness; OOB runtime | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; PCIe FLR/AER 및 `intmode=1` SDIO/OOB reset/fault-injection stress 필요 |
 | management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 diagnostics, root-owner-write config mode 0644, card-lifetime writer transaction, exact command/OTP delimiter boundaries, per-handle dump pathname snapshots | unload/read, frame-volume/privacy, synchronous dump I/O와 whole-dump allocation | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
 | VHT/HE/rate | stored-map round-trip, HE encode/decode, 26-word bitmap | firmware persistence/power-table variance | association IE, HE groups 0–14, reconnect persistence |
-| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build/load | board별 firmware/transport environment | i.MX93 SD9098 load/version/ping PASS; 나머지 board/transport 필요 |
+| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build/load | board별 firmware/transport environment | historical `734f75b` i.MX93 SD9098 load/version/ping PASS; corrected `e1c9f49`는 host-only; 나머지 board/transport 필요 |
 
 ## `mapp/` ownership boundary
 
@@ -695,17 +759,19 @@ ABI review 및 target execution evidence가 필요하다.
 
 ## 남은 target-only exit gates
 
-i.MX93/SD9098에서 current HEAD를 대상으로 old-to-new/new-to-new in-band module
-reload 2회, DBDC interface enumeration, STA reconnect, version CLI와 짧은 traffic
-smoke는 통과했다. 다음 항목은 여전히 **미통과 또는
+historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 과거 target slice에서 old-to-new/
+new-to-new in-band module reload 2회, DBDC interface enumeration, STA reconnect,
+version CLI와 짧은 traffic smoke가 통과했다. corrected current source `e1c9f49`는
+target에 stage하지 않았다. 다음 항목은 여전히 **미통과 또는
 미실행 target gate**이며 이 문서는 그 범위의 hardware pass를 주장하지 않는다.
 
 1. USB disconnect/unplug, unload, suspend traffic, resubmit failure, firmware
    reload/mode rebuild, pending counters, KASAN/lockdep.
 2. PCIe FLR/AER/in-band reset을 bridge active, suspend/unload 및 unbind/rebind 경쟁과
    함께 실행하고 stale worker가 새 binding/status를 바꾸지 않는지 확인.
-3. SDIO OOB mode, reset/FLR, driver-mode rebuild 및 bridge owner restore. 일반 in-band
-   module unload/reload command-response gate는 이번 i.MX93에서 통과했다.
+3. SDIO OOB mode, reset/FLR, driver-mode rebuild 및 bridge owner restore. 현재 target은
+   required `nxp,wifi-oob-int` transport binding이 없어 OOB mode를 안전하게 시작할 수
+   없다. 일반 in-band module unload/reload command-response gate는 i.MX93에서 통과했다.
 4. USB/PCIe/SDIO suspend/resume를 traffic과 pending bridge switch에 결합.
 5. STA/uAP association, roaming, AP start/stop, host-MLME/P2P management masks.
 6. UAP channel-track/AGCS/channel-switch-count GET/SET 및 firmware trace.
@@ -727,16 +793,18 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 현재 상태는 **host/source validation complete at `f114208`, OOB
-runtime BLOCKED_BY_PLATFORM, architecture WATCH, traffic qualification
-BLOCKED_BY_PREREQUISITE, cleanup COMPLETE/ACCEPTED**다. 이전 `734f75b` SD9098 in-band
-reload/STA smoke PASS는 historical bounded slice로 유지되지만 c464 attempt나 f114 host
-build의 OOB, PM 또는 long-traffic PASS로 승격되지 않는다. terminal
+따라서 현재 상태는 **host/source validation complete at `e1c9f49`, invalid-alias
+candidate activation FAIL, corrected OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE,
+architecture WATCH, traffic qualification BLOCKED_BY_PREREQUISITE, cleanup
+COMPLETE/ACCEPTED**다. 이전 `734f75b` SD9098 in-band reload/STA smoke PASS는 historical
+bounded slice로 유지되지만 c464/f114 attempt의 OOB, PM 또는 long-traffic PASS로
+승격되지 않는다. terminal
 all-hardware-failure item도 별도
 `BLOCKED_BY_PLATFORM`이며 static/live substitute는 physical-source quiescence를 증명하지
 않는다. USB와 PCIe는 `BLOCKED_BY_HARDWARE`다.
 
-최종 target은 restored pre-qualification in-band `543.p18` backup이고 c464 attempt는
-staged-only, inactive, unqualified다. f114 final fixed host build은 target에 전송하지 않았다.
-Draft PR #27은 Draft로 남아야 하고 이 문서 commit은 controller의
-후속 independent review, push 또는 PR 갱신을 대신하지 않는다.
+최종 target은 restored pre-qualification in-band `543.p18` backup이고 c464/f114
+candidate는 inactive/unqualified다. corrected `e1c9f49` artifact는 target에 전송하지
+않았다. OOB 재검증은 board DT/hardware가 continuous transport line을
+`nxp,wifi-oob-int`로 명시한 뒤 새 maintenance window에서만 재개한다. Draft PR #27은
+Draft로 남아야 하며 merge-ready 판정을 하지 않는다.

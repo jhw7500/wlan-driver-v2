@@ -557,10 +557,17 @@ review_require(
 
 
 def artifact_evidence_is_unambiguously_scoped(review: str, design: str) -> bool:
-    final_source = "f11420820bc73196eee837a9896f120b86364b57"
-    final_heading = re.search(
-        r"^### Final fixed host-produced i\.MX93 cross-build "
-        r"\(source `([0-9a-f]{40})`; host-only, never target-staged\)$",
+    candidate_source = "f11420820bc73196eee837a9896f120b86364b57"
+    corrected_source = "e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436"
+    candidate_heading = re.search(
+        r"^### Second target-staged i\.MX93 cross-build "
+        r"\(source `([0-9a-f]{40})`; failed activation, now inactive\)$",
+        review,
+        re.MULTILINE,
+    )
+    corrected_heading = re.search(
+        r"^### Corrected transport-binding i\.MX93 cross-build "
+        r"\(source `([0-9a-f]{40})`; host-only\)$",
         review,
         re.MULTILINE,
     )
@@ -573,68 +580,113 @@ def artifact_evidence_is_unambiguously_scoped(review: str, design: str) -> bool:
         "### Historical target evidence "
         "(source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`)"
     )
-    if not final_heading:
+    if not candidate_heading or not corrected_heading:
         return False
-    final_start = final_heading.end()
-    final_end = review.find("\n### ", final_start)
-    if final_end < 0:
+    candidate_start = candidate_heading.end()
+    candidate_end = review.find("\n### ", candidate_start)
+    corrected_start = corrected_heading.end()
+    corrected_end = review.find("\n### ", corrected_start)
+    if candidate_end < 0 or corrected_end < 0:
         return False
-    final_section = review[final_start:final_end]
-    final_commit = final_heading.group(1)
+    candidate_section = review[candidate_start:candidate_end]
+    corrected_section = review[corrected_start:corrected_end]
+    candidate_commit = candidate_heading.group(1)
+    corrected_commit = corrected_heading.group(1)
+    vermagic = (
+        "6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload "
+        "modversions aarch64"
+    )
+    candidate_rows = [
+        "| `bin_wlan/mlan_imx93.ko` | 992,720 | "
+        "`0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` "
+        f"| `{vermagic}`; `543.p18` |",
+        "| `bin_wlan/moal_imx93.ko` | 1,978,536 | "
+        "`f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3` "
+        f"| `{vermagic}`; `543.p18` |",
+        "| `bin_wlan/mlanutl_imx93` | 400,968 | "
+        "`127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` "
+        "| ARM aarch64 executable; version not embedded as a module field |",
+        "| `bin_wlan/mlanevent_imx93` | 68,144 | "
+        "`3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` "
+        "| ARM aarch64 executable; version not embedded as a module field |",
+    ]
+    corrected_rows = [
+        "| `bin_wlan/mlan_imx93.ko` | 992,720 | "
+        "`0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` "
+        f"| `{vermagic}`; `543.p18` |",
+        "| `bin_wlan/moal_imx93.ko` | 1,978,448 | "
+        "`482de059b6c1ee2c9c8145c326efbecd8341a5bc0ef5eebde905908a0dc5f498` "
+        f"| `{vermagic}`; `543.p18` |",
+        "| `bin_wlan/mlanutl_imx93` | 400,968 | "
+        "`127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` "
+        "| ARM aarch64 executable |",
+        "| `bin_wlan/mlanevent_imx93` | 68,144 | "
+        "`3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` "
+        "| ARM aarch64 executable |",
+    ]
+    candidate_actual = [
+        line for line in candidate_section.splitlines()
+        if line.startswith("| `bin_wlan/")
+    ]
+    corrected_actual = [
+        line for line in corrected_section.splitlines()
+        if line.startswith("| `bin_wlan/")
+    ]
     return (
-        final_commit == final_source
-        and all(
-            evidence in final_section
-            for evidence in (
-                "`bin_wlan/mlan_imx93.ko`",
-                "992,720",
-                "0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396",
-                "`bin_wlan/moal_imx93.ko`",
-                "1,978,536",
-                "f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3",
-                "`bin_wlan/mlanutl_imx93`",
-                "400,968",
-                "127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3",
-                "`bin_wlan/mlanevent_imx93`",
-                "68,144",
-                "3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05",
-                "SHA-256",
-                "vermagic",
-                "version",
-                "6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload "
-                "modversions aarch64",
-                "543.p18",
-            )
-        )
+        candidate_commit == candidate_source
+        and corrected_commit == corrected_source
+        and candidate_actual == candidate_rows
+        and corrected_actual == corrected_rows
         and c464_heading in review
         and historical_heading in review
-        and f"final fixed host build source `{final_commit}`" in design
+        and f"final reviewed candidate source `{candidate_commit}`" in design
+        and f"corrected source `{corrected_commit}`" in design
         and "c464 target-staged OOB attempt source "
             "`c4644eee070c3a735e83037fdefdfbaf3d74ea8e`" in design
         and "historical 734f75b evidence source "
             "`734f75bf02a3e5ac4c84a696d8a873ed11247ce3`" in design
-        and "NOT EXECUTED — `0/10` cycles" in design
+        and "OOB runtime remains `0/10` cycles" in design
         and "BLOCKED_BY_PREREQUISITE" in design
         and "pre-qualification in-band `543.p18` backup" in design
     )
 
 
+def replace_after(text: str, marker: str, old: str, new: str) -> str:
+    marker_pos = text.find(marker)
+    if marker_pos < 0:
+        return text
+    old_pos = text.find(old, marker_pos)
+    if old_pos < 0:
+        return text
+    return text[:old_pos] + new + text[old_pos + len(old):]
+
+
 review_require(
     "M2",
     artifact_evidence_is_unambiguously_scoped(port_review_doc, watch_design_doc),
-    "M2 artifact identities are not separated into exact host/c464/734f75b scopes",
+    "M2 artifact identities are not separated into exact candidate/corrected/c464/734f75b scopes",
 )
 m2_stale_final_hash = port_review_doc.replace(
     "f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3",
     "ea0ec9ad1d53fd98433ff549752be671181443e7fc52de11ac4236410afaa328",
-    1,
 )
 review_require(
     "M2",
     not artifact_evidence_is_unambiguously_scoped(
         m2_stale_final_hash, watch_design_doc
     ),
-    "M2 artifact invariant accepts the c464 moal hash as final host evidence",
+    "M2 artifact invariant accepts the c464 moal hash as candidate evidence",
+)
+m2_stale_corrected_hash = port_review_doc.replace(
+    "482de059b6c1ee2c9c8145c326efbecd8341a5bc0ef5eebde905908a0dc5f498",
+    "f7155dc139c6a4f976d08815596937ddb8083b8856037bf7b58a29371ba81af3",
+)
+review_require(
+    "M2",
+    not artifact_evidence_is_unambiguously_scoped(
+        m2_stale_corrected_hash, watch_design_doc
+    ),
+    "M2 artifact invariant accepts the failed candidate hash as corrected evidence",
 )
 m2_qualified_c464 = port_review_doc.replace(
     "; inactive and unqualified)", "; target-qualified)", 1
@@ -645,6 +697,237 @@ review_require(
         m2_qualified_c464, watch_design_doc
     ),
     "M2 artifact invariant accepts a target-qualified c464 label",
+)
+
+m2_corrected_heading = (
+    "### Corrected transport-binding i.MX93 cross-build "
+    "(source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`; host-only)"
+)
+m2_swapped_rows = replace_after(
+    port_review_doc, m2_corrected_heading,
+    "`bin_wlan/mlan_imx93.ko`", "`bin_wlan/__artifact_swap__.ko`",
+)
+m2_swapped_rows = replace_after(
+    m2_swapped_rows, m2_corrected_heading,
+    "`bin_wlan/moal_imx93.ko`", "`bin_wlan/mlan_imx93.ko`",
+)
+m2_swapped_rows = replace_after(
+    m2_swapped_rows, m2_corrected_heading,
+    "`bin_wlan/__artifact_swap__.ko`", "`bin_wlan/moal_imx93.ko`",
+)
+review_require(
+    "M2",
+    not artifact_evidence_is_unambiguously_scoped(
+        m2_swapped_rows, watch_design_doc
+    ),
+    "M2 artifact invariant accepts swapped corrected module rows",
+)
+m2_missing_vermagic = replace_after(
+    port_review_doc, m2_corrected_heading,
+    "`6.6.3-lts-next-gccf0a99701a7-dirty SMP preempt mod_unload "
+    "modversions aarch64`; `543.p18`",
+    "`543.p18`",
+)
+review_require(
+    "M2",
+    not artifact_evidence_is_unambiguously_scoped(
+        m2_missing_vermagic, watch_design_doc
+    ),
+    "M2 artifact invariant accepts missing corrected vermagic",
+)
+
+
+def qualification_outcome_is_scoped(review: str, design: str) -> bool:
+    review_norm = " ".join(review.split())
+    design_norm = " ".join(design.split())
+    combined = review_norm + " " + design_norm
+    required = all(
+        phrase in review_norm
+        for phrase in (
+            "첫 `c4644eee` attempt는",
+            "두 번째 `f114208` attempt에서는",
+            "| Candidate activation | **FAIL** | 두 attempt 모두 "
+            "`SDIO_GPIO_INT_CONFIG` timeout 뒤 firmware init 실패 |",
+            "reboot 뒤 fresh baseline gate는 artifact equality 5/5, "
+            "required service 6/6 active, SDIO function 2/2, DBDC netdev/STA, "
+            "OOB action 0, `intmode=1` line 0",
+            "active timer count는 0이다",
+            "historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 "
+            "과거 target slice",
+            "corrected current source `e1c9f49`는 target에 stage하지 않았다",
+            "corrected `e1c9f49` artifact는 target에 전송하지 않았다",
+            "historical `734f75b` i.MX93 SD9098 load/version/ping PASS; "
+            "corrected `e1c9f49`는 host-only",
+            "historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과",
+            "candidate activation FAIL at the invalid binding alias; corrected "
+            "OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE because the target "
+            "lacks `nxp,wifi-oob-int`",
+            "invalid-alias candidate activation FAIL, corrected OOB runtime "
+            "BLOCKED_BY_PLATFORM_PREREQUISITE",
+        )
+    ) and all(
+        phrase in design_norm
+        for phrase in (
+            "Candidate activation failed before the runtime health gate",
+            "| Candidate activation | FAIL — repeated transport configuration "
+            "timeout and firmware init failure |",
+            "final matching active timer count is zero",
+            "corrected source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`",
+            "**Status:** Executed — invalid binding alias corrected; target OOB "
+            "blocked by missing transport binding.",
+            "corrected OOB runtime remains blocked because the required "
+            "transport binding is absent",
+        )
+    )
+    forbidden = (
+        r"(?:corrected(?: current source)?\s+)?`?e1c9f49`?"
+        r"[^|.;]{0,120}\b(?:runtime|load/version/ping)\b"
+        r"[^|.;]{0,80}\bPASS\b",
+        r"\bcorrected\b[^|.;]{0,180}\bPASS\b",
+        r"\be1c9f49[0-9a-f]*\b[^|.;]{0,180}\bPASS\b",
+        r"\bcurrent (?:HEAD|source)\b[^|.;]{0,180}\bPASS\b",
+        r"(?:matching )?active[- ]timer count(?:는| is)? "
+        r"(?:[1-9][0-9]*|nonzero)",
+        r"Candidate activation(?:\s*\|)?\s*\*{0,2}PASS\*{0,2}",
+        r"corrected OOB runtime\s+\*{0,2}PASS\*{0,2}",
+        r"artifact equality (?!5/5\b)[0-9]+/[0-9]+",
+        r"required service (?!6/6\b)[0-9]+/[0-9]+",
+        r"SDIO function (?!2/2\b)[0-9]+/[0-9]+",
+    )
+    return required and not any(
+        re.search(pattern, combined, re.IGNORECASE) for pattern in forbidden
+    )
+
+
+review_require(
+    "M4",
+    qualification_outcome_is_scoped(port_review_doc, watch_design_doc),
+    "M4 OOB failure, cleanup, or historical runtime scope is ambiguous",
+)
+m4_candidate_pass = port_review_doc.replace(
+    "| Candidate activation | **FAIL** |",
+    "| Candidate activation | **PASS** |",
+    1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(m4_candidate_pass, watch_design_doc),
+    "M4 outcome invariant accepts a false candidate activation PASS",
+)
+m4_bad_equality = port_review_doc.replace(
+    "reboot 뒤 fresh baseline gate는 artifact equality 5/5",
+    "reboot 뒤 fresh baseline gate는 artifact equality 0/5",
+    1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(m4_bad_equality, watch_design_doc),
+    "M4 outcome invariant accepts failed artifact restoration",
+)
+m4_bad_timer_count = re.sub(
+    r"active\s+timer count는 0",
+    "active timer count는 9",
+    port_review_doc,
+    count=1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(m4_bad_timer_count, watch_design_doc),
+    "M4 outcome invariant accepts residual active target timers",
+)
+m4_current_head_pass = port_review_doc.replace(
+    "historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 "
+    "과거 target slice",
+    "current HEAD target slice",
+    1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(m4_current_head_pass, watch_design_doc),
+    "M4 outcome invariant assigns historical runtime PASS to current source",
+)
+m4_additive_current_pass = (
+    port_review_doc + "\ncorrected e1c9f49 runtime PASS\n"
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_additive_current_pass, watch_design_doc
+    ),
+    "M4 outcome invariant accepts an additive corrected-source runtime PASS",
+)
+m4_additive_timer = port_review_doc + "\nactive timer count는 9\n"
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(m4_additive_timer, watch_design_doc),
+    "M4 outcome invariant accepts an additive nonzero timer claim",
+)
+m4_corrected_runtime_pass = port_review_doc.replace(
+    "corrected OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE",
+    "corrected OOB runtime PASS",
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_corrected_runtime_pass, watch_design_doc
+    ),
+    "M4 outcome invariant accepts corrected target runtime PASS",
+)
+m4_design_runtime_pass = watch_design_doc.replace(
+    "corrected OOB\nruntime remains blocked because the required transport "
+    "binding is absent",
+    "corrected OOB runtime PASS",
+    1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        port_review_doc, m4_design_runtime_pass
+    ),
+    "M4 outcome invariant accepts a design-level corrected runtime PASS",
+)
+m4_additive_sdio_reload_pass = (
+    port_review_doc + "\ncorrected e1c9f49 target SDIO reload PASS\n"
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_additive_sdio_reload_pass, watch_design_doc
+    ),
+    "M4 outcome invariant accepts additive corrected SDIO reload PASS",
+)
+m4_matrix_sdio_reload_pass = port_review_doc.replace(
+    "historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과",
+    "corrected e1c9f49 target SDIO reload PASS",
+    1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_matrix_sdio_reload_pass, watch_design_doc
+    ),
+    "M4 outcome invariant accepts corrected SDIO reload PASS in the matrix",
+)
+m4_additive_current_head_pass = (
+    port_review_doc + "\ncurrent HEAD target SDIO reload PASS\n"
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_additive_current_head_pass, watch_design_doc
+    ),
+    "M4 outcome invariant accepts additive current-HEAD target PASS",
+)
+m4_additive_full_hash_pass = (
+    port_review_doc
+    + "\ne1c9f49bb6ec8ffd0dc9703909ff4ef823a76436 target SDIO reload PASS\n"
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_additive_full_hash_pass, watch_design_doc
+    ),
+    "M4 outcome invariant accepts full-hash corrected target PASS",
 )
 
 require("spinlock_t urb_submit_lock;" in usb_h,
@@ -1546,9 +1829,9 @@ unknown_binding_alias = sdio_request_gpio.replace(
     1,
 )
 review_require(
-    "M2",
+    "M3",
     not sdio_oob_gpio_mapping_is_transport_specific(unknown_binding_alias),
-    "M2 SDIO transport invariant accepts an unreviewed binding alias",
+    "M3 SDIO transport invariant accepts an unreviewed binding alias",
 )
 
 

@@ -1,6 +1,7 @@
 # Upstream Port Runtime WATCH Closure Design
 
-**Status:** Executed — blocked by platform policy.
+**Status:** Executed — invalid binding alias corrected; target OOB blocked by
+missing transport binding.
 
 ## Objective
 
@@ -13,25 +14,32 @@ The source baseline for this qualification is `734f75b`; the documentation
 HEAD at design time is `5f8d10a` on
 `port/upstream-61820-0396-clean`.
 
-Execution advanced the source/test qualification HEAD to
-`c4644eee070c3a735e83037fdefdfbaf3d74ea8e`. The final documentation-only commit
-uses subject `docs: record OOB WATCH qualification`; independent reviews, push,
-Draft PR update, and merge decisions remain controller-owned follow-up work.
+The first execution advanced the source/test qualification HEAD to
+`c4644eee070c3a735e83037fdefdfbaf3d74ea8e`; later investigation and correction
+advanced it to `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`. Independent source and
+architecture reviews have returned. Push, Draft PR update, and merge decisions
+remain controller-owned follow-up work.
 
 ## Final review evidence scopes
 
-- final fixed host build source `f11420820bc73196eee837a9896f120b86364b57`:
+- final reviewed candidate source `f11420820bc73196eee837a9896f120b86364b57`:
   rebuilt on the controller with the i.MX93 SDK after the APF/Android/SAE final
-  fixes; it was never staged, installed, or loaded on the target.
+  fixes, then staged and transiently installed in the second bounded attempt;
+  activation failed and the candidate is inactive.
 - c464 target-staged OOB attempt source `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`:
-  retained as inactive and unqualified staging evidence only.
+  retained as the source that introduced the invalid wake-binding fallback and
+  as inactive failed-attempt evidence.
+- corrected source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`:
+  keeps transport and suspend-wake bindings distinct; host/source validated and
+  never staged on the target.
 - historical 734f75b evidence source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`:
   limited to the previously executed bounded in-band reload/STA slice.
 
-No target access occurred during the final-review fix wave. The active target
-state therefore remains the restored pre-qualification in-band `543.p18` backup;
-OOB runtime remains NOT EXECUTED — `0/10` cycles, and suspend/traffic-dependent
-slices remain `BLOCKED_BY_PREREQUISITE`.
+No target access occurred during the original final-review fix wave. A subsequent
+bounded second attempt did access the target, reproduced the same transport
+configuration timeout, restored the in-band `543.p18` backup, and rebooted through
+the existing `wifi_init` failure policy. OOB runtime remains `0/10` cycles and
+suspend/traffic-dependent slices remain `BLOCKED_BY_PREREQUISITE`.
 
 ## Fixed pre-execution target facts
 
@@ -55,51 +63,38 @@ slices remain `BLOCKED_BY_PREREQUISITE`.
 - `/lib/modules/.../updates/{mlan,moal}.ko` remain vendor `437.p3` copies and
   are not the files loaded by `wifi_init.service`.
 
-## Selected approach
+## Corrected approach
 
-Use a driver-side compatible fallback, not an ad-hoc DTB replacement.
-`woal_request_gpio()` will continue to prefer the existing
-`nxp,wifi-oob-int` binding and will fall back to the board's
-`nxp,wifi-wake-host` node only on i.MX. The function will reject a zero IRQ
-mapping and release the device-tree node reference after parsing.
+Do not alias `nxp,wifi-wake-host` to the SDIO transport IRQ. Exact upstream
+`0396cfb` uses `nxp,wifi-oob-int` in `woal_request_gpio()` and separately uses
+`nxp,wifi-wake-host` in `woal_regist_oob_wakeup_irq()`. The former is a
+continuously active transport action/workqueue; the latter is registered disabled
+and enabled only as a system-wakeup source during suspend.
 
-This approach is selected because it:
+The original driver-side fallback was invalidated by two reproducible target
+attempts. Both mapped the wake line as transport and then timed out the first
+`SDIO_GPIO_INT_CONFIG` command, preventing firmware initialization. The corrected
+driver accepts only `nxp,wifi-oob-int`, releases the DT node reference, rejects a
+zero mapping, and fails with `-ENODEV` before IRQ registration when that binding is
+absent.
 
-1. preserves compatibility with boards already using the driver's original
-   binding;
-2. enables the currently deployed board without replacing its DTB or
-   rebooting it;
-3. remains self-contained in the driver and is testable by source invariants;
-4. fails safely with `devm_request_irq()` if the existing wake handlers do
-   not permit another shared action.
-
-Rejected alternatives:
-
-- **Modify and deploy the target DTB:** wider blast radius, requires reboot,
-  and couples this driver port to an image artifact outside this repository.
-- **Static-only closure:** cannot validate the OOB action/WQ lifecycle that
-  motivated the final SDIO changes.
-- **Add a production fault-injection module parameter:** expands the shipped
-  attack/failure surface solely for testing and can deliberately wedge the
-  SDIO function or shared level-low line.
+Target OOB qualification now requires a board/BSP change outside this repository:
+the actual continuous SDIO transport line must be described with
+`nxp,wifi-oob-int` and electrically/firmware validated. No DTB deployment or
+additional candidate retry is authorized in this execution. Static-only checks
+cannot replace that prerequisite, and no production fault-injection parameter is
+added.
 
 ## Source and test changes
 
-### OOB binding compatibility
+### OOB binding separation
 
-Modify `mlinux/moal_sdio_mmc.c` so that `woal_request_gpio()`:
-
-1. looks up `nxp,wifi-oob-int` first;
-2. looks up `nxp,wifi-wake-host` only when the first lookup fails;
-3. returns `-ENODEV` when neither node exists;
-4. calls `irq_of_parse_and_map(node, 0)` and rejects IRQ 0 with `-ENXIO`;
-5. calls `of_node_put(node)` on every post-lookup exit;
-6. retains the existing shared, level-low `devm_request_irq()` behavior.
-
-Extend `scripts/tests/upstream_port_invariants.py` with positive and mutation
-checks proving lookup preference, fallback availability, zero-map rejection,
-and node-reference release. The test must fail against `734f75b` before the
-implementation and pass afterward.
+`e1c9f49` removes the `nxp,wifi-wake-host` fallback from
+`mlinux/moal_sdio_mmc.c`. The invariant now requires exactly one
+`of_find_compatible_node()` lookup in `woal_request_gpio()`, requires
+`nxp,wifi-oob-int`, rejects the wake binding and arbitrary aliases, and preserves
+zero-map rejection plus node-reference release. Both the semantic-alias mutation
+and an arbitrary-alias review mutation recorded RED before GREEN.
 
 ### Durable runtime evidence
 
@@ -197,14 +192,16 @@ appear tested.
 
 ## Executed coverage classification
 
-The selected target runtime did not pass or fail: production platform policy
-stopped it at the initial restart before the health gate. Cleanup and baseline
-restoration are proved, which permits the executed status without implying that
-any selected OOB runtime slice passed.
+Candidate activation failed before the runtime health gate. The first and second
+attempts both timed out `SDIO_GPIO_INT_CONFIG` after the invalid wake binding was
+mapped as transport. Platform reboot policy was a downstream recovery action, not
+the initiating cause. Cleanup and baseline restoration are proved; corrected OOB
+runtime remains blocked because the required transport binding is absent.
 
 | WATCH item | Executed result |
 |---|---|
-| OOB initial health and action count | NOT EXECUTED — Task 4 `BLOCKED_BY_PLATFORM` |
+| Candidate activation | FAIL — repeated transport configuration timeout and firmware init failure |
+| OOB initial health and action count | NOT EXECUTED — activation gate not reached |
 | OOB traffic IRQ delta and idle storm | NOT EXECUTED — healthy-OOB gate not reached |
 | OOB traffic-active reload/DBDC teardown | NOT EXECUTED — `0/10` cycles |
 | OOB suspend/resume (`s2idle`, `deep`) | NOT EXECUTED / `BLOCKED_BY_PREREQUISITE` |
@@ -216,30 +213,34 @@ any selected OOB runtime slice passed.
 
 ## Execution outcome and cleanup
 
-- `c4644eee` added preferred/fallback DT lookup plus mutation-tested node/IRQ and
-  lifecycle hygiene. The new invariant recorded actual RED exit `1`, then GREEN
-  exit `0`; the aggregate suite passed.
+- `c4644eee` added a preferred/fallback lookup that incorrectly treated the
+  suspend-only wake binding as a transport alias. Its original mutation suite
+  tested lookup hygiene but not semantic separation.
 - Task 2 produced exact staged artifacts and an exit-`0` i.MX93 build with exactly
   three known `mlanutl` warnings: unchecked `fgets`, fortified `memcpy` bounds,
   and fortified `strncpy` bounds.
 - Task 3 backup, stage, manifest verification, baseline-only rollback rehearsal,
   and 90-minute rollback-timer proof succeeded.
-- At Task 4's canceled initial restart, production `wifi_checker` classified the
-  intentional module-reload netdev gap as `fw_crash`; reboot policy approved a
-  board reboot. The test script had no reboot action. Previous-boot kernel
-  journal evidence was unavailable, so neither OOB success nor driver failure is
-  inferred. Target wall-clock skew is distinct from controller chronology.
+- Persistent snapshot journals later proved that the first attempt mapped the OOB
+  IRQ and timed out `SDIO_GPIO_INT_CONFIG` before `wifi_checker` requested reboot.
+  A second attempt stopped both approved monitors first and reproduced the same
+  command timeout. Baseline rollback began, but the card remained wedged across a
+  warm module/config restore; `wifi_init` then failed and its existing OnFailure
+  policy approved reboot.
+- `e1c9f49` removed the invalid fallback and strengthened the invariant with
+  semantic-alias and arbitrary-alias RED/GREEN mutations. Aggregate final checks,
+  checkpatch 0/0 and exact i.MX93 build passed. Independent review returned code
+  `APPROVE`, architecture `CLEAR`, with no Critical/Important findings.
 - The terminal all-hardware-cleanup-fails path remains a separate
   `BLOCKED_BY_PLATFORM` item. The safe substitutes do not prove physical-source
   quiescence.
 - Final target state is the restored pre-qualification in-band `543.p18` backup:
   all five active artifacts match backup, OOB/`intmode` are absent, and required
-  services/functions are healthy. The c464 candidate is retained staged-only,
-  inactive, and unqualified. Packaged `/lib/modules` copies remain inactive,
-  unchanged vendor `437.p3` artifacts.
-- Both stage-owned rollback timers are stopped/inactive; final active and
-  stage-associated timer counts are zero. `/run/mwifiex-oob-watch.env` is removed,
-  while backup/stage evidence is retained.
+  services/functions are healthy. The c464/f114 candidates are inactive and
+  unqualified. Packaged `/lib/modules` copies remain inactive, unchanged vendor
+  `437.p3` artifacts.
+- Reboot removed the volatile environment, marker and transient timer; final
+  matching active timer count is zero. Backup/stage evidence is retained.
 
 Explicit summary: **traffic qualification BLOCKED_BY_PREREQUISITE; cleanup
 COMPLETE/ACCEPTED.** Draft PR #27 must remain Draft; this execution makes no
@@ -249,14 +250,15 @@ merge-ready claim.
 
 This qualification closes under the design stop/rollback path because:
 
-1. the source invariant follows a demonstrated RED-to-GREEN cycle;
+1. the corrected semantic-boundary and arbitrary-alias invariants each follow a
+   demonstrated RED-to-GREEN cycle;
 2. local final checks and exact `make_for_imx93.sh` build pass;
-3. the OOB reload, shared-IRQ traffic, suspend/resume, and long-traffic slices
-   stopped through the defined platform-policy and prerequisite classifications;
+3. repeated candidate activation failure is classified separately from the OOB
+   runtime slices blocked by the missing transport binding;
 4. the target is left healthy with the original in-band runtime setting;
-5. both stage-owned timers are stopped and inactive, the transient runtime
-   environment is removed, and backup/stage evidence is intentionally retained;
-6. the local documentation commit is verified cleanly. Push, independent reviews,
-   Draft PR #27 update, and final OMX-state handling remain controller-owned; the
+5. reboot removed the second transient timer/environment and the final matching
+   active-timer count is zero; backup/stage evidence is intentionally retained;
+6. the local documentation commit is verified cleanly. Independent reviews have
+   returned; push, Draft PR #27 update, and final OMX-state handling remain controller-owned; the
    PR must remain Draft and report every blocked residual without a merge-ready
    claim.
