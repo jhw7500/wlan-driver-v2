@@ -964,6 +964,22 @@ OOB_TARGET_POLICY_BLOCK = (
     "conflicting prose is invalid and cannot authorize a target action.",
     "",
 )
+PRODUCT_SCOPE_POLICY_BLOCK = (
+    "### Authoritative product scope (`PRODUCT_SCOPE_POLICY_V1`)",
+    "",
+    "| policy key | value |",
+    "|---|---|",
+    "| `product_target` | `i.MX93 + 88W9098 SDIO in-band` |",
+    "| `usb_runtime_validation` | `OUT_OF_SCOPE / NOT_REQUIRED` |",
+    "| `pcie_runtime_validation` | `OUT_OF_SCOPE / NOT_REQUIRED` |",
+    "| `pr_review_state` | `READY_FOR_REVIEW` |",
+    "| `merge_authorization` | `SEPARATE_EXPLICIT_DECISION_REQUIRED` |",
+    "",
+    "This `PRODUCT_SCOPE_POLICY_V1` table is the sole normative product-scope and",
+    "integration-state policy; conflicting prose cannot authorize merge or restore",
+    "USB/PCIe as blockers.",
+    "",
+)
 
 
 def oob_capability_closure_changed_paths() -> tuple[str, ...] | None:
@@ -1004,6 +1020,17 @@ def target_oob_policy_block_is_exact(document: str) -> bool:
     start = positions[0]
     stop = start + len(OOB_TARGET_POLICY_BLOCK)
     return tuple(lines[start:stop]) == OOB_TARGET_POLICY_BLOCK
+
+
+def product_scope_policy_block_is_exact(document: str) -> bool:
+    lines = document.splitlines()
+    heading = PRODUCT_SCOPE_POLICY_BLOCK[0]
+    positions = [pos for pos, line in enumerate(lines) if line == heading]
+    if len(positions) != 1:
+        return False
+    start = positions[0]
+    stop = start + len(PRODUCT_SCOPE_POLICY_BLOCK)
+    return tuple(lines[start:stop]) == PRODUCT_SCOPE_POLICY_BLOCK
 
 
 def target_oob_hardware_capability_is_scoped(review: str, design: str) -> bool:
@@ -1359,6 +1386,205 @@ review_require(
         port_review_doc, m5_rephrased_remove_generic
     ),
     "M5 capability invariant accepts rephrased generic OOB removal",
+)
+
+
+def approved_product_scope_is_ready(review: str, design: str) -> bool:
+    review_norm = " ".join(review.split())
+    design_norm = " ".join(design.split())
+    combined = review_norm + " " + design_norm
+    required_review = (
+        "## Approved product qualification scope",
+        "Required product target: `i.MX93 + 88W9098 SDIO in-band`.",
+        "USB runtime validation: `OUT_OF_SCOPE / NOT_REQUIRED`.",
+        "PCIe runtime/FLR validation: `OUT_OF_SCOPE / NOT_REQUIRED`.",
+        "USB/PCIe runtime validation is not a Ready-for-review or merge blocker.",
+        "PR #27 is Ready for review under this approved product scope.",
+        "Merge remains a separate explicit decision.",
+        "| USB runtime | **OUT OF SCOPE** | "
+        "`OUT_OF_SCOPE / NOT_REQUIRED` |",
+        "| PCIe runtime/FLR | **OUT OF SCOPE** | "
+        "`OUT_OF_SCOPE / NOT_REQUIRED` |",
+    )
+    required_design = (
+        "## Approved product scope and PR disposition",
+        "The approved product qualification scope is "
+        "`i.MX93 + 88W9098 SDIO in-band`.",
+        "USB and PCIe runtime validation are `OUT_OF_SCOPE / NOT_REQUIRED`",
+        "their absence is not a Ready-for-review or merge blocker",
+        "PR #27 may transition to Ready for review.",
+        "Merge remains a separate explicit decision.",
+        "| USB runtime | `OUT_OF_SCOPE / NOT_REQUIRED` |",
+        "| PCIe runtime/FLR | `OUT_OF_SCOPE / NOT_REQUIRED` |",
+    )
+    forbidden = (
+        r"\| USB runtime \|[^\n|]*\| `BLOCKED_BY_HARDWARE` \|",
+        r"\| PCIe runtime/FLR \|[^\n|]*\| `BLOCKED_BY_HARDWARE` \|",
+        r"\| USB runtime \| `BLOCKED_BY_HARDWARE` \|",
+        r"\| PCIe runtime/FLR \| `BLOCKED_BY_HARDWARE` \|",
+        r"\bUSB/PCIe runtime validation is required before (?:Ready|merge)\b",
+        r"\bUSB runtime validation is (?:a )?(?:Ready-for-review|merge) blocker\b",
+        r"\bPCIe runtime validation is (?:a )?(?:Ready-for-review|merge) blocker\b",
+        r"\bPR #27 must remain Draft\b",
+        r"\bPR #27 is (?:approved|authorized) to merge(?: now)?\b",
+        r"\bReady status automatically authorizes merge\b",
+        r"\bmerge remains separately authorized\b",
+        r"Draft PR #27은 Draft로 (?:유지|남아야)",
+        r"merge-ready 판정을 하지 않는다",
+    )
+    required = (
+        product_scope_policy_block_is_exact(review)
+        and product_scope_policy_block_is_exact(design)
+        and all(phrase in review_norm for phrase in required_review)
+        and all(phrase in design_norm for phrase in required_design)
+    )
+    return required and not any(
+        re.search(pattern, combined, re.IGNORECASE) for pattern in forbidden
+    )
+
+
+review_require(
+    "M6",
+    approved_product_scope_is_ready(port_review_doc, watch_design_doc),
+    "M6 approved i.MX93/88W9098 product scope is not Ready-for-review",
+)
+m6_usb_required = port_review_doc.replace(
+    "USB runtime validation: `OUT_OF_SCOPE / NOT_REQUIRED`.",
+    "USB runtime validation: `REQUIRED`.",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(m6_usb_required, watch_design_doc),
+    "M6 scope invariant accepts required USB runtime validation",
+)
+m6_pcie_required = port_review_doc.replace(
+    "PCIe runtime/FLR validation: `OUT_OF_SCOPE / NOT_REQUIRED`.",
+    "PCIe runtime/FLR validation: `REQUIRED`.",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(m6_pcie_required, watch_design_doc),
+    "M6 scope invariant accepts required PCIe runtime validation",
+)
+m6_draft_only = watch_design_doc.replace(
+    "PR #27 may transition to Ready for review.",
+    "PR #27 must remain Draft.",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(port_review_doc, m6_draft_only),
+    "M6 scope invariant accepts a Draft-only disposition",
+)
+m6_additive_blocker = (
+    port_review_doc
+    + "\nUSB/PCIe runtime validation is required before merge.\n"
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(m6_additive_blocker, watch_design_doc),
+    "M6 scope invariant accepts an additive USB/PCIe merge blocker",
+)
+m6_design_usb_blocked = watch_design_doc.replace(
+    "| USB runtime | `OUT_OF_SCOPE / NOT_REQUIRED` |",
+    "| USB runtime | `BLOCKED_BY_HARDWARE` |",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        port_review_doc, m6_design_usb_blocked
+    ),
+    "M6 scope invariant accepts blocked USB in the design matrix",
+)
+m6_design_pcie_blocked = watch_design_doc.replace(
+    "| PCIe runtime/FLR | `OUT_OF_SCOPE / NOT_REQUIRED` |",
+    "| PCIe runtime/FLR | `BLOCKED_BY_HARDWARE` |",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        port_review_doc, m6_design_pcie_blocked
+    ),
+    "M6 scope invariant accepts blocked PCIe in the design matrix",
+)
+m6_additive_merge_approved = (
+    port_review_doc + "\nPR #27 is approved to merge now.\n"
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        m6_additive_merge_approved, watch_design_doc
+    ),
+    "M6 scope invariant accepts additive merge approval",
+)
+m6_additive_ready_auto_merge = (
+    watch_design_doc + "\nReady status automatically authorizes merge.\n"
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        port_review_doc, m6_additive_ready_auto_merge
+    ),
+    "M6 scope invariant accepts automatic merge authorization",
+)
+m6_additive_usb_blocker = (
+    port_review_doc + "\nUSB runtime validation is a merge blocker.\n"
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        m6_additive_usb_blocker, watch_design_doc
+    ),
+    "M6 scope invariant accepts an individual USB blocker",
+)
+m6_additive_pcie_blocker = (
+    port_review_doc + "\nPCIe runtime validation is a Ready-for-review blocker.\n"
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        m6_additive_pcie_blocker, watch_design_doc
+    ),
+    "M6 scope invariant accepts an individual PCIe blocker",
+)
+m6_policy_auto_merge = port_review_doc.replace(
+    "| `merge_authorization` | `SEPARATE_EXPLICIT_DECISION_REQUIRED` |",
+    "| `merge_authorization` | `AUTOMATIC` |",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        m6_policy_auto_merge, watch_design_doc
+    ),
+    "M6 scope invariant accepts automatic merge in the normative policy",
+)
+m6_policy_draft = watch_design_doc.replace(
+    "| `pr_review_state` | `READY_FOR_REVIEW` |",
+    "| `pr_review_state` | `DRAFT` |",
+    1,
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(port_review_doc, m6_policy_draft),
+    "M6 scope invariant accepts Draft in the normative policy",
+)
+m6_duplicate_policy = (
+    watch_design_doc
+    + "\n"
+    + "\n".join(PRODUCT_SCOPE_POLICY_BLOCK)
+    + "\n"
+)
+review_require(
+    "M6",
+    not approved_product_scope_is_ready(
+        port_review_doc, m6_duplicate_policy
+    ),
+    "M6 scope invariant accepts duplicate product-scope policy blocks",
 )
 
 require("spinlock_t urb_submit_lock;" in usb_h,

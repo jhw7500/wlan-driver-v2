@@ -16,9 +16,35 @@ BLOCKED_BY_HARDWARE_CAPABILITY; architecture WATCH for the generic OOB
 implementation; target OOB traffic qualification NOT_APPLICABLE /
 BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED**다. 수정 diff의 독립 2-lane review는
 code `APPROVE`, architecture `CLEAR`이며 Critical/Important finding은 0건이다. terminal
-hardware all-fail shared-line `WATCH`는 별도 source chronology로 유지한다. Draft PR #27은
-Draft로 유지하고 merge-ready 판정을 하지 않는다. 이전 i.MX93 in-band reload PASS는
+hardware all-fail shared-line `WATCH`는 별도 source chronology로 유지하지만 승인된 제품
+범위의 Ready-for-review 차단 조건은 아니다. 이전 i.MX93 in-band reload PASS는
 아래에 명시한 과거 slice에만 적용되며 OOB, PM 또는 장시간 traffic runtime PASS가 아니다.
+
+## Approved product qualification scope
+
+- Required product target: `i.MX93 + 88W9098 SDIO in-band`.
+- USB runtime validation: `OUT_OF_SCOPE / NOT_REQUIRED`.
+- PCIe runtime/FLR validation: `OUT_OF_SCOPE / NOT_REQUIRED`.
+- USB/PCIe runtime validation is not a Ready-for-review or merge blocker.
+- PR #27 is Ready for review under this approved product scope.
+- Merge remains a separate explicit decision.
+
+### Authoritative product scope (`PRODUCT_SCOPE_POLICY_V1`)
+
+| policy key | value |
+|---|---|
+| `product_target` | `i.MX93 + 88W9098 SDIO in-band` |
+| `usb_runtime_validation` | `OUT_OF_SCOPE / NOT_REQUIRED` |
+| `pcie_runtime_validation` | `OUT_OF_SCOPE / NOT_REQUIRED` |
+| `pr_review_state` | `READY_FOR_REVIEW` |
+| `merge_authorization` | `SEPARATE_EXPLICIT_DECISION_REQUIRED` |
+
+This `PRODUCT_SCOPE_POLICY_V1` table is the sole normative product-scope and
+integration-state policy; conflicting prose cannot authorize merge or restore
+USB/PCIe as blockers.
+
+Ready 전환은 승인된 제품 범위에 대한 review 시작을 의미한다. USB/PCIe 또는 다른
+hardware의 runtime PASS를 주장하지 않으며, merge를 자동 승인하거나 실행하지 않는다.
 
 | 항목 | 고정 값 |
 |---|---|
@@ -194,8 +220,8 @@ code remains retained for hardware that supplies a supported transport-event lin
 | 30-minute OOB ping | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
 | OOB iperf | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY`; environment/server reachability는 probe하지 않음 |
 | Terminal all-hardware-cleanup-fails path | target **NOT APPLICABLE** | generic implementation은 별도 `BLOCKED_BY_PLATFORM`; static mutations는 physical-source quiescence 증명이 아님 |
-| USB runtime | **NOT EXECUTED** | `BLOCKED_BY_HARDWARE` |
-| PCIe runtime/FLR | **NOT EXECUTED** | `BLOCKED_BY_HARDWARE` |
+| USB runtime | **OUT OF SCOPE** | `OUT_OF_SCOPE / NOT_REQUIRED` |
+| PCIe runtime/FLR | **OUT OF SCOPE** | `OUT_OF_SCOPE / NOT_REQUIRED` |
 
 따라서 target OOB s2idle/deep와 30-minute ping/iperf는 PASS/FAIL 또는 retry 대기 상태가
 아니다. 명시적 closure summary는 **target OOB traffic qualification NOT_APPLICABLE /
@@ -779,9 +805,9 @@ pass 또는 유효한 target result로 기록하지 않는다.
 
 | subsystem | final source policy | residual WATCH | required target validation |
 |---|---|---|---|
-| USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | traffic 중 unplug/unload/suspend, resubmit fault, mode reload, KASAN/lockdep |
+| USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | approved product scope에서는 `OUT_OF_SCOPE / NOT_REQUIRED`; 다른 product가 USB를 채택할 때 수행 |
 | bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; generic terminal all-hardware-fail shared level-source liveness | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; PCIe FLR/AER와 실제 transport-event line을 지원하는 다른 hardware의 SDIO/OOB stress 필요 |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; generic terminal all-hardware-fail shared level-source liveness | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; PCIe와 다른 hardware의 OOB stress는 approved product scope에서 `OUT_OF_SCOPE / NOT_REQUIRED` |
 | management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 diagnostics, root-owner-write config mode 0644, card-lifetime writer transaction, exact command/OTP delimiter boundaries, per-handle dump pathname snapshots | unload/read, frame-volume/privacy, synchronous dump I/O와 whole-dump allocation | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
@@ -799,23 +825,25 @@ decoding 및 standalone STA/UAP build다.
 포함된다는 이유만으로 검증되었다고 보지 않는다. 해당 product tool마다 별도 owner,
 ABI review 및 target execution evidence가 필요하다.
 
-## 남은 runtime exit gates와 hardware exclusion
+## 비차단 generic follow-up과 approved-scope exclusion
 
 historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 과거 target slice에서 old-to-new/
 new-to-new in-band module reload 2회, DBDC interface enumeration, STA reconnect,
 version CLI와 짧은 traffic smoke가 통과했다. corrected current source `e1c9f49`는
-target에 stage하지 않았다. 다음 항목은 여전히 미통과/미실행 gate 또는 명시적 hardware
-exclusion이며 이 문서는 그 범위의 hardware pass를 주장하지 않는다.
+target에 stage하지 않았다. 다음 항목은 broad generic-driver coverage의 후속 후보 또는
+명시적 hardware exclusion이며, 승인된 i.MX93/88W9098 SDIO in-band 범위의 Ready/merge
+차단 조건이 아니다. 이 문서는 해당 항목의 hardware pass를 주장하지 않는다.
 
 1. USB disconnect/unplug, unload, suspend traffic, resubmit failure, firmware
-   reload/mode rebuild, pending counters, KASAN/lockdep.
-2. PCIe FLR/AER/in-band reset을 bridge active, suspend/unload 및 unbind/rebind 경쟁과
-   함께 실행하고 stale worker가 새 binding/status를 바꾸지 않는지 확인.
+   reload/mode rebuild, pending counters, KASAN/lockdep: `OUT_OF_SCOPE / NOT_REQUIRED`.
+2. PCIe FLR/AER/in-band reset과 bridge/suspend/unbind 경쟁:
+   `OUT_OF_SCOPE / NOT_REQUIRED`.
 3. SDIO OOB mode, reset/FLR, driver-mode rebuild 및 bridge owner restore는 실제
    transport-event line을 지원하는 다른 hardware의 generic implementation gate다.
    88W9098 target에는 `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY`이며 target gate가
    아니다. 일반 in-band module unload/reload command-response gate는 i.MX93에서 통과했다.
-4. USB/PCIe/SDIO suspend/resume를 traffic과 pending bridge switch에 결합.
+4. USB/PCIe suspend/resume stress는 `OUT_OF_SCOPE / NOT_REQUIRED`; SDIO in-band의
+   broader traffic/bridge 결합 stress는 non-blocking follow-up이다.
 5. STA/uAP association, roaming, AP start/stop, host-MLME/P2P management masks.
 6. UAP channel-track/AGCS/channel-switch-count GET/SET 및 firmware trace.
 7. 1x1/2x2, 2.4/5/6 GHz `antcfg` SET/GET, `antcfgnss`, repeated GET,
@@ -845,10 +873,12 @@ bounded slice로 유지되지만 c464/f114 attempt의 OOB, PM 또는 long-traffi
 승격되지 않는다. terminal
 all-hardware-failure item도 별도
 `BLOCKED_BY_PLATFORM`이며 static/live substitute는 physical-source quiescence를 증명하지
-않는다. USB와 PCIe는 `BLOCKED_BY_HARDWARE`다.
+않는다. USB와 PCIe runtime validation은 사용자 승인에 따라
+`OUT_OF_SCOPE / NOT_REQUIRED`이며 Ready/merge blocker가 아니다.
 
 최종 target은 restored pre-qualification in-band `543.p18` backup이고 c464/f114
 candidate는 inactive/unqualified다. corrected `e1c9f49` artifact는 target에 전송하지
 않았다. 타겟은 `intmode=0`을 유지하며 OOB 재시도, wake-node alias, BSP/DTB 수정 또는
 추가 maintenance window를 진행하지 않는다. 범용 OOB source는 실제 지원 hardware를
-위해 보존한다. Draft PR #27은 Draft로 남아야 하며 merge-ready 판정을 하지 않는다.
+위해 보존한다. PR #27은 승인된 제품 범위에서 Ready for review로 전환하며, 실제 merge는
+별도 명시적 결정 후에만 수행한다.

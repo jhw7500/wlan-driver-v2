@@ -10,6 +10,32 @@ Close every safely executable runtime WATCH item left by the NXP mwifiex
 baseline and making unsupported or unsafe scenarios explicit rather than
 claiming unearned coverage.
 
+## Approved product scope and PR disposition
+
+The approved product qualification scope is
+`i.MX93 + 88W9098 SDIO in-band`. USB and PCIe runtime validation are
+`OUT_OF_SCOPE / NOT_REQUIRED`; their absence is not a Ready-for-review or merge
+blocker. PR #27 may transition to Ready for review. Merge remains a separate
+explicit decision.
+
+### Authoritative product scope (`PRODUCT_SCOPE_POLICY_V1`)
+
+| policy key | value |
+|---|---|
+| `product_target` | `i.MX93 + 88W9098 SDIO in-band` |
+| `usb_runtime_validation` | `OUT_OF_SCOPE / NOT_REQUIRED` |
+| `pcie_runtime_validation` | `OUT_OF_SCOPE / NOT_REQUIRED` |
+| `pr_review_state` | `READY_FOR_REVIEW` |
+| `merge_authorization` | `SEPARATE_EXPLICIT_DECISION_REQUIRED` |
+
+This `PRODUCT_SCOPE_POLICY_V1` table is the sole normative product-scope and
+integration-state policy; conflicting prose cannot authorize merge or restore
+USB/PCIe as blockers.
+
+Ready status does not claim USB, PCIe, generic transport-OOB, PM, or long-traffic
+runtime PASS. Those matrices become required only if a later product adopts the
+corresponding transport or capability.
+
 The source baseline for this qualification is `734f75b`; the documentation
 HEAD at design time is `5f8d10a` on
 `port/upstream-61820-0396-clean`.
@@ -17,8 +43,8 @@ HEAD at design time is `5f8d10a` on
 The first execution advanced the source/test qualification HEAD to
 `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`; later investigation and correction
 advanced it to `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`. Independent source and
-architecture reviews have returned. Push, Draft PR update, and merge decisions
-remain controller-owned follow-up work.
+architecture reviews have returned. Branch push and evidence updates are complete;
+Ready-for-review transition and any later merge decision remain controller-owned.
 
 ## Final review evidence scopes
 
@@ -173,8 +199,8 @@ because the 88W9098 lacks the required hardware output.
 | OOB suspend/resume (`s2idle`, `deep`) | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY` |
 | Thirty-minute OOB ping and iperf | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY`; peer/server environment was not probed |
 | All-hardware-cleanup-fails physical IRQ liveness | generic implementation `BLOCKED_BY_PLATFORM`; not a target deployment gate |
-| USB runtime | `BLOCKED_BY_HARDWARE` |
-| PCIe runtime/FLR | `BLOCKED_BY_HARDWARE` |
+| USB runtime | `OUT_OF_SCOPE / NOT_REQUIRED` |
+| PCIe runtime/FLR | `OUT_OF_SCOPE / NOT_REQUIRED` |
 | `/lib/modules` vendor copy mismatch | inactive `437.p3` copies unchanged; active runtime restored from the in-band `543.p18` backup |
 
 ## Execution outcome and cleanup
@@ -209,8 +235,9 @@ because the 88W9098 lacks the required hardware output.
   matching active timer count is zero. Backup/stage evidence is retained.
 
 Explicit summary: **88W9098 target OOB traffic qualification NOT_APPLICABLE /
-BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED.** Draft PR #27 must
-remain Draft; this execution makes no merge-ready claim.
+BLOCKED_BY_HARDWARE_CAPABILITY; USB/PCIe runtime OUT_OF_SCOPE / NOT_REQUIRED;
+cleanup COMPLETE/ACCEPTED.** PR #27 may be Ready for review under the approved
+product scope; merge remains a separate explicit decision.
 
 ## Completion criteria and disposition
 
@@ -224,7 +251,7 @@ This qualification closes under the design stop/rollback path because:
 4. the target is left healthy with the original in-band runtime setting;
 5. reboot removed the second transient timer/environment and the final matching
    active-timer count is zero; backup/stage evidence is intentionally retained;
-6. the local documentation commit is verified cleanly. Independent reviews have
-   returned; push, Draft PR #27 update, and final OMX-state handling remain controller-owned; the
-   PR must remain Draft and report every blocked residual without a merge-ready
-   claim.
+6. the local documentation commit is verified cleanly and independent reviews
+   have returned;
+7. USB/PCIe runtime is explicitly `OUT_OF_SCOPE / NOT_REQUIRED`, PR #27 may move
+   to Ready for review, and merge requires a separate explicit decision.
