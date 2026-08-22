@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Source-level lifecycle/ABI invariants for the mwifiex 0396 port."""
 
-from pathlib import Path
+import hashlib
 import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -983,9 +984,12 @@ def qualification_outcome_is_scoped(review: str, design: str) -> bool:
             "required service 6/6 active, SDIO function 2/2, DBDC netdev/STA, "
             "OOB action 0, `intmode=1` line 0",
             "active timer count는 0이다",
+            "c464/f114 OOB qualification cleanup 직후 target은 "
+            "pre-qualification in-band `543.p18` backup이었다",
             "historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 "
             "과거 target slice",
-            "corrected current source `e1c9f49`는 target에 stage하지 않았다",
+            "corrected transport-binding source `e1c9f49`는 당시 target에 "
+            "stage하지 않았다",
             "corrected `e1c9f49` artifact는 target에 전송하지 않았다",
             "historical `734f75b` i.MX93 SD9098 load/version/ping PASS; "
             "corrected `e1c9f49`는 host-only",
@@ -1018,13 +1022,17 @@ def qualification_outcome_is_scoped(review: str, design: str) -> bool:
         r"\bcorrected\b[^|.;]{0,180}\bPASS\b",
         r"\be1c9f49[0-9a-f]*\b[^|.;]{0,180}\bPASS\b",
         r"\bcurrent (?:HEAD|source)\b[^|.;]{0,180}\bPASS\b",
+        r"corrected current source\s+`?e1c9f49`?",
+        r"최종 target은 c464/f114 candidate가 아니라 pre-qualification",
         r"(?:matching )?active[- ]timer count(?:는| is)? "
         r"(?:[1-9][0-9]*|nonzero)",
         r"Candidate activation(?:\s*\|)?\s*\*{0,2}PASS\*{0,2}",
         r"corrected(?: target transport)? OOB(?: runtime)?\s+"
         r"\*{0,2}PASS\*{0,2}",
         r"artifact equality (?!5/5\b)[0-9]+/[0-9]+",
-        r"required service (?!6/6\b)[0-9]+/[0-9]+",
+        # The restored OOB baseline had six required services; the later
+        # in-band-only validation has five and is independently pinned by M11.
+        r"required service (?!(?:6/6|5/5)\b)[0-9]+/[0-9]+",
         r"SDIO function (?!2/2\b)[0-9]+/[0-9]+",
     )
     return required and not any(
@@ -1078,6 +1086,20 @@ review_require(
     "M4",
     not qualification_outcome_is_scoped(m4_current_head_pass, watch_design_doc),
     "M4 outcome invariant assigns historical runtime PASS to current source",
+)
+m4_stale_corrected_label = re.sub(
+    r"corrected transport-binding source `e1c9f49`는 당시 target에\s+"
+    r"stage하지 않았다",
+    "corrected current source `e1c9f49`는 target에 stage하지 않았다",
+    port_review_doc,
+    count=1,
+)
+review_require(
+    "M4",
+    not qualification_outcome_is_scoped(
+        m4_stale_corrected_label, watch_design_doc
+    ),
+    "M4 outcome invariant accepts a stale corrected-current-source label",
 )
 m4_additive_current_pass = (
     port_review_doc + "\ncorrected e1c9f49 runtime PASS\n"
@@ -1163,6 +1185,319 @@ review_require(
         m4_additive_full_hash_pass, watch_design_doc
     ),
     "M4 outcome invariant accepts full-hash corrected target PASS",
+)
+
+
+def current_target_evidence_is_exactly_scoped(review: str) -> bool:
+    source = "2717980aaba17f2acd831a9da4b1fcaa2c4dc597"
+    headings = list(re.finditer(
+        r"^### Current i\.MX93 SDIO in-band target evidence "
+        r"\(source `([0-9a-f]{40})`; active validation deployment\)$",
+        review,
+        re.MULTILINE,
+    ))
+    if len(headings) != 1 or headings[0].group(1) != source:
+        return False
+    heading = headings[0]
+    section_start = heading.end()
+    section_end = review.find("\n### ", section_start)
+    if section_end < 0:
+        return False
+    section = review[section_start:section_end]
+    # This evidence block is immutable: semantic checks below explain its
+    # contract, while the digest rejects every additive contradictory claim.
+    expected_section_digest = (
+        "a9c38fc6103bb0084a282117fec9deb46510c370f72d6ab0ebb3e40175b986dc"
+    )
+    section_digest = hashlib.sha256(section.encode("utf-8")).hexdigest()
+    artifact_rows = [
+        line for line in section.splitlines()
+        if line.startswith("| `bin_wlan/")
+    ]
+    expected_rows = [
+        "| `bin_wlan/mlan_imx93.ko` | 992,720 | "
+        "`0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` "
+        "| `543.p18`; `69CD10BAA7F3A642C954443` |",
+        "| `bin_wlan/moal_imx93.ko` | 1,978,760 | "
+        "`5ba9690a2488cd4cf8ee4549a78f7de4643d2cc0d504c3b70faf4cac7e640c50` "
+        "| `543.p18`; `E14FF2EA56EE8DA9F44DC18` |",
+        "| `bin_wlan/mlanutl_imx93` | 400,968 | "
+        "`127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` "
+        "| ARM aarch64 executable |",
+        "| `bin_wlan/mlanevent_imx93` | 68,144 | "
+        "`3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` "
+        "| ARM aarch64 executable |",
+    ]
+    expected_hashes = [
+        "0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396",
+        "5ba9690a2488cd4cf8ee4549a78f7de4643d2cc0d504c3b70faf4cac7e640c50",
+        "127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3",
+        "3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05",
+    ]
+    expected_identity_tokens = [
+        source,
+        "69cd10baa7f3a642c954443",
+        "e14ff2ea56ee8da9f44dc18",
+    ]
+    expected_artifact_mentions = [
+        "bin_wlan/mlan_imx93.ko",
+        "bin_wlan/moal_imx93.ko",
+        "bin_wlan/mlanutl_imx93",
+        "bin_wlan/mlanevent_imx93",
+    ]
+    source_ids = [
+        match.lower()
+        for match in re.findall(
+            r"(?<![0-9a-f])([0-9a-f]{40})(?![0-9a-f])",
+            section,
+            re.IGNORECASE,
+        )
+    ]
+    artifact_hashes = [
+        match.lower()
+        for match in re.findall(
+            r"(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])",
+            section,
+            re.IGNORECASE,
+        )
+    ]
+    identity_tokens = [
+        match.lower()
+        for match in re.findall(
+            r"(?<![0-9a-f])([0-9a-f]{7,63})(?![0-9a-f])",
+            section,
+            re.IGNORECASE,
+        )
+    ]
+    artifact_mentions = re.findall(r"`(bin_wlan/[^`]+)`", section)
+    required = all(
+        phrase in section
+        for phrase in (
+            "exact source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`에만 귀속된다",
+            "old `505.p14`→new `543.p18` 전환에서는 기존 module teardown의 "
+            "`FUNC_SHUTDOWN [0xaa]` timeout이 1건",
+            "candidate `543.p18`→`543.p18` reload는 5/5",
+            "candidate `FUNC_SHUTDOWN` timeout 0건, sensor timeout 0건, "
+            "kernel health signature 0건",
+            "candidate traffic은 45/45 ICMP, 0% loss",
+            "required service 5/5 active",
+            "SDIO function 2/2 version query",
+            "`mlan0 UP/connected`, `mlan1 present/DOWN`",
+            "rollback timer inactive, board holder/reservation 0/0",
+            "`/opt/wlan` validation deployment이며 package release가 아니다",
+            "`/lib/modules`에는 write하지 않았다",
+            "`/lib/modules/.../updates`와 package-generated manifest는 갱신하지 않았다",
+            "USB/PCIe runtime은 `OUT_OF_SCOPE / NOT_REQUIRED`로 실행하지 않았다",
+            "OOB, suspend/resume 또는 long-traffic PASS를 뜻하지 않는다",
+        )
+    )
+    scope_disclaimer = (
+        "OOB, suspend/resume 또는 long-traffic PASS를 뜻하지 않는다"
+    )
+    claims = section.replace(scope_disclaimer, "")
+    forbidden = (
+        r"\bcandidate(?:/kernel)?\b[^\n.]{0,160}"
+        r"\b(?:timeout|error signatures?|kernel health signature)\b"
+        r"[^\n.0-9]{0,24}(?:nonzero|[1-9][0-9]*)",
+        r"\b(?:sensor timeout|kernel health signature|kernel error signatures?)"
+        r"\b[^\n.0-9]{0,24}(?:nonzero|[1-9][0-9]*)",
+        r"\bcandidate\b[^\n.]{0,100}reload(?:는|은)?\s*"
+        r"(?!5/5\b)[0-9]+/[0-9]+",
+        r"\bcandidate traffic(?:은|는)?\s*(?!45/45\b)[0-9]+/[0-9]+",
+        r"(?<![0-9])(?:[1-9][0-9]*(?:\.[0-9]+)?)%\s*loss\b",
+        r"\brequired service\s+(?!5/5\b)[0-9]+/[0-9]+",
+        r"\bSDIO function\s+(?!2/2\b)[0-9]+/[0-9]+",
+        r"\brollback timer\b[^\n.]{0,40}\bactive\b",
+        r"\bboard holder/reservation\s+(?!0/0\b)[0-9]+/[0-9]+",
+        r"\bmlan0\b[^`,\n.]{0,60}\b(?:DOWN|disconnected)\b",
+        r"\bmlan1\b[^`,\n.]{0,60}\b(?:UP|connected)\b",
+        r"/lib/modules[^\n]{0,100}(?:\b(?:updated|modified|written)\b|"
+        r"(?:write|갱신|수정)했다)",
+        r"package-generated manifest[^\n.]{0,80}"
+        r"(?:\b(?:updated|modified|written)\b|(?:write|갱신|수정)했다)",
+        r"\bOOB\b[^\n.]{0,80}\bPASS\b",
+        r"\b(?:PM|suspend/resume|long-traffic)\b[^\n.]{0,80}\bPASS\b",
+        r"\b(?:USB|PCIe)\b[^\n.]{0,80}\bPASS\b",
+        r"\bpackage(?:\s+release)?\b[^\n.]{0,80}"
+        r"\b(?:complete|completed|PASS)\b",
+    )
+    return (
+        artifact_rows == expected_rows
+        and section_digest == expected_section_digest
+        and source_ids == [source]
+        and artifact_hashes == expected_hashes
+        and identity_tokens == expected_identity_tokens
+        and artifact_mentions == expected_artifact_mentions
+        and required
+        and not any(
+            re.search(pattern, claims, re.IGNORECASE) for pattern in forbidden
+        )
+    )
+
+
+review_require(
+    "M11",
+    current_target_evidence_is_exactly_scoped(port_review_doc),
+    "M11 current 2717980 target evidence is missing, stale, or over-scoped",
+)
+m11_stale_source = port_review_doc.replace(
+    "source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`; active validation deployment",
+    "source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`; active validation deployment",
+    1,
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_stale_source),
+    "M11 target invariant accepts evidence assigned to the wrong source",
+)
+m11_stale_hash = port_review_doc.replace(
+    "5ba9690a2488cd4cf8ee4549a78f7de4643d2cc0d504c3b70faf4cac7e640c50",
+    "569a0cb30a4b08689def8405fd84122ac36f7f924c8fe7d59948b25cda16d7f5",
+    1,
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_stale_hash),
+    "M11 target invariant accepts the historical moal artifact hash",
+)
+m11_candidate_timeout = port_review_doc.replace(
+    "candidate `FUNC_SHUTDOWN` timeout 0건",
+    "candidate `FUNC_SHUTDOWN` timeout 1건",
+    1,
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_candidate_timeout),
+    "M11 target invariant accepts a candidate teardown timeout",
+)
+m11_false_oob = port_review_doc.replace(
+    "OOB, suspend/resume 또는 long-traffic PASS를 뜻하지 않는다",
+    "OOB runtime PASS",
+    1,
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_false_oob),
+    "M11 target invariant promotes in-band evidence to OOB PASS",
+)
+
+
+def add_current_target_claim(review: str, claim: str) -> str:
+    next_heading = "\n### Userspace와 mirrored headers"
+    return review.replace(
+        next_heading,
+        f"\n{claim}\n{next_heading}",
+        1,
+    )
+
+
+m11_additive_candidate_timeout = add_current_target_claim(
+    port_review_doc, "candidate FUNC_SHUTDOWN timeout 1건"
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(
+        m11_additive_candidate_timeout
+    ),
+    "M11 target invariant accepts an additive candidate timeout",
+)
+m11_additive_kernel_error = add_current_target_claim(
+    port_review_doc, "candidate/kernel error signatures 1건"
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_additive_kernel_error),
+    "M11 target invariant accepts additive candidate/kernel errors",
+)
+m11_additive_kernel_health = add_current_target_claim(
+    port_review_doc, "kernel health signature 1건"
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_additive_kernel_health),
+    "M11 target invariant accepts an additive kernel health signature",
+)
+m11_additive_sensor_timeout = add_current_target_claim(
+    port_review_doc, "sensor timeout 1건"
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_additive_sensor_timeout),
+    "M11 target invariant accepts an additive sensor timeout",
+)
+m11_additive_stale_source = add_current_target_claim(
+    port_review_doc,
+    "current evidence source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`",
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_additive_stale_source),
+    "M11 target invariant accepts an additive stale source",
+)
+m11_additive_stale_hash = add_current_target_claim(
+    port_review_doc,
+    "active moal SHA-256 "
+    "`569a0cb30a4b08689def8405fd84122ac36f7f924c8fe7d59948b25cda16d7f5`",
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_additive_stale_hash),
+    "M11 target invariant accepts an additive stale artifact hash",
+)
+for m11_state_label, m11_state_claim in (
+    ("abbreviated stale source", "current evidence source `e1c9f49`"),
+    ("abbreviated stale hash", "active moal SHA-256 `569a0cb3`"),
+    ("candidate reload shortfall", "candidate reload 4/5"),
+    ("candidate traffic shortfall", "candidate traffic 44/45"),
+    ("candidate packet loss", "candidate traffic 45/45 ICMP, 2% loss"),
+    ("stale active version", "active candidate version 505.p14"),
+    ("stale moal size", "active moal bytes 1,978,536"),
+    ("required-service shortfall", "required service 4/5 active"),
+    ("SDIO-function shortfall", "SDIO function 1/2 version query"),
+    ("active rollback", "rollback timer active"),
+    ("armed rollback", "rollback timer armed"),
+    ("occupied board", "board holder/reservation 1/0"),
+    ("mlan0 regression", "mlan0 DOWN/disconnected"),
+    ("mlan1 scope expansion", "mlan1 UP/connected"),
+    ("module-tree update", "/lib/modules/.../updates updated"),
+    ("manifest update", "package-generated manifest updated"),
+):
+    review_require(
+        "M11",
+        not current_target_evidence_is_exactly_scoped(
+            add_current_target_claim(port_review_doc, m11_state_claim)
+        ),
+        f"M11 target invariant accepts additive {m11_state_label}",
+    )
+for m11_scope_label, m11_scope_claim in (
+    ("OOB", "OOB PASS"),
+    ("target OOB", "target OOB traffic qualification PASS"),
+    ("PM", "PM PASS"),
+    ("long-traffic", "long-traffic PASS"),
+    ("USB", "USB runtime PASS"),
+    ("PCIe", "PCIe runtime PASS"),
+    ("USB hardware", "USB hardware qualification PASS"),
+    ("PCIe hardware", "PCIe hardware qualification PASS"),
+    ("package", "package release complete"),
+    ("package qualification", "package release qualification PASS"),
+):
+    review_require(
+        "M11",
+        not current_target_evidence_is_exactly_scoped(
+            add_current_target_claim(port_review_doc, m11_scope_claim)
+        ),
+        f"M11 target invariant accepts additive {m11_scope_label} promotion",
+    )
+m11_duplicate_heading = (
+    port_review_doc
+    + "\n### Current i.MX93 SDIO in-band target evidence "
+    "(source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`; "
+    "active validation deployment)\n"
+)
+review_require(
+    "M11",
+    not current_target_evidence_is_exactly_scoped(m11_duplicate_heading),
+    "M11 target invariant accepts a duplicate current-evidence heading",
 )
 
 

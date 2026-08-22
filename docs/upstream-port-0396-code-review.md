@@ -3,22 +3,27 @@
 ## 판정 범위와 최종 상태
 
 이 문서의 최종 **fixed source/test qualification HEAD**는
-`e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`이다. `f11420820bc73196eee837a9896f120b86364b57`의
-최종 후보를 타겟에 한 번 더 적용해 원인을 수집한 결과, `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`가
+`2717980aaba17f2acd831a9da4b1fcaa2c4dc597`이다. `f11420820bc73196eee837a9896f120b86364b57`의
+후보를 타겟에 적용해 원인을 수집한 결과, `c4644eee070c3a735e83037fdefdfbaf3d74ea8e`가
 SDIO transport binding `nxp,wifi-oob-int`와 suspend-only wake binding
 `nxp,wifi-wake-host`를 fallback으로 합친 것이 잘못임을 확인했다. `e1c9f49`는 해당
 alias를 제거하고 transport lookup이 단 하나의 명시적 binding만 허용하도록 mutation
-invariant를 강화한다.
+invariant를 강화했다. 이후 88W9098 OOB capability와 제품 범위를 명시적으로 닫고,
+APF accounting, QA flag isolation, PCIe SSU dump ownership을 보강한 exact source
+`2717980`을 i.MX93 SDIO in-band target에 배포해 현재 소스의 bounded runtime evidence를
+추가했다.
 
-최종 판정은 **host/source validated; candidate activation FAIL at the invalid binding
-alias; corrected target transport OOB NOT_APPLICABLE /
-BLOCKED_BY_HARDWARE_CAPABILITY; architecture WATCH for the generic OOB
-implementation; target OOB traffic qualification NOT_APPLICABLE /
-BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED**다. 수정 diff의 독립 2-lane review는
+최종 판정은 **host/source validated at `2717980`; required i.MX93/88W9098 SDIO
+in-band runtime qualified; candidate activation FAIL at the invalid binding alias;
+corrected target transport OOB NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY;
+architecture WATCH for the generic OOB implementation; target OOB traffic
+qualification NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY; cleanup
+COMPLETE/ACCEPTED**다. 수정 diff의 독립 2-lane review는
 code `APPROVE`, architecture `CLEAR`이며 Critical/Important finding은 0건이다. terminal
 hardware all-fail shared-line `WATCH`는 별도 source chronology로 유지하지만 승인된 제품
-범위의 Ready-for-review 차단 조건은 아니다. 이전 i.MX93 in-band reload PASS는
-아래에 명시한 과거 slice에만 적용되며 OOB, PM 또는 장시간 traffic runtime PASS가 아니다.
+범위의 Ready-for-review 차단 조건은 아니다. 과거 `734f75b` 결과와 현재 `2717980`
+결과는 각각 exact source에 귀속되며 어느 쪽도 OOB, PM 또는 장시간 traffic runtime
+PASS가 아니다.
 
 ## Approved product qualification scope
 
@@ -72,6 +77,13 @@ hardware의 runtime PASS를 주장하지 않으며, merge를 자동 승인하거
 | invalid OOB/wake binding alias | `c4644eee070c3a735e83037fdefdfbaf3d74ea8e` (target failure source; reverted semantically) |
 | final APF/Android/SAE review fixes | `f11420820bc73196eee837a9896f120b86364b57` (second target-staged candidate source) |
 | transport/wake binding separation | `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436` (host/source validated; not target-staged) |
+| OOB binding root-cause record | `22d184bd08b5aff441f45d6784416c6fa10c8a37` |
+| 88W9098 OOB capability closure | `1f9d15b15a1b7001e71b2271e3168fefe39de86b` |
+| approved SDIO product scope | `8c8cee1863a9745b21169f145095ef8238ac8873` |
+| APF ICMPv6 accounting bound | `fed4f42a5237be68e53a143876278f84f1a3d48b` |
+| upstream-port QA make-flag isolation | `e2f97a42e2a9b1f025e7083834d44dc00cbe2dd7` |
+| PCIe SSU dump ownership serialization | `2717980aaba17f2acd831a9da4b1fcaa2c4dc597` |
+| current i.MX93 SDIO in-band target evidence source | `2717980aaba17f2acd831a9da4b1fcaa2c4dc597` |
 | final evidence documentation | follow-up docs commit; no artifact content change |
 
 `cc7f79d`는 local parent `ce179fcc`와 exact upstream tip `2e481212`를 부모로
@@ -227,9 +239,9 @@ code remains retained for hardware that supplies a supported transport-event lin
 아니다. 명시적 closure summary는 **target OOB traffic qualification NOT_APPLICABLE /
 BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED**다.
 
-### Restored baseline and cleanup proof
+### Restored baseline and cleanup proof (historical OOB closure state)
 
-최종 target은 c464/f114 candidate가 아니라 pre-qualification in-band `543.p18` backup이다.
+c464/f114 OOB qualification cleanup 직후 target은 pre-qualification in-band `543.p18` backup이었다.
 active module 두 개, utility 두 개와 parameter file의 다섯 artifact가 backup과 exact
 match하고, OOB/`intmode`는 absent이며, required services와 SDIO functions는 healthy다.
 DBDC netdev와 STA association도 복구됐다. Candidate와 `wifi_mod_para.oob`, manifests,
@@ -352,6 +364,17 @@ service 6/6 active, SDIO function 2/2, DBDC netdev/STA, OOB action 0, `intmode=1
     i.MX93 build 및 checkpatch 0/0을 확인했다. 독립 review 결과는 code `APPROVE`,
     architecture `CLEAR`, Critical/Important 0건이다. corrected artifact는 target에 다시
     stage하지 않았다.
+21. `22d184b`는 OOB binding 실패의 root cause를 기록했고, `1f9d15b`는 88W9098에
+    continuous SDIO transport OOB capability가 없음을 닫았다. `8c8cee1`은 승인 제품
+    qualification 범위를 i.MX93/88W9098 SDIO in-band로 고정했다.
+22. `fed4f42`는 APF ICMPv6 accounting 경계를 보강했고, `e2f97a4`는 upstream-port QA의
+    make flag를 격리했다. `2717980`은 PCIe SSU dump ownership을 직렬화했다. USB/PCIe
+    runtime은 승인 제품 범위 밖이므로 이 source 변경의 hardware PASS를 주장하지 않는다.
+23. exact source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`의 i.MX93 artifact를
+    `/opt/wlan` validation deployment로 적용했다. old-to-new 전환의 기존 module teardown
+    timeout을 candidate marker와 분리한 뒤, candidate-to-candidate reload 5회와 service,
+    function, interface, 짧은 ICMP health를 검증했다. package tree는 갱신하지 않았고 board
+    holder/reservation과 rollback timer를 모두 해제했다.
 
 이 chronology의 source/architecture 판정은 current tree의 fresh review에 근거한다.
 검증한 SDIO reload slice 밖의 target firmware/hardware stress는 별도이며 계속
@@ -752,6 +775,34 @@ active module configuration은 `intmode`를 지정하지 않아 default `intmode
 `nxp_oob_sdio_irq`는 없었다. 따라서 `734f75b`의 OOB token/failure 경로는 compile/static
 검증만 있으며 이 target run으로 runtime 증명되지 않는다.
 
+### Current i.MX93 SDIO in-band target evidence (source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`; active validation deployment)
+
+이 섹션의 artifact와 runtime 결과는 exact source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`에만 귀속된다.
+target에 stage하고 실제 load한 산출물은 다음과 같다.
+
+| artifact | bytes | SHA-256 | loaded version / srcversion |
+|---|---:|---|---|
+| `bin_wlan/mlan_imx93.ko` | 992,720 | `0c0347b6ef08ae0d605655b62e70121440d0f0961277d25f5eb27fe4b595b396` | `543.p18`; `69CD10BAA7F3A642C954443` |
+| `bin_wlan/moal_imx93.ko` | 1,978,760 | `5ba9690a2488cd4cf8ee4549a78f7de4643d2cc0d504c3b70faf4cac7e640c50` | `543.p18`; `E14FF2EA56EE8DA9F44DC18` |
+| `bin_wlan/mlanutl_imx93` | 400,968 | `127912311df9397df9104cf8fe96f4501ecc1edf9df67007d54af6f95c2ae4a3` | ARM aarch64 executable |
+| `bin_wlan/mlanevent_imx93` | 68,144 | `3523a73a544627d3ceae7f3c7ed57cdf19df8a04882b0d0ea14c69bde95dbd05` | ARM aarch64 executable |
+
+old `505.p14`→new `543.p18` 전환에서는 기존 module teardown의 `FUNC_SHUTDOWN [0xaa]` timeout이 1건
+발생했다. 이 event는 새 candidate가 load되기 전 기존 505 module을 내리는 phase에 귀속해
+별도 marker와 dmesg로 보존했다. candidate `543.p18`→`543.p18` reload는 5/5였고,
+candidate `FUNC_SHUTDOWN` timeout 0건, sensor timeout 0건, kernel health signature 0건이었다.
+candidate traffic은 45/45 ICMP, 0% loss였다.
+
+최종 health gate는 required service 5/5 active, SDIO function 2/2 version query,
+`mlan0 UP/connected`, `mlan1 present/DOWN`을 확인했다. rollback timer inactive, board holder/reservation 0/0
+상태로 정리했고 target에는 위 candidate가 계속 load되어 있다.
+
+현재 상태는 `/opt/wlan` validation deployment이며 package release가 아니다.
+`/lib/modules`에는 write하지 않았다.
+`/lib/modules/.../updates`와 package-generated manifest는 갱신하지 않았다.
+USB/PCIe runtime은 `OUT_OF_SCOPE / NOT_REQUIRED`로 실행하지 않았다. 이 bounded evidence는
+OOB, suspend/resume 또는 long-traffic PASS를 뜻하지 않는다.
+
 ### Userspace와 mirrored headers
 
 ```text
@@ -807,12 +858,12 @@ pass 또는 유효한 target result로 기록하지 않는다.
 |---|---|---|---|
 | USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | approved product scope에서는 `OUT_OF_SCOPE / NOT_REQUIRED`; 다른 product가 USB를 채택할 때 수행 |
 | bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; generic terminal all-hardware-fail shared level-source liveness | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; PCIe와 다른 hardware의 OOB stress는 approved product scope에서 `OUT_OF_SCOPE / NOT_REQUIRED` |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; generic terminal all-hardware-fail shared level-source liveness | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; exact source `2717980`의 SDIO in-band candidate reload 5/5와 traffic 45/45를 추가 확인; PCIe와 다른 hardware의 OOB stress는 approved product scope에서 `OUT_OF_SCOPE / NOT_REQUIRED` |
 | management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 diagnostics, root-owner-write config mode 0644, card-lifetime writer transaction, exact command/OTP delimiter boundaries, per-handle dump pathname snapshots | unload/read, frame-volume/privacy, synchronous dump I/O와 whole-dump allocation | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
 | VHT/HE/rate | stored-map round-trip, HE encode/decode, 26-word bitmap | firmware persistence/power-table variance | association IE, HE groups 0–14, reconnect persistence |
-| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build/load | board별 firmware/transport environment | historical `734f75b` i.MX93 SD9098 load/version/ping PASS; corrected `e1c9f49`는 host-only; 나머지 board/transport 필요 |
+| build/QA | clean module/userspace builds, host/target app-object isolation, deterministic static gate, i.MX93 cross-build/load | board별 firmware/transport environment | historical `734f75b` i.MX93 SD9098 load/version/ping PASS; corrected `e1c9f49`는 host-only; exact source `2717980` artifact를 현재 i.MX93 SDIO in-band validation deployment에서 검증; 나머지 board/transport 필요 |
 
 ## `mapp/` ownership boundary
 
@@ -829,10 +880,15 @@ ABI review 및 target execution evidence가 필요하다.
 
 historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 과거 target slice에서 old-to-new/
 new-to-new in-band module reload 2회, DBDC interface enumeration, STA reconnect,
-version CLI와 짧은 traffic smoke가 통과했다. corrected current source `e1c9f49`는
-target에 stage하지 않았다. 다음 항목은 broad generic-driver coverage의 후속 후보 또는
+version CLI와 짧은 traffic smoke가 통과했다. corrected transport-binding source `e1c9f49`는 당시 target에
+stage하지 않았다. 다음 항목은 broad generic-driver coverage의 후속 후보 또는
 명시적 hardware exclusion이며, 승인된 i.MX93/88W9098 SDIO in-band 범위의 Ready/merge
 차단 조건이 아니다. 이 문서는 해당 항목의 hardware pass를 주장하지 않는다.
+
+그 이후 exact source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`의 현재 validation
+deployment에서는 candidate-to-candidate reload 5/5, SDIO function query 2/2와 짧은
+traffic 45/45를 확인했다. 이 결과는 i.MX93/88W9098 SDIO in-band 범위에만 귀속하며
+package 배포, OOB, PM, 장시간 traffic 또는 다른 transport 검증으로 확장하지 않는다.
 
 1. USB disconnect/unplug, unload, suspend traffic, resubmit failure, firmware
    reload/mode rebuild, pending counters, KASAN/lockdep: `OUT_OF_SCOPE / NOT_REQUIRED`.
@@ -864,21 +920,26 @@ userspace build와 deterministic static QA가 fresh evidence로 남아 있다. �
 transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
-따라서 현재 상태는 **host/source validation complete at `e1c9f49`, invalid-alias
+따라서 현재 상태는 **host/source validation complete at `2717980`, required i.MX93/
+88W9098 SDIO in-band runtime qualified, invalid-alias
 candidate activation FAIL, corrected target transport OOB NOT_APPLICABLE /
 BLOCKED_BY_HARDWARE_CAPABILITY, architecture WATCH for the generic implementation,
 target OOB traffic qualification NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY,
 cleanup COMPLETE/ACCEPTED**다. 이전 `734f75b` SD9098 in-band reload/STA smoke PASS는 historical
-bounded slice로 유지되지만 c464/f114 attempt의 OOB, PM 또는 long-traffic PASS로
-승격되지 않는다. terminal
+bounded slice로 유지된다. exact source `2717980`의 current validation은 candidate reload
+5/5와 traffic 45/45를 추가로 확인했지만 c464/f114 attempt의 OOB, PM 또는 long-traffic
+PASS로 승격되지 않는다. terminal
 all-hardware-failure item도 별도
 `BLOCKED_BY_PLATFORM`이며 static/live substitute는 physical-source quiescence를 증명하지
 않는다. USB와 PCIe runtime validation은 사용자 승인에 따라
 `OUT_OF_SCOPE / NOT_REQUIRED`이며 Ready/merge blocker가 아니다.
 
-최종 target은 restored pre-qualification in-band `543.p18` backup이고 c464/f114
-candidate는 inactive/unqualified다. corrected `e1c9f49` artifact는 target에 전송하지
-않았다. 타겟은 `intmode=0`을 유지하며 OOB 재시도, wake-node alias, BSP/DTB 수정 또는
-추가 maintenance window를 진행하지 않는다. 범용 OOB source는 실제 지원 hardware를
-위해 보존한다. PR #27은 승인된 제품 범위에서 Ready for review로 전환하며, 실제 merge는
-별도 명시적 결정 후에만 수행한다.
+최종 target은 exact source `2717980aaba17f2acd831a9da4b1fcaa2c4dc597`의 in-band
+`543.p18` active validation deployment이고 c464/f114 candidate는 inactive/unqualified다.
+corrected `e1c9f49` artifact는 target에 전송하지 않았다. 이 배포는 `/opt/wlan`에만
+적용했고 `/lib/modules`에는 write하지 않았다. package-generated manifest와
+`/lib/modules/.../updates`를 갱신하지 않은 validation 상태다. 타겟은 `intmode=0`을
+유지하며 OOB 재시도, wake-node alias, BSP/DTB
+수정 또는 추가 maintenance window를 진행하지 않는다. 범용 OOB source는 실제 지원
+hardware를 위해 보존한다. PR #27은 승인된 제품 범위에서 Ready for review로 전환하며,
+실제 merge는 별도 명시적 결정 후에만 수행한다.
