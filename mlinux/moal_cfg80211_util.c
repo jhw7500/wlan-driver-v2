@@ -2429,7 +2429,7 @@ static inline bool woal_is_ping_echo(const t_u8 *data, t_u32 len)
 			return false;
 		} else if (v == 6) {
 			/* IPv6 header at 0 (40 bytes) */
-			if (len < 40)
+			if (len < 41)
 				return false;
 			nh = data[6]; /* Next Header */
 			if (nh != 58) /* ICMPv6 */
@@ -2456,7 +2456,7 @@ static inline bool woal_is_ping_echo(const t_u8 *data, t_u32 len)
 			}
 			return false;
 		} else if (v == 6) {
-			if (len < off + 40)
+			if (len < off + 41)
 				return false;
 			nh = data[off + 6];
 			if (nh != 58) /* ICMPv6 */

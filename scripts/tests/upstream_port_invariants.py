@@ -132,6 +132,9 @@ apf_v6_exec = c_function(cfg80211_util_c, "static int apf_v6_exec")
 apf_run = c_function(cfg80211_util_c, "static int apf_run")
 apf_filter_packet = c_function(cfg80211_util_c, "int woal_filter_packet")
 apf_icmpv6_csum = c_function(cfg80211_util_c, "apf_icmpv6_csum")
+apf_ping_echo = c_function(
+    cfg80211_util_c, "static inline bool woal_is_ping_echo"
+)
 passphrase_ioctl = c_function(
     eth_ioctl_c, "static int woal_setget_priv_passphrase"
 )
@@ -406,6 +409,63 @@ review_require(
     "I3",
     not apf_icmpv6_checksum_is_bounded(i3_icmp_minimum_removed, apf_v6_exec),
     "I3 APF checksum invariant accepts undersized ICMPv6 payload mutation",
+)
+
+
+def apf_ping_echo_type_reads_are_bounded(body: str) -> bool:
+    code = re.sub(r"\s+", "", c_code(body))
+    l3_guard = code.find("if(len<41)returnfalse;")
+    l3_read = code.find("icmp6_type=data[40];")
+    l2_guard = code.find("if(len<off+41)returnfalse;")
+    l2_read = code.find("icmp6_type=data[off+40];")
+    return (
+        min(l3_guard, l3_read, l2_guard, l2_read) >= 0
+        and l3_guard < l3_read < l2_guard < l2_read
+        and code.count("if(len<41)returnfalse;") == 1
+        and code.count("if(len<off+41)returnfalse;") == 1
+    )
+
+
+review_require(
+    "I3",
+    apf_ping_echo_type_reads_are_bounded(apf_ping_echo),
+    "I3 APF ping accounting reads an absent ICMPv6 type byte",
+)
+i3_ping_l3_bound_weakened = apf_ping_echo.replace("len < 41", "len < 40", 1)
+review_require(
+    "I3",
+    not apf_ping_echo_type_reads_are_bounded(i3_ping_l3_bound_weakened),
+    "I3 APF ping invariant accepts a header-only L3 IPv6 packet",
+)
+i3_ping_l3_return_removed = re.sub(
+    r"if\s*\(len\s*<\s*41\)\s*return\s+false\s*;",
+    "if (len < 41) {}",
+    apf_ping_echo,
+    count=1,
+)
+review_require(
+    "I3",
+    not apf_ping_echo_type_reads_are_bounded(i3_ping_l3_return_removed),
+    "I3 APF ping invariant accepts a non-terminating L3 length guard",
+)
+i3_ping_l2_bound_weakened = apf_ping_echo.replace(
+    "len < off + 41", "len < off + 40", 1
+)
+review_require(
+    "I3",
+    not apf_ping_echo_type_reads_are_bounded(i3_ping_l2_bound_weakened),
+    "I3 APF ping invariant accepts a header-only Ethernet IPv6 packet",
+)
+i3_ping_l2_return_removed = re.sub(
+    r"if\s*\(len\s*<\s*off\s*\+\s*41\)\s*return\s+false\s*;",
+    "if (len < off + 41) {}",
+    apf_ping_echo,
+    count=1,
+)
+review_require(
+    "I3",
+    not apf_ping_echo_type_reads_are_bounded(i3_ping_l2_return_removed),
+    "I3 APF ping invariant accepts a non-terminating Ethernet length guard",
 )
 
 
@@ -936,6 +996,7 @@ review_require(
 
 
 OOB_CAPABILITY_CLOSURE_BASE = "22d184bd08b5aff441f45d6784416c6fa10c8a37"
+OOB_CAPABILITY_CLOSURE_COMMIT = "1f9d15b15a1b7001e71b2271e3168fefe39de86b"
 OOB_CAPABILITY_CLOSURE_PATHS = frozenset(
     {
         "docs/superpowers/specs/2026-08-21-upstream-port-watch-closure-design.md",
@@ -990,6 +1051,7 @@ def oob_capability_closure_changed_paths() -> tuple[str, ...] | None:
             "--name-only",
             "--no-renames",
             OOB_CAPABILITY_CLOSURE_BASE,
+            OOB_CAPABILITY_CLOSURE_COMMIT,
             "--",
         ],
         cwd=ROOT,
