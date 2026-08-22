@@ -123,6 +123,8 @@ bridge-fault-guard-check:
 	@bash scripts/tests/bridge_static_checks.sh
 
 .PHONY: upstream-port-check
+# Do not leak the outer Kbuild flags into the nested make matrix checks.
+upstream-port-check: ccflags-y :=
 upstream-port-check:
 	@bash scripts/tests/upstream_port_final_checks.sh
 
