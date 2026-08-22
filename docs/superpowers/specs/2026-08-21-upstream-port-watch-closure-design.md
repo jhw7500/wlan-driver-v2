@@ -1,7 +1,7 @@
 # Upstream Port Runtime WATCH Closure Design
 
-**Status:** Executed — invalid binding alias corrected; target OOB blocked by
-missing transport binding.
+**Status:** Executed — invalid binding alias corrected; 88W9098 target transport
+OOB is NOT_APPLICABLE and BLOCKED_BY_HARDWARE_CAPABILITY.
 
 ## Objective
 
@@ -39,23 +39,30 @@ No target access occurred during the original final-review fix wave. A subsequen
 bounded second attempt did access the target, reproduced the same transport
 configuration timeout, restored the in-band `543.p18` backup, and rebooted through
 the existing `wifi_init` failure policy. OOB runtime remains `0/10` cycles and
-suspend/traffic-dependent slices remain `BLOCKED_BY_PREREQUISITE`.
+suspend/traffic-dependent OOB slices are not applicable to this target because the
+88W9098 does not provide a transport-event OOB output.
 
 ## Fixed pre-execution target facts
 
 - Target: i.MX93, with SSH carried by the wired `eth0` management path.
-- Wi-Fi transport: SD9098 DBDC, SDIO functions `02df:914d` and `02df:914e`.
+- Wi-Fi transport: 88W9098 silicon exposed by the driver as SD9098 DBDC, SDIO
+  functions `02df:914d` and `02df:914e`.
 - Validated module source: `/opt/wlan/driver/*_imx93.ko`, loaded directly by
   `/usr/local/scripts/wifi_init.sh` with `insmod`.
 - Validated active version before this work: `mlan=543.p18`, `moal=543.p18`.
-- Current runtime mode: in-band SDIO interrupts. No `nxp_oob_sdio_irq` action
-  is registered.
+- Current runtime mode: in-band SDIO interrupts (`intmode=0`). No
+  `nxp_oob_sdio_irq` action is registered.
 - Shared OOB line: IRQ 102, level-low, currently owned by two
   `wifi_oob_wakeup` actions.
 - Driver lookup: `woal_request_gpio()` searches only for
   `nxp,wifi-oob-int`.
 - Board DT: the matching hardware node is compatible with
   `nxp,wifi-wake-host`; no `nxp,wifi-oob-int` compatible exists.
+- Exact BSP source commit:
+  `ccf0a99701a701fb48a04e31ffe3f9d585a8374a`. The locally built and deployed
+  board DTB both have SHA-256
+  `9a491ab1155f69a56bdfb931aa8dbae5f2a3ad2dfbef7087005fd02baa093d39`;
+  its only WLAN-related external interrupt is the wake-only `GPIO3_IO26` node.
 - Power management: `freeze` and `mem` are available; `s2idle` and `deep`
   are selectable; RTC wakealarm is enabled and writable.
 - Runtime exclusions: no enumerated PCIe or USB WLAN device and
@@ -78,12 +85,42 @@ driver accepts only `nxp,wifi-oob-int`, releases the DT node reference, rejects 
 zero mapping, and fails with `-ENODEV` before IRQ registration when that binding is
 absent.
 
-Target OOB qualification now requires a board/BSP change outside this repository:
-the actual continuous SDIO transport line must be described with
-`nxp,wifi-oob-int` and electrically/firmware validated. No DTB deployment or
-additional candidate retry is authorized in this execution. Static-only checks
-cannot replace that prerequisite, and no production fault-injection parameter is
-added.
+### 88W9098 hardware capability boundary
+
+NXP TechSupport states that the 88W9098 M.2 `SDIO_WAKE#` output is wake-only and
+that this chipset has no separate OOB interrupt/event GPIO:
+https://community.nxp.com/t5/Wi-Fi-Bluetooth-802-15-4/M2-JODY-W377-88W9098-OOB-interrupt/m-p/2351813/highlight/true.
+The generic mwifiex documentation still describes `intmode=1` and firmware
+duplication of an SDIO interrupt to GPIO-21 for hardware that supports that path:
+https://github.com/nxp-imx/mwifiex. That generic option is not evidence that the
+88W9098 target exposes such a line.
+
+#### Authoritative target policy (`OOB_TARGET_POLICY_V1`)
+
+| policy key | value |
+|---|---|
+| `chip` | `88W9098` |
+| `transport_oob` | `NOT_APPLICABLE` |
+| `block_reason` | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| `runtime_intmode` | `0` |
+| `wake_binding_reuse` | `FORBIDDEN` |
+| `bsp_dtb_mutation` | `FORBIDDEN` |
+| `target_mutation` | `FORBIDDEN` |
+| `target_oob_retry` | `FORBIDDEN` |
+| `new_maintenance_window` | `FORBIDDEN` |
+| `generic_upstream_oob` | `RETAIN` |
+| `production_c_change` | `NONE` |
+
+This `OOB_TARGET_POLICY_V1` table is the sole normative target policy;
+conflicting prose is invalid and cannot authorize a target action.
+
+**Disposition:** 88W9098 target transport OOB is NOT_APPLICABLE and
+BLOCKED_BY_HARDWARE_CAPABILITY. The target deployment must retain `intmode=0`.
+Never alias or relabel `nxp,wifi-wake-host` as `nxp,wifi-oob-int`. Do not
+patch/deploy the BSP or DTB and do not schedule another target OOB maintenance
+window. Keep the generic upstream OOB transport implementation for other hardware
+with a supported transport-event line. This closure adds no production C change
+and no target mutation.
 
 ## Source and test changes
 
@@ -103,110 +140,39 @@ Record the exact test sequence and results in
 private target staging directory but must not be committed when they contain
 SSID, BSSID, MAC address, or local network details.
 
-## Target rollout architecture
+## Target disposition and generic OOB backlog
 
-### Backup and automatic rollback
+The earlier bounded rollout and rollback rehearsal remains historical evidence;
+it is not authorization for another OOB activation. The restored target must stay
+on the healthy in-band configuration with `intmode=0`. No module, parameter file,
+BSP, DTB, timer, service, or target artifact is changed by this capability
+closure.
 
-Before changing either modules or the active firmware parameter file:
-
-- copy the four currently deployed artifacts and
-  `/usr/lib/firmware/cts/wifi_mod_para.conf` into a timestamped backup;
-- stage the new artifacts and SHA-256 manifest under a new immutable
-  `/opt/wlan/staging/` directory;
-- install a transient systemd rollback unit/timer with a 90-minute ultimate
-  deadline;
-- make rollback restore both modules and the parameter file, restart
-  `wifi_init.service`, and leave an append-only log;
-- cancel the rollback timer only after the full selected target slice passes.
-
-The deployed baseline after qualification will return to `intmode=0` unless
-the user explicitly requests OOB as the production default.
-
-### OOB enablement
-
-Add `intmode=1` to both `SD9098_0` and `SD9098_1` blocks in the active
-`wifi_mod_para.conf`. No `gpiopin` value is required on i.MX because the IRQ
-is mapped from the DT node.
-
-After restart, require all of the following:
-
-- both module versions are `543.p18`;
-- `wifi_init`, `wpa_supplicant@mlan0`, `wifi_bridge@mlan0`, and
-  `wifi_logger_temp` are active;
-- both SDIO functions and both network interfaces are present;
-- the STA interface reconnects;
-- IRQ 102 contains `nxp_oob_sdio_irq` action ownership in addition to the
-  existing wake actions;
-- OOB IRQ counts advance under WLAN traffic;
-- the idle IRQ rate remains below 10,000 interrupts/second;
-- no timeout, BUG, WARNING, Oops, Call Trace, KASAN, lockdep, UAF, or general
-  protection signature appears after the test marker.
-
-### Shared-IRQ and teardown stress
-
-While OOB traffic is active, perform ten bounded `wifi_init.service` restart
-cycles. Each cycle must reconnect within 120 seconds, restore both DBDC
-interfaces, re-register OOB actions, pass a 20-packet WLAN ping, and show no
-kernel-health signature. This exercises action removal, WQ draining, disable
-token balancing, and sibling-function callback barriers while the shared
-level-low line is live.
-
-The terminal case where CCCR source disable, whole-function disable, and
-reset all fail cannot be induced safely on this kernel. Its dynamic status
-remains **BLOCKED_BY_PLATFORM**; the accepted substitute is the existing
-mutation suite plus live-source teardown stress. No claim will convert that
-substitute into proof of physical-source quiescence.
-
-### Suspend and resume
-
-Use `rtcwake` with a 20-second RTC alarm so loss of SSH cannot leave the target
-indefinitely suspended. Run one `s2idle` cycle and one `deep` cycle while OOB
-is enabled. After each resume, require service recovery, STA reconnection,
-OOB action presence, advancing traffic IRQs, a 20-packet ping, and clean
-kernel logs. Restore the original `/sys/power/mem_sleep` selection afterward.
-
-### Long traffic
-
-Run a 30-minute WLAN ping at one-second cadence with bounded per-packet
-timeout. If an iperf3 server is reachable on the WLAN peer, add a bounded
-bidirectional throughput probe; server absence is reported as
-**BLOCKED_BY_ENVIRONMENT**, not a driver failure. Require zero service loss,
-no kernel-health signature, no IRQ storm, and no more than 0.5% ping loss.
-
-## Stop and rollback conditions
-
-Rollback immediately when any of these occurs:
-
-- module insertion or firmware initialization fails;
-- STA/service recovery exceeds 120 seconds;
-- SSH does not return within 180 seconds after RTC suspend;
-- either SDIO function or expected interface disappears;
-- OOB action registration is absent after an OOB-mode restart;
-- idle OOB IRQ rate reaches 10,000 interrupts/second;
-- ping loss exceeds 5% in a short gate or 0.5% in the 30-minute gate;
-- any listed kernel-health signature appears.
-
-Do not force-reset the card, overwrite the board DTB, replace packaged
-`/lib/modules` files, or add fault hooks in order to make a blocked scenario
-appear tested.
+Shared-IRQ teardown, suspend/resume, long-traffic, and physical-source-quiescence
+stress remain generic implementation qualification work for a different supported
+board that exposes a real transport-event line. The terminal case where CCCR
+source disable, whole-function disable, and reset all fail remains
+**BLOCKED_BY_PLATFORM** for dynamic proof; static mutations do not prove physical
+source quiescence. It is not a deployment gate for this 88W9098 target.
 
 ## Executed coverage classification
 
 Candidate activation failed before the runtime health gate. The first and second
 attempts both timed out `SDIO_GPIO_INT_CONFIG` after the invalid wake binding was
 mapped as transport. Platform reboot policy was a downstream recovery action, not
-the initiating cause. Cleanup and baseline restoration are proved; corrected OOB
-runtime remains blocked because the required transport binding is absent.
+the initiating cause. Cleanup and baseline restoration are proved. The corrected
+target transport OOB is not a retryable runtime prerequisite; it is not applicable
+because the 88W9098 lacks the required hardware output.
 
 | WATCH item | Executed result |
 |---|---|
 | Candidate activation | FAIL — repeated transport configuration timeout and firmware init failure |
-| OOB initial health and action count | NOT EXECUTED — activation gate not reached |
-| OOB traffic IRQ delta and idle storm | NOT EXECUTED — healthy-OOB gate not reached |
-| OOB traffic-active reload/DBDC teardown | NOT EXECUTED — `0/10` cycles |
-| OOB suspend/resume (`s2idle`, `deep`) | NOT EXECUTED / `BLOCKED_BY_PREREQUISITE` |
-| Thirty-minute OOB ping and iperf | NOT EXECUTED / `BLOCKED_BY_PREREQUISITE`; peer/server environment was not probed |
-| All-hardware-cleanup-fails physical IRQ liveness | separate `BLOCKED_BY_PLATFORM`; static mutations and earlier live substitute do not prove physical-source quiescence |
+| OOB initial health and action count | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY` |
+| OOB traffic IRQ delta and idle storm | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY` |
+| OOB traffic-active reload/DBDC teardown | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY`; historical attempt stopped at `0/10` cycles |
+| OOB suspend/resume (`s2idle`, `deep`) | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY` |
+| Thirty-minute OOB ping and iperf | `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY`; peer/server environment was not probed |
+| All-hardware-cleanup-fails physical IRQ liveness | generic implementation `BLOCKED_BY_PLATFORM`; not a target deployment gate |
 | USB runtime | `BLOCKED_BY_HARDWARE` |
 | PCIe runtime/FLR | `BLOCKED_BY_HARDWARE` |
 | `/lib/modules` vendor copy mismatch | inactive `437.p3` copies unchanged; active runtime restored from the in-band `543.p18` backup |
@@ -242,9 +208,9 @@ runtime remains blocked because the required transport binding is absent.
 - Reboot removed the volatile environment, marker and transient timer; final
   matching active timer count is zero. Backup/stage evidence is retained.
 
-Explicit summary: **traffic qualification BLOCKED_BY_PREREQUISITE; cleanup
-COMPLETE/ACCEPTED.** Draft PR #27 must remain Draft; this execution makes no
-merge-ready claim.
+Explicit summary: **88W9098 target OOB traffic qualification NOT_APPLICABLE /
+BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED.** Draft PR #27 must
+remain Draft; this execution makes no merge-ready claim.
 
 ## Completion criteria and disposition
 
@@ -253,8 +219,8 @@ This qualification closes under the design stop/rollback path because:
 1. the corrected semantic-boundary and arbitrary-alias invariants each follow a
    demonstrated RED-to-GREEN cycle;
 2. local final checks and exact `make_for_imx93.sh` build pass;
-3. repeated candidate activation failure is classified separately from the OOB
-   runtime slices blocked by the missing transport binding;
+3. repeated candidate activation failure is classified separately from the
+   hardware-capability closure of corrected target OOB runtime slices;
 4. the target is left healthy with the original in-band runtime setting;
 5. reboot removed the second transient timer/environment and the final matching
    active-timer count is zero; backup/stage evidence is intentionally retained;

@@ -11,9 +11,10 @@ alias를 제거하고 transport lookup이 단 하나의 명시적 binding만 허
 invariant를 강화한다.
 
 최종 판정은 **host/source validated; candidate activation FAIL at the invalid binding
-alias; corrected OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE because the target lacks
-`nxp,wifi-oob-int`; architecture WATCH; traffic qualification
-BLOCKED_BY_PREREQUISITE; cleanup COMPLETE/ACCEPTED**다. 수정 diff의 독립 2-lane review는
+alias; corrected target transport OOB NOT_APPLICABLE /
+BLOCKED_BY_HARDWARE_CAPABILITY; architecture WATCH for the generic OOB
+implementation; target OOB traffic qualification NOT_APPLICABLE /
+BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED**다. 수정 diff의 독립 2-lane review는
 code `APPROVE`, architecture `CLEAR`이며 Critical/Important finding은 0건이다. terminal
 hardware all-fail shared-line `WATCH`는 별도 source chronology로 유지한다. Draft PR #27은
 Draft로 유지하고 merge-ready 판정을 하지 않는다. 이전 i.MX93 in-band reload PASS는
@@ -139,25 +140,66 @@ alias였다. corrected source는 해당 binding이 없는 target에서 IRQ 등�
 fail-fast한다. target wall-clock은 controller chronology와 어긋나므로 event marker,
 uptime 및 boot ID를 함께 사용했다.
 
+### 88W9098 target OOB capability closure
+
+이 타겟은 driver 명칭으로 SD9098 DBDC이지만 silicon은 88W9098이다. NXP TechSupport는
+88W9098 M.2의 `SDIO_WAKE#`가 wake-only이며 이 칩에는 별도 OOB interrupt/event GPIO가
+없다고 명시한다:
+https://community.nxp.com/t5/Wi-Fi-Bluetooth-802-15-4/M2-JODY-W377-88W9098-OOB-interrupt/m-p/2351813/highlight/true.
+범용 driver README의 `intmode=1` 및 `gpiopin=0`/GPIO-21 설명은 해당 출력을 지원하는
+다른 hardware를 위한 기능이며 이 타겟의 capability 증거가 아니다:
+https://github.com/nxp-imx/mwifiex.
+
+exact BSP source commit은 `ccf0a99701a701fb48a04e31ffe3f9d585a8374a`이고, local build
+DTB와 boot partition DTB의 동일 SHA-256은
+`9a491ab1155f69a56bdfb931aa8dbae5f2a3ad2dfbef7087005fd02baa093d39`다. 이 exact DTB에는
+`GPIO3_IO26`의 `nxp,wifi-wake-host`만 있고 독립 transport-event line은 없다.
+
+#### Authoritative target policy (`OOB_TARGET_POLICY_V1`)
+
+| policy key | value |
+|---|---|
+| `chip` | `88W9098` |
+| `transport_oob` | `NOT_APPLICABLE` |
+| `block_reason` | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| `runtime_intmode` | `0` |
+| `wake_binding_reuse` | `FORBIDDEN` |
+| `bsp_dtb_mutation` | `FORBIDDEN` |
+| `target_mutation` | `FORBIDDEN` |
+| `target_oob_retry` | `FORBIDDEN` |
+| `new_maintenance_window` | `FORBIDDEN` |
+| `generic_upstream_oob` | `RETAIN` |
+| `production_c_change` | `NONE` |
+
+This `OOB_TARGET_POLICY_V1` table is the sole normative target policy;
+conflicting prose is invalid and cannot authorize a target action.
+
+**Classification:** `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY`. Operationally,
+the target deployment must retain `intmode=0`. `nxp,wifi-wake-host` must not be
+aliased or relabeled as `nxp,wifi-oob-int`. No BSP/DT patch, target mutation, or
+additional OOB maintenance window is authorized. Generic upstream OOB transport
+code remains retained for hardware that supplies a supported transport-event line.
+이 capability closure에는 production C 변경과 target 변경이 없다.
+
 | runtime slice | execution | classification / evidence boundary |
 |---|---|---|
 | Candidate activation | **FAIL** | 두 attempt 모두 `SDIO_GPIO_INT_CONFIG` timeout 뒤 firmware init 실패 |
-| Initial OOB/DBDC health | **NOT EXECUTED** | activation health gate 미도달 |
-| Initial OOB action count | **PARTIAL ONLY** | IRQ mapping message는 있었으나 healthy action/traffic assertion 미도달 |
-| Traffic IRQ delta | **NOT EXECUTED** | healthy-OOB prerequisite 미충족 |
-| Idle IRQ-storm sample | **NOT EXECUTED** | healthy-OOB prerequisite 미충족 |
-| Traffic-active teardown/reload | **NOT EXECUTED — 0/10** | cycle loop 미도달 |
-| `s2idle` | **NOT EXECUTED** | `BLOCKED_BY_PREREQUISITE` |
-| `deep` | **NOT EXECUTED** | `BLOCKED_BY_PREREQUISITE` |
-| 30-minute OOB ping | **NOT EXECUTED** | `BLOCKED_BY_PREREQUISITE` |
-| OOB iperf | **NOT EXECUTED** | `BLOCKED_BY_PREREQUISITE`; environment/server reachability는 probe하지 않음 |
-| Terminal all-hardware-cleanup-fails path | safe dynamic injection **NOT EXECUTED** | 별도 `BLOCKED_BY_PLATFORM`; earlier static mutations와 live substitute만 있으며 physical-source quiescence 증명이 아님 |
+| Initial OOB/DBDC health | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| Initial OOB action count | **HISTORICAL PARTIAL ONLY** | invalid-alias IRQ mapping message만 있었고 qualification 증거가 아님 |
+| Traffic IRQ delta | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| Idle IRQ-storm sample | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| Traffic-active teardown/reload | **NOT APPLICABLE — historical 0/10** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| `s2idle` | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| `deep` | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| 30-minute OOB ping | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY` |
+| OOB iperf | **NOT APPLICABLE** | `BLOCKED_BY_HARDWARE_CAPABILITY`; environment/server reachability는 probe하지 않음 |
+| Terminal all-hardware-cleanup-fails path | target **NOT APPLICABLE** | generic implementation은 별도 `BLOCKED_BY_PLATFORM`; static mutations는 physical-source quiescence 증명이 아님 |
 | USB runtime | **NOT EXECUTED** | `BLOCKED_BY_HARDWARE` |
 | PCIe runtime/FLR | **NOT EXECUTED** | `BLOCKED_BY_HARDWARE` |
 
-따라서 s2idle/deep와 30-minute ping/iperf는 PASS/FAIL도
-`BLOCKED_BY_ENVIRONMENT`도 아니다. 명시적 closure summary는 **traffic qualification
-BLOCKED_BY_PREREQUISITE; cleanup COMPLETE/ACCEPTED**다.
+따라서 target OOB s2idle/deep와 30-minute ping/iperf는 PASS/FAIL 또는 retry 대기 상태가
+아니다. 명시적 closure summary는 **target OOB traffic qualification NOT_APPLICABLE /
+BLOCKED_BY_HARDWARE_CAPABILITY; cleanup COMPLETE/ACCEPTED**다.
 
 ### Restored baseline and cleanup proof
 
@@ -739,7 +781,7 @@ pass 또는 유효한 target result로 기록하지 않는다.
 |---|---|---|---|
 | USB URB | shared submit/stop lock, final pre-unregister drain, controlled reopen | unplug/suspend/reload interleaving | traffic 중 unplug/unload/suspend, resubmit fault, mode reload, KASAN/lockdep |
 | bridge | compiled lifecycle, pending identity, owner suspend/resume, detached-device readiness, ordered recovery handoff | cold-start fail-open 대 destructive recovery terminal policy | runtime switch, DBDC, peer delete/recreate, recovery, traffic |
-| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; terminal all-hardware-fail shared level-source liveness; OOB runtime | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; PCIe FLR/AER 및 `intmode=1` SDIO/OOB reset/fault-injection stress 필요 |
+| PCIe/SDIO | canonical deferred-FLR gate, referenced devices, locked reset, remove invalidation, owner restoration, module-exit SDIO command-response lifetime, per-action OOB disable token, process-context coalescing release, transactional source teardown, terminal software-detach와 MMC-host callback barrier | reset concurrent with PM/unbind/rebind, ordered-queue lock contention/latency; generic terminal all-hardware-fail shared level-source liveness | historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과; PCIe FLR/AER와 실제 transport-event line을 지원하는 다른 hardware의 SDIO/OOB stress 필요 |
 | management/proc | typed/bounded event, consumer length gates, heap ring scratch, mode 0600 diagnostics, root-owner-write config mode 0644, card-lifetime writer transaction, exact command/OTP delimiter boundaries, per-handle dump pathname snapshots | unload/read, frame-volume/privacy, synchronous dump I/O와 whole-dump allocation | host-MLME/P2P delivery, dump path failure, wrap/clear, concurrent proc read/unload |
 | antenna/NSS | exact forms, layout-aware four-word rejection, GET-only NSS command | firmware/association convergence | 2.4/5/6 GHz, 1x1/2x2, repeated GET, roam/reboot |
 | UAP/AGCS | single exact upstream command helpers | firmware selector behavior | channel-track, AGCS, channel-switch count command trace |
@@ -757,21 +799,22 @@ decoding 및 standalone STA/UAP build다.
 포함된다는 이유만으로 검증되었다고 보지 않는다. 해당 product tool마다 별도 owner,
 ABI review 및 target execution evidence가 필요하다.
 
-## 남은 target-only exit gates
+## 남은 runtime exit gates와 hardware exclusion
 
 historical source `734f75bf02a3e5ac4c84a696d8a873ed11247ce3`인 과거 target slice에서 old-to-new/
 new-to-new in-band module reload 2회, DBDC interface enumeration, STA reconnect,
 version CLI와 짧은 traffic smoke가 통과했다. corrected current source `e1c9f49`는
-target에 stage하지 않았다. 다음 항목은 여전히 **미통과 또는
-미실행 target gate**이며 이 문서는 그 범위의 hardware pass를 주장하지 않는다.
+target에 stage하지 않았다. 다음 항목은 여전히 미통과/미실행 gate 또는 명시적 hardware
+exclusion이며 이 문서는 그 범위의 hardware pass를 주장하지 않는다.
 
 1. USB disconnect/unplug, unload, suspend traffic, resubmit failure, firmware
    reload/mode rebuild, pending counters, KASAN/lockdep.
 2. PCIe FLR/AER/in-band reset을 bridge active, suspend/unload 및 unbind/rebind 경쟁과
    함께 실행하고 stale worker가 새 binding/status를 바꾸지 않는지 확인.
-3. SDIO OOB mode, reset/FLR, driver-mode rebuild 및 bridge owner restore. 현재 target은
-   required `nxp,wifi-oob-int` transport binding이 없어 OOB mode를 안전하게 시작할 수
-   없다. 일반 in-band module unload/reload command-response gate는 i.MX93에서 통과했다.
+3. SDIO OOB mode, reset/FLR, driver-mode rebuild 및 bridge owner restore는 실제
+   transport-event line을 지원하는 다른 hardware의 generic implementation gate다.
+   88W9098 target에는 `NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY`이며 target gate가
+   아니다. 일반 in-band module unload/reload command-response gate는 i.MX93에서 통과했다.
 4. USB/PCIe/SDIO suspend/resume를 traffic과 pending bridge switch에 결합.
 5. STA/uAP association, roaming, AP start/stop, host-MLME/P2P management masks.
 6. UAP channel-track/AGCS/channel-switch-count GET/SET 및 firmware trace.
@@ -794,9 +837,10 @@ transport teardown, firmware command semantics, association/RF policy 및 bridge
 ownership은 target firmware/board/topology가 필요하다.
 
 따라서 현재 상태는 **host/source validation complete at `e1c9f49`, invalid-alias
-candidate activation FAIL, corrected OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE,
-architecture WATCH, traffic qualification BLOCKED_BY_PREREQUISITE, cleanup
-COMPLETE/ACCEPTED**다. 이전 `734f75b` SD9098 in-band reload/STA smoke PASS는 historical
+candidate activation FAIL, corrected target transport OOB NOT_APPLICABLE /
+BLOCKED_BY_HARDWARE_CAPABILITY, architecture WATCH for the generic implementation,
+target OOB traffic qualification NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY,
+cleanup COMPLETE/ACCEPTED**다. 이전 `734f75b` SD9098 in-band reload/STA smoke PASS는 historical
 bounded slice로 유지되지만 c464/f114 attempt의 OOB, PM 또는 long-traffic PASS로
 승격되지 않는다. terminal
 all-hardware-failure item도 별도
@@ -805,6 +849,6 @@ all-hardware-failure item도 별도
 
 최종 target은 restored pre-qualification in-band `543.p18` backup이고 c464/f114
 candidate는 inactive/unqualified다. corrected `e1c9f49` artifact는 target에 전송하지
-않았다. OOB 재검증은 board DT/hardware가 continuous transport line을
-`nxp,wifi-oob-int`로 명시한 뒤 새 maintenance window에서만 재개한다. Draft PR #27은
-Draft로 남아야 하며 merge-ready 판정을 하지 않는다.
+않았다. 타겟은 `intmode=0`을 유지하며 OOB 재시도, wake-node alias, BSP/DTB 수정 또는
+추가 maintenance window를 진행하지 않는다. 범용 OOB source는 실제 지원 hardware를
+위해 보존한다. Draft PR #27은 Draft로 남아야 하며 merge-ready 판정을 하지 않는다.

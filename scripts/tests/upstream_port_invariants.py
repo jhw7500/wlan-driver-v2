@@ -646,7 +646,7 @@ def artifact_evidence_is_unambiguously_scoped(review: str, design: str) -> bool:
         and "historical 734f75b evidence source "
             "`734f75bf02a3e5ac4c84a696d8a873ed11247ce3`" in design
         and "OOB runtime remains `0/10` cycles" in design
-        and "BLOCKED_BY_PREREQUISITE" in design
+        and "BLOCKED_BY_HARDWARE_CAPABILITY" in design
         and "pre-qualification in-band `543.p18` backup" in design
     )
 
@@ -760,10 +760,10 @@ def qualification_outcome_is_scoped(review: str, design: str) -> bool:
             "corrected `e1c9f49`는 host-only",
             "historical `734f75b` i.MX93 SDIO in-band reload만 bounded slice에서 통과",
             "candidate activation FAIL at the invalid binding alias; corrected "
-            "OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE because the target "
-            "lacks `nxp,wifi-oob-int`",
-            "invalid-alias candidate activation FAIL, corrected OOB runtime "
-            "BLOCKED_BY_PLATFORM_PREREQUISITE",
+            "target transport OOB NOT_APPLICABLE / "
+            "BLOCKED_BY_HARDWARE_CAPABILITY",
+            "invalid-alias candidate activation FAIL, corrected target transport "
+            "OOB NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY",
         )
     ) and all(
         phrase in design_norm
@@ -773,10 +773,11 @@ def qualification_outcome_is_scoped(review: str, design: str) -> bool:
             "timeout and firmware init failure |",
             "final matching active timer count is zero",
             "corrected source `e1c9f49bb6ec8ffd0dc9703909ff4ef823a76436`",
-            "**Status:** Executed — invalid binding alias corrected; target OOB "
-            "blocked by missing transport binding.",
-            "corrected OOB runtime remains blocked because the required "
-            "transport binding is absent",
+            "**Status:** Executed — invalid binding alias corrected; 88W9098 "
+            "target transport OOB is NOT_APPLICABLE and "
+            "BLOCKED_BY_HARDWARE_CAPABILITY.",
+            "The corrected target transport OOB is not a retryable runtime "
+            "prerequisite",
         )
     )
     forbidden = (
@@ -789,7 +790,8 @@ def qualification_outcome_is_scoped(review: str, design: str) -> bool:
         r"(?:matching )?active[- ]timer count(?:는| is)? "
         r"(?:[1-9][0-9]*|nonzero)",
         r"Candidate activation(?:\s*\|)?\s*\*{0,2}PASS\*{0,2}",
-        r"corrected OOB runtime\s+\*{0,2}PASS\*{0,2}",
+        r"corrected(?: target transport)? OOB(?: runtime)?\s+"
+        r"\*{0,2}PASS\*{0,2}",
         r"artifact equality (?!5/5\b)[0-9]+/[0-9]+",
         r"required service (?!6/6\b)[0-9]+/[0-9]+",
         r"SDIO function (?!2/2\b)[0-9]+/[0-9]+",
@@ -863,8 +865,10 @@ review_require(
     "M4 outcome invariant accepts an additive nonzero timer claim",
 )
 m4_corrected_runtime_pass = port_review_doc.replace(
-    "corrected OOB runtime BLOCKED_BY_PLATFORM_PREREQUISITE",
-    "corrected OOB runtime PASS",
+    "corrected target transport OOB NOT_APPLICABLE /\n"
+    "BLOCKED_BY_HARDWARE_CAPABILITY",
+    "corrected target transport OOB PASS",
+    1,
 )
 review_require(
     "M4",
@@ -874,9 +878,9 @@ review_require(
     "M4 outcome invariant accepts corrected target runtime PASS",
 )
 m4_design_runtime_pass = watch_design_doc.replace(
-    "corrected OOB\nruntime remains blocked because the required transport "
-    "binding is absent",
-    "corrected OOB runtime PASS",
+    "88W9098 target transport\nOOB is NOT_APPLICABLE and "
+    "BLOCKED_BY_HARDWARE_CAPABILITY.",
+    "88W9098 corrected target transport OOB runtime PASS.",
     1,
 )
 review_require(
@@ -928,6 +932,433 @@ review_require(
         m4_additive_full_hash_pass, watch_design_doc
     ),
     "M4 outcome invariant accepts full-hash corrected target PASS",
+)
+
+
+OOB_CAPABILITY_CLOSURE_BASE = "22d184bd08b5aff441f45d6784416c6fa10c8a37"
+OOB_CAPABILITY_CLOSURE_PATHS = frozenset(
+    {
+        "docs/superpowers/specs/2026-08-21-upstream-port-watch-closure-design.md",
+        "docs/upstream-port-0396-code-review.md",
+        "scripts/tests/upstream_port_invariants.py",
+    }
+)
+OOB_TARGET_POLICY_BLOCK = (
+    "#### Authoritative target policy (`OOB_TARGET_POLICY_V1`)",
+    "",
+    "| policy key | value |",
+    "|---|---|",
+    "| `chip` | `88W9098` |",
+    "| `transport_oob` | `NOT_APPLICABLE` |",
+    "| `block_reason` | `BLOCKED_BY_HARDWARE_CAPABILITY` |",
+    "| `runtime_intmode` | `0` |",
+    "| `wake_binding_reuse` | `FORBIDDEN` |",
+    "| `bsp_dtb_mutation` | `FORBIDDEN` |",
+    "| `target_mutation` | `FORBIDDEN` |",
+    "| `target_oob_retry` | `FORBIDDEN` |",
+    "| `new_maintenance_window` | `FORBIDDEN` |",
+    "| `generic_upstream_oob` | `RETAIN` |",
+    "| `production_c_change` | `NONE` |",
+    "",
+    "This `OOB_TARGET_POLICY_V1` table is the sole normative target policy;",
+    "conflicting prose is invalid and cannot authorize a target action.",
+    "",
+)
+
+
+def oob_capability_closure_changed_paths() -> tuple[str, ...] | None:
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--name-only",
+            "--no-renames",
+            OOB_CAPABILITY_CLOSURE_BASE,
+            "--",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return tuple(line for line in result.stdout.splitlines() if line)
+
+
+def oob_capability_closure_is_docs_and_test_only(
+    changed_paths: tuple[str, ...] | None,
+) -> bool:
+    return (
+        changed_paths is not None
+        and set(changed_paths) == OOB_CAPABILITY_CLOSURE_PATHS
+    )
+
+
+def target_oob_policy_block_is_exact(document: str) -> bool:
+    lines = document.splitlines()
+    heading = OOB_TARGET_POLICY_BLOCK[0]
+    positions = [pos for pos, line in enumerate(lines) if line == heading]
+    if len(positions) != 1:
+        return False
+    start = positions[0]
+    stop = start + len(OOB_TARGET_POLICY_BLOCK)
+    return tuple(lines[start:stop]) == OOB_TARGET_POLICY_BLOCK
+
+
+def target_oob_hardware_capability_is_scoped(review: str, design: str) -> bool:
+    review_norm = " ".join(review.split())
+    design_norm = " ".join(design.split())
+    combined = review + "\n" + design
+    support_url = (
+        "https://community.nxp.com/t5/Wi-Fi-Bluetooth-802-15-4/"
+        "M2-JODY-W377-88W9098-OOB-interrupt/m-p/2351813/highlight/true"
+    )
+    dtb_hash = (
+        "9a491ab1155f69a56bdfb931aa8dbae5f2a3ad2dfbef7087005fd02baa093d39"
+    )
+    required_review = (
+        "88W9098 target OOB capability closure",
+        "NOT_APPLICABLE / BLOCKED_BY_HARDWARE_CAPABILITY",
+        "target deployment must retain `intmode=0`",
+        "`nxp,wifi-wake-host` must not be aliased or relabeled as "
+        "`nxp,wifi-oob-int`",
+        "No BSP/DT patch, target mutation, or additional OOB maintenance "
+        "window is authorized",
+        "Generic upstream OOB transport code remains retained for hardware "
+        "that supplies a supported transport-event line",
+        "이 capability closure에는 production C 변경과 target 변경이 없다.",
+        "ccf0a99701a701fb48a04e31ffe3f9d585a8374a",
+        dtb_hash,
+        support_url,
+    )
+    required_design = (
+        "88W9098 target transport OOB is NOT_APPLICABLE and "
+        "BLOCKED_BY_HARDWARE_CAPABILITY",
+        "The target deployment must retain `intmode=0`",
+        "Never alias or relabel `nxp,wifi-wake-host` as "
+        "`nxp,wifi-oob-int`",
+        "Do not patch/deploy the BSP or DTB and do not schedule another "
+        "target OOB maintenance window",
+        "Keep the generic upstream OOB transport implementation for other "
+        "hardware with a supported transport-event line",
+        "This closure adds no production C change and no target mutation.",
+        "GPIO3_IO26",
+        dtb_hash,
+        support_url,
+    )
+    action_prefix = r"(?:^|[\n.;])\s*(?:[-*+>]\s+|\d+[.)]\s+)?"
+    forbidden = (
+        r"\btarget\s+OOB\s+is\s+"
+        r"BLOCKED_BY_(?:PLATFORM_)?PREREQUISITE\b",
+        r"\btarget\s+OOB\s+is\s+(?:a\s+)?retryable\b",
+        r"\b(?:88W9098\s+)?target deployment must "
+        r"(?:use|enable|set|retain)\s+`?intmode=1`?",
+        action_prefix
+        + r"(?=[^\n]*(?:88W9098|target))(?=[^\n]*`?intmode=1`?)"
+        r"(?:Use|Enable|Set|Switch)\b[^\n]*",
+        action_prefix
+        + r"Alias\s+`nxp,wifi-wake-host`\s+as\s+"
+        r"`nxp,wifi-oob-int`",
+        action_prefix
+        + r"(?:Patch|Modify|Update|Deploy)(?:\s+and\s+deploy)?\s+"
+        r"(?:the\s+)?"
+        r"(?:BSP/DTB|BSP|DTB)\b",
+        action_prefix
+        + r"(?:Retry|Rerun|Resume|Reopen)\b[^\n]*\btarget\s+OOB\b",
+        action_prefix
+        + r"Schedule\s+another\s+target\s+OOB\s+"
+        r"maintenance\s+window\b",
+        action_prefix
+        + r"(?:Remove|Drop|Delete|Disable)\s+(?:the\s+)?generic\s+"
+        r"(?:upstream\s+)?"
+        r"OOB\s+(?:transport\s+implementation|support)\b",
+    )
+    required = (
+        target_oob_policy_block_is_exact(review)
+        and target_oob_policy_block_is_exact(design)
+        and all(phrase in review_norm for phrase in required_review)
+        and all(phrase in design_norm for phrase in required_design)
+    )
+    return required and not any(
+        re.search(pattern, combined, re.IGNORECASE) for pattern in forbidden
+    )
+
+
+review_require(
+    "M5",
+    target_oob_hardware_capability_is_scoped(
+        port_review_doc, watch_design_doc
+    ),
+    "M5 88W9098 target OOB hardware-capability closure is incomplete",
+)
+oob_capability_changed_paths = oob_capability_closure_changed_paths()
+review_require(
+    "M5",
+    oob_capability_closure_is_docs_and_test_only(
+        oob_capability_changed_paths
+    ),
+    "M5 capability closure changes files outside the approved docs/test scope",
+)
+m5_production_c_path = tuple(oob_capability_changed_paths or ()) + (
+    "mlinux/moal_sdio_mmc.c",
+)
+review_require(
+    "M5",
+    not oob_capability_closure_is_docs_and_test_only(m5_production_c_path),
+    "M5 capability closure scope accepts a production C change",
+)
+m5_platform_prerequisite = re.sub(
+    r"NOT_APPLICABLE\s*/\s*BLOCKED_BY_HARDWARE_CAPABILITY",
+    "BLOCKED_BY_PLATFORM_PREREQUISITE",
+    port_review_doc,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        m5_platform_prerequisite, watch_design_doc
+    ),
+    "M5 capability invariant accepts a retryable platform prerequisite",
+)
+m5_enable_oob = port_review_doc.replace(
+    "target deployment must retain `intmode=0`",
+    "target deployment must use `intmode=1`",
+    1,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        m5_enable_oob, watch_design_doc
+    ),
+    "M5 capability invariant accepts intmode=1 on the 88W9098 target",
+)
+m5_alias_wake_node = watch_design_doc.replace(
+    "Never alias or relabel `nxp,wifi-wake-host` as `nxp,wifi-oob-int`",
+    "Alias `nxp,wifi-wake-host` as `nxp,wifi-oob-int`",
+    1,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_alias_wake_node
+    ),
+    "M5 capability invariant accepts reuse of the wake-only binding",
+)
+m5_remove_generic_oob = watch_design_doc.replace(
+    "Keep the generic upstream OOB transport implementation for other hardware\n"
+    "with a supported transport-event line",
+    "Remove the generic upstream OOB transport implementation",
+    1,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_remove_generic_oob
+    ),
+    "M5 capability invariant accepts removal of generic upstream OOB support",
+)
+m5_additive_prerequisite = (
+    port_review_doc
+    + "\nTarget OOB is BLOCKED_BY_PLATFORM_PREREQUISITE and should be retried.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        m5_additive_prerequisite, watch_design_doc
+    ),
+    "M5 capability invariant accepts an additive retryable prerequisite",
+)
+m5_additive_intmode = (
+    port_review_doc
+    + "\nThe 88W9098 target deployment must use `intmode=1`.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        m5_additive_intmode, watch_design_doc
+    ),
+    "M5 capability invariant accepts an additive intmode=1 instruction",
+)
+m5_additive_alias = (
+    watch_design_doc
+    + "\nAlias `nxp,wifi-wake-host` as `nxp,wifi-oob-int`.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_additive_alias
+    ),
+    "M5 capability invariant accepts an additive wake-node alias",
+)
+m5_additive_bsp_mutation = (
+    watch_design_doc
+    + "\nPatch and deploy the BSP/DTB and mutate the target for OOB.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_additive_bsp_mutation
+    ),
+    "M5 capability invariant accepts additive BSP/target mutation",
+)
+m5_additive_window = (
+    watch_design_doc + "\nSchedule another target OOB maintenance window.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_additive_window
+    ),
+    "M5 capability invariant accepts an additive target OOB window",
+)
+m5_additive_remove_generic = (
+    watch_design_doc + "\nRemove generic upstream OOB support.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_additive_remove_generic
+    ),
+    "M5 capability invariant accepts additive generic OOB removal",
+)
+m5_missing_no_c_change_claim = port_review_doc.replace(
+    "이 capability closure에는 production C 변경과 target 변경이 없다.",
+    "",
+    1,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        m5_missing_no_c_change_claim, watch_design_doc
+    ),
+    "M5 capability invariant accepts a missing production-C scope claim",
+)
+m5_bullet_alias = (
+    watch_design_doc
+    + "\n- Alias `nxp,wifi-wake-host` as `nxp,wifi-oob-int`.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_bullet_alias
+    ),
+    "M5 capability invariant accepts a bullet-form wake-node alias",
+)
+m5_bullet_bsp = (
+    watch_design_doc
+    + "\n- Patch and deploy the BSP/DTB and mutate the target for OOB.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_bullet_bsp
+    ),
+    "M5 capability invariant accepts bullet-form BSP/target mutation",
+)
+m5_bullet_window = (
+    watch_design_doc + "\n- Schedule another target OOB maintenance window.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_bullet_window
+    ),
+    "M5 capability invariant accepts a bullet-form target OOB window",
+)
+m5_bullet_remove_generic = (
+    watch_design_doc + "\n- Remove generic upstream OOB support.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_bullet_remove_generic
+    ),
+    "M5 capability invariant accepts bullet-form generic OOB removal",
+)
+m5_safe_negation = (
+    port_review_doc
+    + "\nTarget OOB is not BLOCKED_BY_PLATFORM_PREREQUISITE.\n"
+)
+review_require(
+    "M5",
+    target_oob_hardware_capability_is_scoped(
+        m5_safe_negation, watch_design_doc
+    ),
+    "M5 capability invariant rejects a safe prerequisite negation",
+)
+m5_policy_intmode_one = port_review_doc.replace(
+    "| `runtime_intmode` | `0` |",
+    "| `runtime_intmode` | `1` |",
+    1,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        m5_policy_intmode_one, watch_design_doc
+    ),
+    "M5 capability invariant accepts intmode=1 in the normative policy",
+)
+m5_policy_retry_allowed = watch_design_doc.replace(
+    "| `target_oob_retry` | `FORBIDDEN` |",
+    "| `target_oob_retry` | `ALLOWED` |",
+    1,
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_policy_retry_allowed
+    ),
+    "M5 capability invariant accepts retry in the normative policy",
+)
+m5_duplicate_policy = (
+    watch_design_doc + "\n" + "\n".join(OOB_TARGET_POLICY_BLOCK) + "\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_duplicate_policy
+    ),
+    "M5 capability invariant accepts duplicate normative policy blocks",
+)
+m5_rephrased_intmode = (
+    watch_design_doc + "\n- Enable `intmode=1` on the 88W9098 target.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_rephrased_intmode
+    ),
+    "M5 capability invariant accepts a rephrased intmode=1 instruction",
+)
+m5_rephrased_retry = (
+    watch_design_doc + "\n- Retry target OOB after adding a board line.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_rephrased_retry
+    ),
+    "M5 capability invariant accepts a rephrased target OOB retry",
+)
+m5_rephrased_bsp = (
+    watch_design_doc + "\n- Modify the BSP for target OOB transport.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_rephrased_bsp
+    ),
+    "M5 capability invariant accepts a rephrased BSP mutation",
+)
+m5_rephrased_remove_generic = (
+    watch_design_doc + "\n- Drop generic upstream OOB support.\n"
+)
+review_require(
+    "M5",
+    not target_oob_hardware_capability_is_scoped(
+        port_review_doc, m5_rephrased_remove_generic
+    ),
+    "M5 capability invariant accepts rephrased generic OOB removal",
 )
 
 require("spinlock_t urb_submit_lock;" in usb_h,
