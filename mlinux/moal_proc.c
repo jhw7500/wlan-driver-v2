@@ -1711,7 +1711,6 @@ static const struct file_operations fw_dump_fops = {
 static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 {
 	moal_handle *handle = (moal_handle *)sfp->private;
-	int ret = 0;
 	int format_result = 0;
 	t_u32 i;
 	t_u32 *tmpbuf;
@@ -1730,10 +1729,11 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 		goto done;
 	}
 
+	mutex_lock(&handle->ssu_dump_lock);
 	if (!handle->ssu_dump_buf || !handle->ssu_dump_len) {
 		PRINTM(MERROR,
 		       "ssu dump buffer is NULL or total length is zero\n");
-		goto done;
+		goto unlock;
 	}
 
 	if (sfp->size < ((handle->ssu_dump_len * 9) / 4)) {
@@ -1742,9 +1742,7 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 		       (unsigned long)sfp->size,
 		       (unsigned long)((handle->ssu_dump_len * 9) / 4));
 		sfp->count = sfp->size;
-		ret = 0;
-		MODULE_PUT;
-		return ret;
+		goto unlock;
 	}
 
 	tmpbuf = (t_u32 *)handle->ssu_dump_buf;
@@ -1774,6 +1772,8 @@ static int woal_ssu_dump_read(struct seq_file *sfp, void *data)
 	handle->ssu_dump_buf = NULL;
 	handle->ssu_dump_len = 0;
 
+unlock:
+	mutex_unlock(&handle->ssu_dump_lock);
 done:
 	MODULE_PUT;
 	LEAVE();
@@ -2186,11 +2186,13 @@ void woal_proc_exit(moal_handle *handle)
 		handle->drv_dump_buf = NULL;
 	}
 #if defined(PCIE)
+	mutex_lock(&handle->ssu_dump_lock);
 	if (handle->ssu_dump_buf) {
 		moal_vfree(handle, handle->ssu_dump_buf);
 		handle->ssu_dump_buf = NULL;
 		handle->ssu_dump_len = 0;
 	}
+	mutex_unlock(&handle->ssu_dump_lock);
 #endif
 #endif
 	LEAVE();

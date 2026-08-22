@@ -12076,13 +12076,13 @@ t_void woal_store_ssu_dump(moal_handle *phandle, mlan_event *pmevent)
 		return;
 	}
 
+	mutex_lock(&phandle->ssu_dump_lock);
 	if (!phandle->ssu_dump_buf) {
 		ret = moal_vmalloc(phandle, MLAN_SSU_BUF_SIZE,
 				   &phandle->ssu_dump_buf);
 		if (ret != MLAN_STATUS_SUCCESS || !phandle->ssu_dump_buf) {
 			PRINTM(MERROR, "Failed to vmalloc ssu dump buffer\n");
-			LEAVE();
-			return;
+			goto done;
 		}
 	} else {
 		memset(phandle->ssu_dump_buf, 0x00, MLAN_SSU_BUF_SIZE);
@@ -12108,6 +12108,8 @@ t_void woal_store_ssu_dump(moal_handle *phandle, mlan_event *pmevent)
 	PRINTM(MMSG, "==== SSU DUMP END: %ld bytes ====\n",
 	       (long int)phandle->ssu_dump_len);
 
+done:
+	mutex_unlock(&phandle->ssu_dump_lock);
 	LEAVE();
 	return;
 }
@@ -15532,6 +15534,9 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 		goto err_handle;
 	}
 	mutex_init(&handle->fwdump_fname_lock);
+#if defined(DUMP_TO_PROC) && defined(PCIE)
+	mutex_init(&handle->ssu_dump_lock);
+#endif
 	handle->bridge_effective_wlan_idx = -1;
 
 	/* Init moal_handle */

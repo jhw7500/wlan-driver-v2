@@ -138,6 +138,177 @@ apf_ping_echo = c_function(
 passphrase_ioctl = c_function(
     eth_ioctl_c, "static int woal_setget_priv_passphrase"
 )
+ssu_store_start = main_c.rfind("t_void woal_store_ssu_dump")
+ssu_store = c_function(
+    main_c[ssu_store_start:], "t_void woal_store_ssu_dump"
+)
+ssu_read = c_function(proc_c, "static int woal_ssu_dump_read")
+proc_exit = c_function(proc_c, "void woal_proc_exit")
+add_card = c_function(main_c, "moal_handle *woal_add_card")
+
+
+def ssu_dump_access_is_serialized(
+    store_body: str,
+    read_body: str,
+    exit_body: str,
+    header: str,
+    init_body: str,
+) -> bool:
+    """Require every shared SSU buffer access under one handle mutex."""
+    if "struct mutex ssu_dump_lock;" not in header:
+        return False
+    if "mutex_init(&handle->ssu_dump_lock);" not in init_body:
+        return False
+
+    for body, owner in (
+        (store_body, "phandle"),
+        (read_body, "handle"),
+        (exit_body, "handle"),
+    ):
+        code = re.sub(r"\s+", "", c_code(body))
+        lock = f"mutex_lock(&{owner}->ssu_dump_lock);"
+        unlock = f"mutex_unlock(&{owner}->ssu_dump_lock);"
+        lock_pos = code.find(lock)
+        unlock_pos = code.find(unlock)
+        accesses = [
+            match.start()
+            for match in re.finditer(
+                rf"{owner}->ssu_dump_(?:buf|len)", code
+            )
+        ]
+        if (
+            code.count(lock) != 1
+            or code.count(unlock) != 1
+            or not accesses
+            or lock_pos < 0
+            or unlock_pos <= lock_pos
+            or min(accesses) < lock_pos
+            or max(accesses) > unlock_pos
+            or "return" in code[lock_pos:unlock_pos]
+        ):
+            return False
+
+    read_code = re.sub(r"\s+", "", c_code(read_body))
+    resize_start = read_code.find(
+        "if(sfp->size<((handle->ssu_dump_len*9)/4)){"
+    )
+    format_start = read_code.find(
+        "tmpbuf=(t_u32*)handle->ssu_dump_buf;"
+    )
+    if resize_start < 0 or format_start <= resize_start:
+        return False
+    resize_path = read_code[resize_start:format_start]
+    if (
+        "sfp->count=sfp->size;" not in resize_path
+        or "gotounlock;" not in resize_path
+        or "moal_vfree(" in resize_path
+        or "handle->ssu_dump_buf=NULL;" in resize_path
+        or "handle->ssu_dump_len=0;" in resize_path
+    ):
+        return False
+    return ordered(
+        read_code[format_start:],
+        "tmpbuf=(t_u32*)handle->ssu_dump_buf;",
+        "for(i=0;i<handle->ssu_dump_len/4;i++){",
+        "sfp->count=((handle->ssu_dump_len*9)/4);",
+        "moal_vfree(handle,handle->ssu_dump_buf);",
+        "handle->ssu_dump_buf=NULL;",
+        "handle->ssu_dump_len=0;",
+        "unlock:",
+        "mutex_unlock(&handle->ssu_dump_lock);",
+    )
+
+
+review_require(
+    "P1_SSU",
+    ssu_dump_access_is_serialized(
+        ssu_store, ssu_read, proc_exit, main_h, add_card
+    ),
+    "P1 SSU dump producer/read/teardown do not share one ownership mutex",
+)
+ssu_store_without_lock = ssu_store.replace(
+    "mutex_lock(&phandle->ssu_dump_lock);", "", 1
+)
+review_require(
+    "P1_SSU",
+    not ssu_dump_access_is_serialized(
+        ssu_store_without_lock, ssu_read, proc_exit, main_h, add_card
+    ),
+    "P1 SSU invariant accepts an unlocked producer",
+)
+ssu_read_after_unlock = ssu_read.replace(
+    "mutex_unlock(&handle->ssu_dump_lock);",
+    "mutex_unlock(&handle->ssu_dump_lock);\n"
+    "\thandle->ssu_dump_len = 0;",
+    1,
+)
+review_require(
+    "P1_SSU",
+    not ssu_dump_access_is_serialized(
+        ssu_store, ssu_read_after_unlock, proc_exit, main_h, add_card
+    ),
+    "P1 SSU invariant accepts a reader access after unlock",
+)
+ssu_exit_without_lock = proc_exit.replace(
+    "mutex_lock(&handle->ssu_dump_lock);", "", 1
+)
+review_require(
+    "P1_SSU",
+    not ssu_dump_access_is_serialized(
+        ssu_store, ssu_read, ssu_exit_without_lock, main_h, add_card
+    ),
+    "P1 SSU invariant accepts unlocked teardown",
+)
+ssu_read_without_resize_signal = ssu_read.replace(
+    "sfp->count = sfp->size;", "", 1
+)
+review_require(
+    "P1_SSU",
+    not ssu_dump_access_is_serialized(
+        ssu_store,
+        ssu_read_without_resize_signal,
+        proc_exit,
+        main_h,
+        add_card,
+    ),
+    "P1 SSU invariant accepts a missing seq_file resize signal",
+)
+ssu_read_consumes_on_resize = ssu_read.replace(
+    "sfp->count = sfp->size;",
+    "moal_vfree(handle, handle->ssu_dump_buf);\n"
+    "\t\tsfp->count = sfp->size;",
+    1,
+)
+review_require(
+    "P1_SSU",
+    not ssu_dump_access_is_serialized(
+        ssu_store,
+        ssu_read_consumes_on_resize,
+        proc_exit,
+        main_h,
+        add_card,
+    ),
+    "P1 SSU invariant accepts dump consumption on seq_file resize",
+)
+ssu_read_free_before_format = ssu_read.replace(
+    "moal_vfree(handle, handle->ssu_dump_buf);", "", 1
+).replace(
+    "tmpbuf = (t_u32 *)handle->ssu_dump_buf;",
+    "moal_vfree(handle, handle->ssu_dump_buf);\n"
+    "\ttmpbuf = (t_u32 *)handle->ssu_dump_buf;",
+    1,
+)
+review_require(
+    "P1_SSU",
+    not ssu_dump_access_is_serialized(
+        ssu_store,
+        ssu_read_free_before_format,
+        proc_exit,
+        main_h,
+        add_card,
+    ),
+    "P1 SSU invariant accepts freeing the dump before formatting",
+)
 
 
 def apf_install_is_lock_safe(body: str) -> bool:

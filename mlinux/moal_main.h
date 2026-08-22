@@ -3666,6 +3666,8 @@ struct _moal_handle {
 
 #ifdef DUMP_TO_PROC
 #if defined(PCIE)
+	/** Serializes SSU dump producer, proc reader, and teardown ownership */
+	struct mutex ssu_dump_lock;
 	/** ssu dump buffer total len */
 	t_u64 ssu_dump_len;
 	/** Pointer of ssu dump buffer */
