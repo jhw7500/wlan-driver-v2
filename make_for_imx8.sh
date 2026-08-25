@@ -93,8 +93,10 @@ fi
 if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
     if [ -z "$_cc_kdir" ]; then
         echo "compile_commands.json 건너뜀 — 커널 빌드 디렉터리가 비었다" >&2
+        [ -e "$_cc_dir/compile_commands.json" ] && echo "  기존 DB 는 직전 성공 빌드 기준이라 낡았을 수 있다." >&2
     elif [ -z "$_cc_gen" ]; then
         echo "compile_commands.json 건너뜀 — gen_compile_commands.py 를 찾지 못했다 (CC_GEN 으로 지정 가능)" >&2
+        [ -e "$_cc_dir/compile_commands.json" ] && echo "  기존 DB 는 직전 성공 빌드 기준이라 낡았을 수 있다." >&2
     else
         # 고정 이름은 동시 실행 시 서로 덮어쓴다. mktemp 로 고유하게 만든다.
         _cc_tmp="$(mktemp "$_cc_dir/.compile_commands.json.XXXXXX" 2>/dev/null)" || _cc_tmp=""
@@ -106,6 +108,7 @@ if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
         else
             rm -f "$_cc_tmp"
             echo "compile_commands.json 갱신 실패 — 빌드 자체는 정상" >&2
+    [ -e "$_cc_dir/compile_commands.json" ] && echo "  기존 DB 는 직전 성공 빌드 기준이라 낡았을 수 있다." >&2
         fi
     fi
 fi
