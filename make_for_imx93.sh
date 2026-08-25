@@ -86,6 +86,12 @@ fi
 # 호스트 종속 경로를 담으므로 .gitignore 대상 — 각자 빌드할 때 생성된다.
 # clangd 가 GCC 전용 플래그를 읽으려면 저장소의 .clangd 파일도 함께 필요하다.
 _cc_rc=$?
+# 드라이버 빌드 상태를 _cc_build_rc 에 기록하면서 $? 가 그 대입문 결과(항상 0)로
+# 덮였을 수 있다. 드라이버 빌드가 실패했으면 그 코드를 종료 코드로 삼는다.
+# (뒤따르는 mapp 빌드가 성공해도 빌드 실패가 0 으로 보고되지 않게 한다)
+if [ -n "${_cc_build_rc-}" ] && [ "$_cc_build_rc" -ne 0 ]; then
+    _cc_rc="$_cc_build_rc"
+fi
 _cc_dir="$SCRIPT_DIR"
 _cc_kdir="$KERNELDIR"
 
