@@ -61,17 +61,45 @@ fi
 # 호스트 종속 경로를 담으므로 .gitignore 대상 — 각자 빌드할 때 생성된다.
 # clangd 가 GCC 전용 플래그를 읽으려면 저장소의 .clangd 파일도 함께 필요하다.
 _cc_rc=$?
-_cc_gen="$KERNELDIR/source/scripts/clang-tools/gen_compile_commands.py"
 _cc_dir="$SCRIPT_DIR"
-if [ "$_cc_rc" -eq 0 ] && [ -f "$_cc_gen" ] && ! printf '%s\n' "$@" | grep -qxE 'clean|distclean'; then
-    _cc_tmp="$_cc_dir/.compile_commands.json.tmp"
-    if python3 "$_cc_gen" -d "$KERNELDIR" -o "$_cc_tmp" "$SCRIPT_DIR" 2>/dev/null \
-       && grep -q '"file"' "$_cc_tmp" 2>/dev/null; then
-        mv -f "$_cc_tmp" "$_cc_dir/compile_commands.json"
-        echo "compile_commands.json 갱신됨 (clangd)"
+_cc_kdir="$KERNELDIR"
+
+# clean 류가 인자에 하나라도 섞이면 건너뛴다 ("clean all" 처럼 혼합돼도 안전하게).
+_cc_skip=0
+for _cc_a in "$@"; do
+    case "$_cc_a" in clean|distclean|mrproper|realclean) _cc_skip=1 ;; esac
+done
+
+# 생성기 위치: O= 빌드 dir 은 source/ 심볼릭 링크로, in-tree 는 직접 scripts/ 로
+# 잡힌다. 어느 쪽도 아니면 CC_GEN 으로 지정한다.
+_cc_gen="${CC_GEN:-}"
+if [ -z "$_cc_gen" ]; then
+    for _cc_c in "$_cc_kdir/source/scripts/clang-tools/gen_compile_commands.py" \
+                 "$_cc_kdir/scripts/clang-tools/gen_compile_commands.py"; do
+        if [ -f "$_cc_c" ]; then _cc_gen="$_cc_c"; break; fi
+    done
+fi
+
+if [ "$_cc_rc" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
+    if [ -z "$_cc_kdir" ]; then
+        echo "compile_commands.json 건너뜀 — 커널 빌드 디렉터리가 비었다" >&2
+    elif [ -z "$_cc_gen" ]; then
+        echo "compile_commands.json 건너뜀 — gen_compile_commands.py 를 찾지 못했다 (CC_GEN 으로 지정 가능)" >&2
     else
-        rm -f "$_cc_tmp"
-        echo "compile_commands.json 갱신 실패 — 빌드 자체는 정상" >&2
+        _cc_tmp="$_cc_dir/.compile_commands.json.tmp"
+        if python3 "$_cc_gen" -d "$_cc_kdir" -o "$_cc_tmp" "$SCRIPT_DIR" 2>/dev/null \
+           && grep -q '"file"' "$_cc_tmp" 2>/dev/null; then
+            mv -f "$_cc_tmp" "$_cc_dir/compile_commands.json"
+            echo "compile_commands.json 갱신됨 (clangd)"
+        else
+            rm -f "$_cc_tmp"
+            echo "compile_commands.json 갱신 실패 — 빌드 자체는 정상" >&2
+        fi
     fi
+fi
+
+# source 로 부르면 exit 가 호출한 셸을 죽인다. 실행일 때만 exit 한다.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    return "$_cc_rc"
 fi
 exit "$_cc_rc"
