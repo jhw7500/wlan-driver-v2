@@ -111,7 +111,11 @@ if [ -z "$_cc_gen" ]; then
     done
 fi
 
-if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
+if [ "${_cc_build_rc-1}" -ne 0 ] && [ -n "${_cc_build_rc-}" ] && [ "$_cc_skip" -eq 0 ]; then
+    # 빌드가 실패하면 DB 를 갱신하지 않는다. 낡은 DB 가 남으므로 알린다.
+    [ -e "$_cc_dir/compile_commands.json" ] \
+        && echo "빌드 실패로 compile_commands.json 을 갱신하지 않았다 — 기존 DB 는 직전 성공 빌드 기준이다." >&2
+elif [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
     if [ -z "$_cc_kdir" ]; then
         echo "compile_commands.json 건너뜀 — 커널 빌드 디렉터리가 비었다" >&2
         [ -e "$_cc_dir/compile_commands.json" ] && echo "  기존 DB 는 직전 성공 빌드 기준이라 낡았을 수 있다." >&2
