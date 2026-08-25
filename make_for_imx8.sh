@@ -1,4 +1,6 @@
 #!/bin/bash
+# source 로 부르면 exit 가 호출한 셸을 죽인다. 실행이면 exit, source 면 return 한다.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _mfi_end='return'; else _mfi_end='exit'; fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 [ "$SDK_LOC" ] || SDK_LOC=/shared/fsl-imx-xwayland/6.6-nanbield
 #[ "$SDK_NAME" ] || SDK_NAME=cortexa53-crypto-poky-linux
@@ -6,7 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 [ ! -e ${SDK_LOC}/environment-setup-${SDK_NAME} ] && {
     echo "Sorry, please verify: ${SDK_LOC}/environment-setup-${SDK_NAME}"
-    exit 1
+    "$_mfi_end" 1
 }
 
 . ${SDK_LOC}/environment-setup-${SDK_NAME}
@@ -102,8 +104,4 @@ if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
     fi
 fi
 
-# source 로 부르면 exit 가 호출한 셸을 죽인다. 실행일 때만 exit 한다.
-if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-    return "$_cc_rc"
-fi
-exit "$_cc_rc"
+"$_mfi_end" "$_cc_rc"
