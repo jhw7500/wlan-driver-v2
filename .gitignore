@@ -65,3 +65,7 @@ docs/superpowers/
 
 # Local isolated development worktrees
 .worktrees/
+
+# clangd (호스트 종속 — 각자 빌드 시 생성)
+compile_commands.json
+.cache/

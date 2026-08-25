@@ -55,3 +55,23 @@ else
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} ${@:-build}
 fi
+
+# --- clangd: compile_commands.json 자동 갱신 ---------------------------------
+# 빌드가 남긴 .cmd 파일만 파싱한다 (컴파일 없음, ~0.05초).
+# 호스트 종속 경로를 담으므로 .gitignore 대상 — 각자 빌드할 때 생성된다.
+# clangd 가 GCC 전용 플래그를 읽으려면 저장소의 .clangd 파일도 함께 필요하다.
+_cc_rc=$?
+_cc_gen="$KERNELDIR/source/scripts/clang-tools/gen_compile_commands.py"
+_cc_dir="$SCRIPT_DIR"
+if [ "$_cc_rc" -eq 0 ] && [ -f "$_cc_gen" ] && ! printf '%s\n' "$@" | grep -qxE 'clean|distclean'; then
+    _cc_tmp="$_cc_dir/.compile_commands.json.tmp"
+    if python3 "$_cc_gen" -d "$KERNELDIR" -o "$_cc_tmp" "$SCRIPT_DIR" 2>/dev/null \
+       && grep -q '"file"' "$_cc_tmp" 2>/dev/null; then
+        mv -f "$_cc_tmp" "$_cc_dir/compile_commands.json"
+        echo "compile_commands.json 갱신됨 (clangd)"
+    else
+        rm -f "$_cc_tmp"
+        echo "compile_commands.json 갱신 실패 — 빌드 자체는 정상" >&2
+    fi
+fi
+exit "$_cc_rc"
