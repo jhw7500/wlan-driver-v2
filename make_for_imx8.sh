@@ -45,6 +45,7 @@ elif [ "$1" = "all" ]; then
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
+        _cc_build_rc=$?   # clangd: 드라이버 빌드 상태 (뒤따르는 mapp 빌드에 가려지지 않게)
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX}
     make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
@@ -54,6 +55,7 @@ else
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} ${@:-build}
+        _cc_build_rc=$?   # clangd: 드라이버 빌드 상태 (뒤따르는 mapp 빌드에 가려지지 않게)
 fi
 
 # --- clangd: compile_commands.json 자동 갱신 ---------------------------------
@@ -80,16 +82,18 @@ if [ -z "$_cc_gen" ]; then
     done
 fi
 
-if [ "$_cc_rc" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
+if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
     if [ -z "$_cc_kdir" ]; then
         echo "compile_commands.json 건너뜀 — 커널 빌드 디렉터리가 비었다" >&2
     elif [ -z "$_cc_gen" ]; then
         echo "compile_commands.json 건너뜀 — gen_compile_commands.py 를 찾지 못했다 (CC_GEN 으로 지정 가능)" >&2
     else
-        _cc_tmp="$_cc_dir/.compile_commands.json.tmp"
-        if python3 "$_cc_gen" -d "$_cc_kdir" -o "$_cc_tmp" "$SCRIPT_DIR" 2>/dev/null \
-           && grep -q '"file"' "$_cc_tmp" 2>/dev/null; then
-            mv -f "$_cc_tmp" "$_cc_dir/compile_commands.json"
+        # 고정 이름은 동시 실행 시 서로 덮어쓴다. mktemp 로 고유하게 만든다.
+        _cc_tmp="$(mktemp "$_cc_dir/.compile_commands.json.XXXXXX" 2>/dev/null)" || _cc_tmp=""
+        if [ -n "$_cc_tmp" ] \
+           && python3 "$_cc_gen" -d "$_cc_kdir" -o "$_cc_tmp" "$SCRIPT_DIR" 2>/dev/null \
+           && grep -q '"file"' "$_cc_tmp" 2>/dev/null \
+           && mv -f "$_cc_tmp" "$_cc_dir/compile_commands.json"; then
             echo "compile_commands.json 갱신됨 (clangd)"
         else
             rm -f "$_cc_tmp"
