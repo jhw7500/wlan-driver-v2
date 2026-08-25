@@ -7,6 +7,8 @@
 # 차단.
 # 우회:  SKIP_STATIC_CHECK=1 ./make_for_imx93.sh
 # ----------------------------------------------------------------------------
+# source 로 부르면 exit 가 호출한 셸을 죽인다. 실행이면 exit, source 면 return 한다.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _mfi_end='return'; else _mfi_end='exit'; fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 STATIC_CHECK="$SCRIPT_DIR/scripts/tests/bridge_static_checks.sh"
 if [ -z "$SKIP_STATIC_CHECK" ] && [ -f "$STATIC_CHECK" ]; then
@@ -14,7 +16,7 @@ if [ -z "$SKIP_STATIC_CHECK" ] && [ -f "$STATIC_CHECK" ]; then
     if ! bash "$STATIC_CHECK"; then
         echo "make_for_imx93.sh: static checks FAILED — aborting build" >&2
         echo "  강제 우회 (권장 안 함): SKIP_STATIC_CHECK=1 $0" >&2
-        exit 1
+        "$_mfi_end" 1
     fi
 fi
 
@@ -24,7 +26,7 @@ fi
 
 [ ! -e ${SDK_LOC}/environment-setup-${SDK_NAME} ] && {
     echo "Sorry, please verify: ${SDK_LOC}/environment-setup-${SDK_NAME}"
-    exit 1
+    "$_mfi_end" 1
 }
 
 . ${SDK_LOC}/environment-setup-${SDK_NAME}
@@ -123,8 +125,4 @@ if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
     fi
 fi
 
-# source 로 부르면 exit 가 호출한 셸을 죽인다. 실행일 때만 exit 한다.
-if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
-    return "$_cc_rc"
-fi
-exit "$_cc_rc"
+"$_mfi_end" "$_cc_rc"
