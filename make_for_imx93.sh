@@ -7,6 +7,8 @@
 # 차단.
 # 우회:  SKIP_STATIC_CHECK=1 ./make_for_imx93.sh
 # ----------------------------------------------------------------------------
+# source 로 부르면 exit 가 호출한 셸을 죽인다. 실행이면 exit, source 면 return 한다.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then _mfi_end='return'; else _mfi_end='exit'; fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 STATIC_CHECK="$SCRIPT_DIR/scripts/tests/bridge_static_checks.sh"
 if [ -z "$SKIP_STATIC_CHECK" ] && [ -f "$STATIC_CHECK" ]; then
@@ -14,7 +16,7 @@ if [ -z "$SKIP_STATIC_CHECK" ] && [ -f "$STATIC_CHECK" ]; then
     if ! bash "$STATIC_CHECK"; then
         echo "make_for_imx93.sh: static checks FAILED — aborting build" >&2
         echo "  강제 우회 (권장 안 함): SKIP_STATIC_CHECK=1 $0" >&2
-        exit 1
+        "$_mfi_end" 1
     fi
 fi
 
@@ -24,7 +26,7 @@ fi
 
 [ ! -e ${SDK_LOC}/environment-setup-${SDK_NAME} ] && {
     echo "Sorry, please verify: ${SDK_LOC}/environment-setup-${SDK_NAME}"
-    exit 1
+    "$_mfi_end" 1
 }
 
 . ${SDK_LOC}/environment-setup-${SDK_NAME}
@@ -66,6 +68,7 @@ elif [ "$1" = "all" ]; then
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} $@
+        _cc_build_rc=$?   # clangd: 드라이버 빌드 상태 (뒤따르는 mapp 빌드에 가려지지 않게)
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
     make -C mapp/mlanutl INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} "ccflags-y=${MLANUTL_CFLAGS}"
     make -C mapp/mlanevent INSTALLDIR=bin_wlan MOD_SUFFIX=${MOD_SUFFIX} clean
@@ -75,4 +78,57 @@ else
     PKG_CONFIG_SYSROOT_DIR=${PKG_CONFIG_SYSROOT_DIR} \
         PKG_CONFIG_DIR= \
         make MOD_SUFFIX=${MOD_SUFFIX} ${@:-build}
+        _cc_build_rc=$?   # clangd: 드라이버 빌드 상태 (뒤따르는 mapp 빌드에 가려지지 않게)
 fi
+
+# --- clangd: compile_commands.json 자동 갱신 ---------------------------------
+# 빌드가 남긴 .cmd 파일만 파싱한다 (컴파일 없음, ~0.05초).
+# 호스트 종속 경로를 담으므로 .gitignore 대상 — 각자 빌드할 때 생성된다.
+# clangd 가 GCC 전용 플래그를 읽으려면 저장소의 .clangd 파일도 함께 필요하다.
+_cc_rc=$?
+# 드라이버 빌드 상태를 _cc_build_rc 에 기록하면서 $? 가 그 대입문 결과(항상 0)로
+# 덮였을 수 있다. 드라이버 빌드가 실패했으면 그 코드를 종료 코드로 삼는다.
+# (뒤따르는 mapp 빌드가 성공해도 빌드 실패가 0 으로 보고되지 않게 한다)
+if [ -n "${_cc_build_rc-}" ] && [ "$_cc_build_rc" -ne 0 ]; then
+    _cc_rc="$_cc_build_rc"
+fi
+_cc_dir="$SCRIPT_DIR"
+_cc_kdir="$KERNELDIR"
+
+# clean 류가 인자에 하나라도 섞이면 건너뛴다 ("clean all" 처럼 혼합돼도 안전하게).
+_cc_skip=0
+for _cc_a in "$@"; do
+    case "$_cc_a" in clean|distclean|mrproper|realclean) _cc_skip=1 ;; esac
+done
+
+# 생성기 위치: O= 빌드 dir 은 source/ 심볼릭 링크로, in-tree 는 직접 scripts/ 로
+# 잡힌다. 어느 쪽도 아니면 CC_GEN 으로 지정한다.
+_cc_gen="${CC_GEN:-}"
+if [ -z "$_cc_gen" ]; then
+    for _cc_c in "$_cc_kdir/source/scripts/clang-tools/gen_compile_commands.py" \
+                 "$_cc_kdir/scripts/clang-tools/gen_compile_commands.py"; do
+        if [ -f "$_cc_c" ]; then _cc_gen="$_cc_c"; break; fi
+    done
+fi
+
+if [ "${_cc_build_rc-1}" -eq 0 ] && [ "$_cc_skip" -eq 0 ]; then
+    if [ -z "$_cc_kdir" ]; then
+        echo "compile_commands.json 건너뜀 — 커널 빌드 디렉터리가 비었다" >&2
+    elif [ -z "$_cc_gen" ]; then
+        echo "compile_commands.json 건너뜀 — gen_compile_commands.py 를 찾지 못했다 (CC_GEN 으로 지정 가능)" >&2
+    else
+        # 고정 이름은 동시 실행 시 서로 덮어쓴다. mktemp 로 고유하게 만든다.
+        _cc_tmp="$(mktemp "$_cc_dir/.compile_commands.json.XXXXXX" 2>/dev/null)" || _cc_tmp=""
+        if [ -n "$_cc_tmp" ] \
+           && python3 "$_cc_gen" -d "$_cc_kdir" -o "$_cc_tmp" "$SCRIPT_DIR" 2>/dev/null \
+           && grep -q '"file"' "$_cc_tmp" 2>/dev/null \
+           && mv -f "$_cc_tmp" "$_cc_dir/compile_commands.json"; then
+            echo "compile_commands.json 갱신됨 (clangd)"
+        else
+            rm -f "$_cc_tmp"
+            echo "compile_commands.json 갱신 실패 — 빌드 자체는 정상" >&2
+        fi
+    fi
+fi
+
+"$_mfi_end" "$_cc_rc"

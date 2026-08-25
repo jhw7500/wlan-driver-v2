@@ -1,0 +1,27 @@
+# clangd 설정 — kbuild(GCC)가 생성한 compile_commands.json 을 clangd(clang)가
+# 읽을 수 있도록 GCC 전용 플래그를 제거한다.
+# 주의: Compiler: 를 지정하지 않는다. 컴파일러 이름(aarch64-poky-linux-gcc)에서
+#       타깃 아키텍처가 추론되므로 바꾸면 호스트(x86_64)로 파싱될 수 있다.
+CompileFlags:
+  Add:
+    # 컴파일러 이름에서 추론되는 트리플 aarch64-poky-linux 를 clang 이 모른다
+    # (CreateTargetInfo() return null). 뒤에 붙는 --target 이 우선하므로 덮어쓴다.
+    - --target=aarch64-linux-gnu
+    - -Wno-unknown-warning-option
+    - -Wno-unknown-attributes
+  Remove:
+    # clang 의 AArch64 ABI 이름은 aapcs 계열. GCC 표기 lp64 는 CreateTargetInfo 실패를 유발.
+    - -mabi=*
+    - -fno-allow-store-data-races
+    - -fconserve-stack
+    - -femit-struct-debug-baseonly
+    - -fstrict-flex-arrays=*
+    - -ftrivial-auto-var-init=*
+    - -fno-var-tracking
+    - -mstack-protector-guard=*
+    - -mstack-protector-guard-reg=*
+    - -mstack-protector-guard-offset=*
+    - -Wimplicit-fallthrough=*
+    - -Wa,*
+    - -Wp,*
+    - --param=*
