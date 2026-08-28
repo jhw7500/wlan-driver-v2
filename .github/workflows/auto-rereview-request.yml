@@ -20,4 +20,4 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: jhw7500/automation/.github/workflows/auto-rereview-request.yml@a394b653db79d153d56eb8eb7d7620595cc12ef7
+    uses: jhw7500/automation/.github/workflows/auto-rereview-request.yml@ffdf5c1ff6237502ac67296ffabb9146d623c7a6
