@@ -108,6 +108,7 @@ proc_c = read("mlinux/moal_proc.c")
 shim_c = read("mlinux/moal_shim.c")
 bridge_c = read("mlinux/moal_bridge.c")
 eth_ioctl_c = read("mlinux/moal_eth_ioctl.c")
+sta_cfg80211_c = read("mlinux/moal_sta_cfg80211.c")
 cfg80211_util_c = read("mlinux/moal_cfg80211_util.c")
 cfg80211_util_h = read("mlinux/moal_cfg80211_util.h")
 pcie_c = read("mlinux/moal_pcie.c")
@@ -115,6 +116,11 @@ sdio_h = read("mlinux/moal_sdio.h")
 sdio_c = read("mlinux/moal_sdio_mmc.c")
 sdio_request_gpio = c_function(sdio_c, "static int woal_request_gpio")
 mlan_misc_c = read("mlan/mlan_misc.c")
+mlan_cmdevt_c = read("mlan/mlan_cmdevt.c")
+mlan_11ac_c = read("mlan/mlan_11ac.c")
+mlan_11ax_c = read("mlan/mlan_11ax.c")
+mlan_sta_tx_c = read("mlan/mlan_sta_tx.c")
+mlan_main_internal_h = read("mlan/mlan_main.h")
 mlan_decl = read("mlan/mlan_decl.h")
 moal_decl = read("mlinux/mlan_decl.h")
 makefile = read("Makefile")
@@ -3565,6 +3571,131 @@ require(ordered(
 require(ordered(antcfg_nss, "FEATURE_CTRL_STREAM_2X2", "-EOPNOTSUPP",
                 "woal_request_ioctl("),
         "antcfgnss does not reject unsupported non-2x2 response layouts")
+
+radio_antcfg = c_function(mlan_misc_c,
+                          "mlan_status wlan_radio_ioctl_ant_cfg")
+rf_ant_cmd = c_function(mlan_cmdevt_c,
+                        "mlan_status wlan_cmd_802_11_rf_antenna")
+rf_ant_resp = c_function(mlan_cmdevt_c,
+                         "mlan_status wlan_ret_802_11_rf_antenna")
+vht_assoc_cap = c_function(mlan_11ac_c, "int wlan_cmd_append_11ac_tlv")
+he_assoc_cap = c_function(mlan_11ax_c, "int wlan_cmd_append_11ax_tlv")
+require("user_htstream_before" in radio_antcfg and
+        "ANTCFG_DIAG request" in radio_antcfg and
+        all(field in radio_antcfg for field in
+            ("ant_cfg->tx_antenna", "ant_cfg->rx_antenna")),
+        "antcfg host request lacks requested masks and user_htstream before/after evidence")
+require("ANTCFG_DIAG hostcmd" in rf_ant_cmd and
+        all(field in rf_ant_cmd for field in
+            ("pantenna->action_tx", "pantenna->tx_antenna_mode",
+             "pantenna->action_rx", "pantenna->rx_antenna_mode",
+             "cmd->size")),
+        "RF_ANTENNA HostCmd serialization lacks action/mask/size evidence")
+require("user_htstream_before" in rf_ant_resp and
+        "ANTCFG_DIAG response" in rf_ant_resp and
+        "pmadapter->user_htstream" in rf_ant_resp,
+        "RF_ANTENNA response lacks physical masks and user_htstream before/after evidence")
+require("ASSOC_NSS_DIAG vht" in vht_assoc_cap and
+        all(field in vht_assoc_cap for field in
+            ("rx_nss", "tx_nss", "rx_mcs_map", "tx_mcs_map",
+             "user_htstream")),
+        "association VHT capability lacks final Tx/Rx NSS-map evidence")
+require("ASSOC_NSS_DIAG he" in he_assoc_cap and
+        all(field in he_assoc_cap for field in
+            ("advertised_rx_nss", "advertised_tx_nss", "rx_mcs_80",
+             "tx_mcs_80", "user_htstream")),
+        "association HE capability lacks final Tx/Rx NSS-map evidence")
+
+scan_snapshot = c_function(main_c, "void woal_scan_diag_snapshot")
+cfg_scan = c_function(sta_cfg80211_c, "static int woal_cfg80211_scan")
+scan_done = c_function(main_c,
+                       "static void woal_send_cfg_bss_scan_result")
+scan_post = c_function(main_c,
+                       "static void woal_scan_diag_post_handler")
+remove_interface = c_function(main_c, "void woal_remove_interface")
+scan_rate_query = c_function(main_c,
+                             "static mlan_status woal_scan_diag_get_data_rate")
+scan_ant_query = c_function(main_c,
+                            "static mlan_status woal_scan_diag_get_antcfg")
+txpd_build = c_function(mlan_sta_tx_c,
+                        "t_void *wlan_ops_sta_process_txpd")
+mlan_recv_event = c_function(mlan_cmdevt_c,
+                             "mlan_status wlan_recv_event")
+scan_report_case = shim_c[shim_c.find(
+    "case MLAN_EVENT_ID_DRV_SCAN_REPORT:") :]
+scan_report_case = scan_report_case[:scan_report_case.find("\n\tcase ", 1)]
+require("t_u32 scan_diag_id;" in main_h and
+        "t_u8 scan_diag_home_chan;" in main_h,
+        "MOAL handle lacks correlated scan diagnostic id/home-channel state")
+require(ordered(scan_snapshot, "drvdbg & MCMND", "woal_get_debug_info(") and
+        all(field in scan_snapshot for field in
+            ("atomic_read(&handle->tx_pending)", "wmm_tx_pending",
+             "netif_queue_stopped", "info->wmm_ac_bk", "info->wmm_ac_be",
+             "info->wmm_ac_vi", "info->wmm_ac_vo", "info->ps_state",
+             "info->tx_lock_flag", "info->pm_wakeup_card_req",
+             "info->pm_wakeup_fw_try", "info->scan_processing",
+             "info->scan_state", "woal_get_sta_channel(",
+             "SCAN_WEDGE_DIAG")),
+        "scan diagnostic snapshot lacks requested MOAL/MLAN queue, power, wake, or channel evidence")
+require("mlan_debug_info info;" not in scan_snapshot and
+        "kzalloc(sizeof(*info), GFP_KERNEL)" in scan_snapshot and
+        "kfree(info);" in scan_snapshot,
+        "scan diagnostic snapshot puts the large MLAN debug structure on the kernel stack")
+require(all(field in scan_snapshot for field in
+            ("woal_get_stats_info(", "FW_TX_COUNTER_DIAG",
+             "failed_delta", "ack_failure_delta", "TX_RATE_DIAG",
+             "RF_CHANNEL_DIAG", "num_tx_host_to_card_failure",
+             "tx_stat_queue_size", "fw_tx_status_failure")) and
+        "kzalloc(sizeof(*stats), GFP_KERNEL)" in scan_snapshot and
+        "kfree(stats);" in scan_snapshot,
+        "post-scan diagnostics lack FW ACK/failure counters, rate/NSS, RF/channel, or host completion evidence")
+require("MLAN_OID_GET_DATA_RATE" in scan_rate_query and
+        "MLAN_IOCTL_RATE" in scan_rate_query and
+        "MLAN_OID_ANT_CFG" in scan_ant_query and
+        "MLAN_IOCTL_RADIO_CFG" in scan_ant_query,
+        "scan diagnostics do not query FW rate/NSS and physical antenna state")
+require(ordered(cfg_scan, "scan_diag_id++", "scan_diag_home_chan",
+                "scan_diag_stats_base_valid = MFALSE",
+                'woal_scan_diag_snapshot(priv, "PRE_SCAN", MTRUE, MFALSE)',
+                "woal_do_scan(",
+                'woal_scan_diag_snapshot(priv, "START", MFALSE, MFALSE)') ,
+        "cfg80211 scan does not capture a true pre-submit FW baseline and a non-blocking START boundary")
+require(ordered(scan_report_case,
+                'woal_scan_diag_snapshot(priv, "FW_COMPLETE", MFALSE,',
+                "MFALSE);"),
+        "FW scan-report boundary lacks a correlated diagnostic snapshot")
+require(ordered(scan_done,
+                'woal_scan_diag_snapshot(priv, "CFG80211_DONE", MTRUE, MTRUE)',
+                "scan_diag_post_work",
+                "woal_cfg80211_scan_done("),
+        "cfg80211 completion lacks final and delayed post-scan Tx-path snapshots")
+require("POST_SCAN_1S" in scan_post and
+        "scan_diag_post_id" in scan_post and
+        "scan_diag_post_work" in main_h,
+        "one-second post-scan counter/rate/RF sampling is not lifecycle-owned by MOAL")
+require(ordered(remove_interface, "scan_diag_post_priv",
+                "cancel_delayed_work_sync(&handle->scan_diag_post_work)",
+                "free_netdev(dev)") ,
+        "interface teardown can free the delayed scan diagnostic private context")
+require(all(field in mlan_main_internal_h for field in
+            ("scan_diag_seq", "scan_diag_txpd_budget")) and
+        all(field in mlan_recv_event for field in
+            ("MLAN_EVENT_ID_DRV_SCAN_REPORT", "mlan_drvdbg & MCMND",
+             "scan_diag_txpd_budget")) and
+        all(field in txpd_build for field in
+            ("TXPD_DIAG", "scan_diag_txpd_budget", "tx_control",
+             "tx_control_1", "user_htstream", "tx_rate_info",
+             "curr_bss_params.bss_descriptor.channel")),
+        "bounded next-packet TxPD/rate/NSS evidence is not armed at FW scan completion")
+require(all(field in main_h for field in
+            ("fw_tx_status_success", "fw_tx_status_failure",
+             "fw_tx_status_watchdog", "fw_tx_status_unknown")) and
+        "FW_TX_STATUS_DIAG" in shim_c and
+        all(field in shim_c for field in
+            ("atomic_inc(&priv->phandle->fw_tx_status_success)",
+             "atomic_inc(&priv->phandle->fw_tx_status_failure)",
+             "atomic_inc(&priv->phandle->fw_tx_status_watchdog)")),
+        "FW-reported explicit Tx status reasons are not counted and correlated")
 
 require(re.search(r"depends on .*\bPROC_FS\b", kconfig) is not None,
         "Kconfig permits a driver selection that omits required proc/debug objects")
