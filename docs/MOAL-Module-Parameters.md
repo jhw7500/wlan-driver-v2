@@ -205,8 +205,11 @@
 | `indrstcfg` | int | `0xffffffff` | Independent reset 설정<br>High byte: GPIO 핀 번호<br>Low byte: IR 모드 |
 | `fixed_beacon_buffer` | int | 0 | 0: 기본 버퍼 크기 할당<br>1: 최대 버퍼 크기 할당 |
 | `GoAgeoutTime` | int | 0 | GO Age-out 타임 설정 (100ms 단위)<br>0: FW 기본값 사용 (`WIFI_DIRECT_SUPPORT` 정의 시) |
-| `mac80211_rate_adapt` | int | 0 | 0: FW rate adaptation 사용<br>1: MAC80211 기반 rate adaptation 사용 |
 | ✅ `mgmt_hex_dump` | int | 0 | 관리 프레임 IE byte-level hex 캡처 (v2 신규, §11.8) |
+
+> **제거된 항목**: `mac80211_rate_adapt`는 이 드라이버 소스에 존재하지 않아 2026-08-28 표에서 제거했다
+> (저장소 전체 `grep` 결과 이 문서 외 매치 0건). rate adaptation 알고리즘은 모듈 파라미터가 아니라
+> FW가 결정하며, `mlanutl <iface> rate_adapt_cfg`로 조회·설정한다.
 
 ---
 

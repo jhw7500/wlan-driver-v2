@@ -4850,6 +4850,12 @@ tx_ampdu_prot_mode
 rate_adapt_cfg
     This command is used to switch between SR rateadapt and Legacy rateadapt.
     FW default Algorithm is Legacy rateadapt
+    [LOCAL NOTE 2026-08-28] Not true on SD9098 FW 17.92.1.p149.115.
+    The measured power-on default is SR rateadapt with dynamic
+    (noise-based) thresholds and a 100 ms eval timer.  Measured on an
+    interface that had received no rate_adapt_cfg SET since cold boot.
+    A SET also survives driver reload -- only a cold FW load restores
+    the default.  Treat the vendor line above as chip/FW dependent.
     when SR rateadapt is enabled then it is used to set static threshold based
     or dynamic noise based rate adaptation and set the timer interval to evaluate
     sw rate adaptation.For static mode, low and high thresholds for Tx aggregated
