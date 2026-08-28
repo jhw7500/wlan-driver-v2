@@ -20983,6 +20983,7 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 	int ret = 0;
 	int data[4] = {0};
 	t_u32 user_htstream;
+	int have_split_nss = 0;
 	t_u8 *buffer = NULL;
 	struct eth_priv_cmd *cmd = NULL;
 	struct ifreq ifr;
@@ -21034,12 +21035,31 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 		goto done;
 	}
 	if (argc == 3) {
+		/* The 16-byte antcfg reply is branch-dependent:
+		 *
+		 * main:   tx, rx, user_htstream, reserved
+		 * ported: tx, rx, tx_6g, rx_6g
+		 *
+		 * Probe the ported GET-only command before interpreting words
+		 * 2/3. This is an explicit ABI capability check; field values are
+		 * not reliable discriminators because valid antenna and NSS values
+		 * overlap.
+		 */
+		have_split_nss = (get_user_htstream(&user_htstream) == 0);
 		if (cmd->used_len == (int)(sizeof(int) * 4)) {
 			memcpy(data, buffer, sizeof(data));
 			printf("Mode of Tx path is 0x%x\n", data[0]);
 			printf("Mode of Rx path is 0x%x\n", data[1]);
-			printf("Mode of Tx path for 6G is 0x%x\n", data[2]);
-			printf("Mode of Rx path for 6G is 0x%x\n", data[3]);
+			if (have_split_nss) {
+				printf("Mode of Tx path for 6G is 0x%x\n",
+				       data[2]);
+				printf("Mode of Rx path for 6G is 0x%x\n",
+				       data[3]);
+				print_nss_intent("", user_htstream);
+			} else {
+				/* main extended ABI */
+				print_nss_intent("", (t_u32)data[2]);
+			}
 		} else if (cmd->used_len < (int)(sizeof(int) * 3)) {
 			if (cmd->used_len > 0) {
 				memcpy(data, buffer, cmd->used_len);
@@ -21048,6 +21068,8 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 					printf("Mode of Rx path is 0x%x\n",
 					       data[1]);
 			}
+			if (have_split_nss)
+				print_nss_intent("", user_htstream);
 		} else {
 			memcpy(data, buffer, sizeof(int) * 3);
 			printf("Mode of Tx/Rx path is 0x%x\n", data[0]);
@@ -21061,8 +21083,6 @@ static int process_set_get_tx_rx_ant(int argc, char *argv[])
 						       data[2]);
 			}
 		}
-		if (get_user_htstream(&user_htstream) == 0)
-			print_nss_intent("", user_htstream);
 	}
 
 done:
