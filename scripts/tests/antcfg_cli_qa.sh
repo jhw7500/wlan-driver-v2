@@ -99,7 +99,13 @@ int ioctl(int fd, unsigned long request, ...)
 	}
 
 	if (strcmp(request_buf, "MRVL_CMDantcfgnss") == 0) {
-		if (strcmp(abi, "ported") == 0) {
+		/* Both the four-word and the short 2x2 reply come from the
+		 * STREAM_2X2 arm of the driver, and antcfgnss answers
+		 * -EOPNOTSUPP only when that same flag is clear.  A fixture
+		 * that pairs a 2x2 antcfg reply with a failing antcfgnss
+		 * would model a driver state that cannot occur.
+		 */
+		if (strcmp(abi, "ported") == 0 || strcmp(abi, "legacy") == 0) {
 			const int words[] = {0x2121};
 			return reply_words(cmd, words, 1);
 		}
@@ -149,6 +155,13 @@ run_get_abi() {
 		LD_PRELOAD="$TMP/ioctl_capture.so" \
 		"$MLANUTL" mlan0 antcfg >"$TMP/$abi.stdout" \
 		2>"$TMP/$abi.stderr" || fail "$abi antcfg GET failed"
+	cp "$TMP/capture" "$TMP/$abi.capture"
+	# A fixture name the shim does not know replies with a zero-length
+	# body, prints nothing and still exits 0, which would let every
+	# "must not appear" assertion below pass vacuously.
+	[[ -s "$TMP/$abi.stdout" ]] || fail "$abi antcfg GET printed nothing"
+	[[ "$(head -n 1 "$TMP/$abi.capture")" == 'MRVL_CMDantcfg' ]] ||
+		fail "$abi antcfg GET did not issue the antcfg request first"
 }
 
 run_valid 'MRVL_CMDantcfg'
@@ -168,6 +181,12 @@ grep -Fq 'NSS limit (antcfg): 2G rx=1 tx=2, 5G rx=1 tx=2  [user_htstream=0x2121]
 if grep -Fq 'for 6G' "$TMP/main.stdout"; then
 	fail 'main ABI NSS/reserved words were misreported as 6 GHz antenna modes'
 fi
+# main has no antcfgnss command, and the string prefix-matches its antcfg
+# handler, so probing it there is dispatched into the antenna SET path.  The
+# reply itself carries the discriminator, so nothing may be sent.
+if grep -Fqx 'MRVL_CMDantcfgnss' "$TMP/main.capture"; then
+	fail 'main ABI GET issued the ported-only antcfgnss probe'
+fi
 
 run_get_abi ported
 grep -Fq 'Mode of Tx path for 6G is 0x1' "$TMP/ported.stdout" ||
@@ -182,8 +201,11 @@ grep -Fq 'Mode of Tx path is 0x303' "$TMP/legacy.stdout" ||
 	fail 'legacy ABI did not print Tx antenna mode'
 grep -Fq 'Mode of Rx path is 0x303' "$TMP/legacy.stdout" ||
 	fail 'legacy ABI did not print Rx antenna mode'
-if grep -Fq 'NSS limit' "$TMP/legacy.stdout"; then
-	fail 'legacy ABI fabricated an NSS value'
+grep -Fq 'NSS limit (antcfg): 2G rx=1 tx=2, 5G rx=1 tx=2  [user_htstream=0x2121]' \
+	"$TMP/legacy.stdout" ||
+	fail 'short ported 2x2 reply dropped the NSS intent line'
+if grep -Fq 'for 6G' "$TMP/legacy.stdout"; then
+	fail 'short reply invented 6 GHz antenna modes'
 fi
 
 run_get_abi 1x1
@@ -193,5 +215,10 @@ grep -Fq 'Evaluate time = 10' "$TMP/1x1.stdout" ||
 	fail '1x1 ABI did not print evaluate time'
 grep -Fq 'Current antenna is 1' "$TMP/1x1.stdout" ||
 	fail '1x1 ABI did not print current antenna'
+# The three-word layout and antcfgnss's -EOPNOTSUPP share one condition
+# (STREAM_2X2 clear), so the probe could only ever fail here.
+if grep -Fqx 'MRVL_CMDantcfgnss' "$TMP/1x1.capture"; then
+	fail '1x1 reply probed antcfgnss, which cannot answer for that layout'
+fi
 
 printf 'antcfg_cli_qa=PASS\n'
