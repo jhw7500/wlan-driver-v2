@@ -35,6 +35,7 @@ modules.order
 
 # Editor/IDE
 .omc/
+.serena/
 *.swp
 *~
 tmp/
