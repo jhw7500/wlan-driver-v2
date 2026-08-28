@@ -3662,6 +3662,49 @@ static mlan_status wlan_process_defer_event(moal_handle *handle,
 }
 
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
+static void woal_scan_diag_record_fw_tx_status(moal_private *priv,
+					       t_u8 packet_type,
+					       t_u8 tx_token_id,
+					       t_u8 status)
+{
+#ifdef DEBUG_LEVEL1
+	const char *reason;
+
+	if (!priv || !priv->phandle || !(drvdbg & MCMND))
+		return;
+	switch (status) {
+	case 0:
+		atomic_inc(&priv->phandle->fw_tx_status_success);
+		reason = "success";
+		break;
+	case 1:
+		atomic_inc(&priv->phandle->fw_tx_status_failure);
+		reason = "failure";
+		break;
+	case 2:
+		atomic_inc(&priv->phandle->fw_tx_status_watchdog);
+		reason = "watchdog";
+		break;
+	default:
+		atomic_inc(&priv->phandle->fw_tx_status_unknown);
+		reason = "unknown";
+		break;
+	}
+	PRINTM(MCMND,
+	       "FW_TX_STATUS_DIAG id=%u packet_type=0x%x token=%u status=%u reason=%s success=%d failure=%d watchdog=%d unknown=%d\n",
+	       priv->phandle->scan_diag_id, packet_type, tx_token_id, status,
+	       reason, atomic_read(&priv->phandle->fw_tx_status_success),
+	       atomic_read(&priv->phandle->fw_tx_status_failure),
+	       atomic_read(&priv->phandle->fw_tx_status_watchdog),
+	       atomic_read(&priv->phandle->fw_tx_status_unknown));
+#else
+	(void)priv;
+	(void)packet_type;
+	(void)tx_token_id;
+	(void)status;
+#endif
+}
+
 /**
  *  @brief This function handles event receive
  *
@@ -3684,6 +3727,9 @@ static t_void woal_process_event_tx_status(moal_private *priv,
 	       "Wlan: Tx status: tx_token=%d, pkt_type=0x%x, status=%d priv->tx_seq_num=%d\n",
 	       tx_status->tx_token_id, tx_status->packet_type,
 	       tx_status->status, priv->tx_seq_num);
+	woal_scan_diag_record_fw_tx_status(
+		priv, tx_status->packet_type, tx_status->tx_token_id,
+		tx_status->status);
 	spin_lock_irqsave(&priv->tx_stat_lock, flag);
 	tx_info = woal_get_tx_info(priv, tx_status->tx_token_id);
 	if (tx_info) {
@@ -4040,6 +4086,13 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 
 	case MLAN_EVENT_ID_DRV_SCAN_REPORT:
 		PRINTM(MINFO, "Scan report\n");
+#ifdef STA_CFG80211
+		if (IS_STA_CFG80211(cfg80211_wext))
+			/* Do not re-enter MLAN from its event callback. The final
+			 * workqueue snapshot performs the MLAN/FW queries. */
+			woal_scan_diag_snapshot(priv, "FW_COMPLETE", MFALSE,
+						MFALSE);
+#endif
 
 		if (priv->report_scan_result) {
 			priv->report_scan_result = MFALSE;
@@ -5967,6 +6020,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		       "Wlan: Tx status: tx_token=%d, pkt_type=0x%x, status=%d priv->tx_seq_num=%d\n",
 		       tx_status->tx_token_id, tx_status->packet_type,
 		       tx_status->status, priv->tx_seq_num);
+		woal_scan_diag_record_fw_tx_status(
+			priv, tx_status->packet_type, tx_status->tx_token_id,
+			tx_status->status);
 		spin_lock_irqsave(&priv->tx_stat_lock, flag);
 		tx_info = woal_get_tx_info(priv, tx_status->tx_token_id);
 		if (tx_info) {

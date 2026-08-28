@@ -2778,6 +2778,12 @@ struct _mlan_adapter {
 	t_u32 scan_processing;
 	/** scan state */
 	t_u32 scan_state;
+#ifdef DEBUG_LEVEL1
+	/** MLAN-side scan sequence for bounded post-scan TxPD diagnostics. */
+	t_u32 scan_diag_seq;
+	/** Number of next STA TxPDs still to log after scan completion. */
+	t_u8 scan_diag_txpd_budget;
+#endif
 	/** ext_scan enh support flag */
 	t_u8 ext_scan_enh;
 	/** scan type: 0 legacy, 1: enhance scan*/

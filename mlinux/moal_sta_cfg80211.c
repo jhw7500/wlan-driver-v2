@@ -6133,6 +6133,16 @@ static int woal_cfg80211_scan(struct wiphy *wiphy, struct net_device *dev,
 			scan_req->keep_previous_scan = MFALSE;
 	}
 
+	/* Publish the correlation state before submitting the request so even a
+	 * very fast firmware completion event carries the same id. Zero remains
+	 * reserved for "no scan captured yet" after natural wraparound. */
+	priv->phandle->scan_diag_id++;
+	if (!priv->phandle->scan_diag_id)
+		priv->phandle->scan_diag_id++;
+	priv->phandle->scan_diag_home_chan =
+		bss_info.bss_chan ? (t_u8)bss_info.bss_chan : priv->channel;
+	priv->phandle->scan_diag_stats_base_valid = MFALSE;
+	woal_scan_diag_snapshot(priv, "PRE_SCAN", MTRUE, MFALSE);
 	if (woal_do_scan(priv, scan_req) != MLAN_STATUS_SUCCESS) {
 		PRINTM(MERROR, "woal_do_scan fails!\n");
 		ret = -EAGAIN;
@@ -6146,6 +6156,8 @@ done:
 		priv->phandle->scan_priv = NULL;
 		spin_unlock_irqrestore(&priv->phandle->scan_req_lock, flags);
 	} else {
+		/* Do not issue a synchronous MLAN IOCTL after scan submission. */
+		woal_scan_diag_snapshot(priv, "START", MFALSE, MFALSE);
 		PRINTM(MMSG, "wlan: %s START SCAN\n", dev->name);
 		if (priv->phandle->params.net_rx & 0x4) {
 			mgmt_log_printf(

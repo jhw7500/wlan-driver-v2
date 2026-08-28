@@ -1467,6 +1467,10 @@ void woal_clean_up(moal_handle *handle)
 	int cfg80211_wext = 0;
 	cfg80211_wext = handle->params.cfg80211_wext;
 #ifdef STA_CFG80211
+	/* The delayed diagnostic dereferences scan_diag_post_priv, so drain it
+	 * before any interface can be removed or rebuilt. */
+	cancel_delayed_work_sync(&handle->scan_diag_post_work);
+	handle->scan_diag_post_priv = NULL;
 	if (IS_STA_CFG80211(cfg80211_wext) && handle->scan_request &&
 	    handle->scan_priv) {
 		moal_private *scan_priv = handle->scan_priv;
@@ -2845,6 +2849,12 @@ mlan_status woal_init_sw(moal_handle *handle)
 
 #ifdef DEBUG_LEVEL1
 	drvdbg = handle->params.drvdbg;
+#endif
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+	atomic_set(&handle->fw_tx_status_success, 0);
+	atomic_set(&handle->fw_tx_status_failure, 0);
+	atomic_set(&handle->fw_tx_status_watchdog, 0);
+	atomic_set(&handle->fw_tx_status_unknown, 0);
 #endif
 
 #ifdef MFG_CMD_SUPPORT
@@ -7249,6 +7259,12 @@ void woal_remove_interface(moal_handle *handle, t_u8 bss_index)
 #endif
 	ENTER();
 
+#ifdef STA_CFG80211
+	if (priv && READ_ONCE(handle->scan_diag_post_priv) == priv) {
+		cancel_delayed_work_sync(&handle->scan_diag_post_work);
+		WRITE_ONCE(handle->scan_diag_post_priv, NULL);
+	}
+#endif
 	if (!priv || !priv->netdev)
 		goto error;
 	dev = priv->netdev;
@@ -14614,6 +14630,350 @@ void woal_survey_dump_reset(moal_private *priv)
 }
 
 #ifdef STA_CFG80211
+#ifdef DEBUG_LEVEL1
+static mlan_status woal_scan_diag_get_data_rate(moal_private *priv,
+						mlan_data_rate *data_rate)
+{
+	mlan_ioctl_req *req;
+	mlan_ds_rate *rate;
+	mlan_status status;
+
+	req = woal_alloc_mlan_ioctl_req(sizeof(*rate));
+	if (!req)
+		return MLAN_STATUS_FAILURE;
+	rate = (mlan_ds_rate *)req->pbuf;
+	rate->sub_command = MLAN_OID_GET_DATA_RATE;
+	req->req_id = MLAN_IOCTL_RATE;
+	req->action = MLAN_ACT_GET;
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (status == MLAN_STATUS_SUCCESS)
+		moal_memcpy_ext(priv->phandle, data_rate,
+				&rate->param.data_rate, sizeof(*data_rate),
+				sizeof(*data_rate));
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+	return status;
+}
+
+static mlan_status woal_scan_diag_get_antcfg(moal_private *priv,
+					      mlan_ds_ant_cfg *antcfg)
+{
+	mlan_ioctl_req *req;
+	mlan_ds_radio_cfg *radio;
+	mlan_status status;
+
+	req = woal_alloc_mlan_ioctl_req(sizeof(*radio));
+	if (!req)
+		return MLAN_STATUS_FAILURE;
+	radio = (mlan_ds_radio_cfg *)req->pbuf;
+	radio->sub_command = MLAN_OID_ANT_CFG;
+	req->req_id = MLAN_IOCTL_RADIO_CFG;
+	req->action = MLAN_ACT_GET;
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (status == MLAN_STATUS_SUCCESS) {
+		if (priv->phandle->feature_control & FEATURE_CTRL_STREAM_2X2) {
+			moal_memcpy_ext(priv->phandle, antcfg,
+					&radio->param.ant_cfg, sizeof(*antcfg),
+					sizeof(*antcfg));
+		} else {
+			antcfg->tx_antenna =
+				radio->param.ant_cfg_1x1.antenna;
+			antcfg->rx_antenna =
+				radio->param.ant_cfg_1x1.antenna;
+		}
+	}
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+	return status;
+}
+
+static t_u32 woal_scan_diag_rate_nss(t_u32 format, t_u32 mcs,
+				     t_u32 encoded_nss)
+{
+	if (format == MLAN_RATE_FORMAT_VHT || format == MLAN_RATE_FORMAT_HE)
+		return encoded_nss + 1;
+	if (format == MLAN_RATE_FORMAT_HT && mcs <= 31)
+		return (mcs / 8) + 1;
+	return 0;
+}
+#endif
+
+/**
+ * @brief Capture the minimum state needed to localize a scan/TX wedge.
+ *
+ * The existing MCMND bit is the opt-in gate. In particular, the final
+ * firmware channel query is never added to the normal scan completion path.
+ * query_mlan must be false from the MLAN event callback to avoid re-entering
+ * the MLAN IOCTL path while it is delivering that callback.
+ */
+void woal_scan_diag_snapshot(moal_private *priv, const char *phase,
+			     t_u8 query_mlan, t_u8 query_fw_channel)
+{
+#ifdef DEBUG_LEVEL1
+	moal_handle *handle;
+	mlan_debug_info *info = NULL;
+	mlan_ds_get_stats *stats = NULL;
+	mlan_data_rate data_rate;
+	mlan_ds_ant_cfg antcfg;
+	mlan_bss_info bss_info;
+	chan_band_info fw_channel;
+	mlan_status debug_status = MLAN_STATUS_FAILURE;
+	mlan_status stats_status = MLAN_STATUS_FAILURE;
+	mlan_status rate_status = MLAN_STATUS_FAILURE;
+	mlan_status ant_status = MLAN_STATUS_FAILURE;
+	mlan_status bss_status = MLAN_STATUS_FAILURE;
+	mlan_status channel_status = MLAN_STATUS_FAILURE;
+	t_u64 debug_us = 0, stats_us = 0, rate_us = 0, ant_us = 0;
+	t_u64 bss_us = 0, channel_us = 0, query_start;
+	t_u64 tx_airtime_delta = 0;
+	t_u32 failed_delta = 0, ack_failure_delta = 0;
+	t_u32 retry_delta = 0, multi_retry_delta = 0;
+	t_u32 tx_frame_delta = 0, bcn_rcv_delta = 0;
+	t_u32 tx_nss = 0, rx_nss = 0;
+	int wmm_pending[4] = {0};
+
+	if (!priv || !priv->phandle || !priv->netdev || !phase ||
+	    !(drvdbg & MCMND))
+		return;
+	handle = priv->phandle;
+	memset(&data_rate, 0, sizeof(data_rate));
+	memset(&antcfg, 0, sizeof(antcfg));
+	memset(&bss_info, 0, sizeof(bss_info));
+	memset(&fw_channel, 0, sizeof(fw_channel));
+
+#if CFG80211_VERSION_CODE > KERNEL_VERSION(2, 6, 29)
+	wmm_pending[0] = atomic_read(&priv->wmm_tx_pending[0]);
+	wmm_pending[1] = atomic_read(&priv->wmm_tx_pending[1]);
+	wmm_pending[2] = atomic_read(&priv->wmm_tx_pending[2]);
+	wmm_pending[3] = atomic_read(&priv->wmm_tx_pending[3]);
+#endif
+
+	/* Capture host state before issuing any diagnostic IOCTL. If a firmware
+	 * query stalls, this line still identifies the exact pre-query boundary. */
+	PRINTM(MCMND,
+	       "SCAN_WEDGE_DIAG id=%u phase=%s ts_ns=%llu home_chan=%u carrier=%u queue_stopped=%u moal_tx_pending=%d wmm_tx_pending=%d/%d/%d/%d tx_q_len=%u tx_status_q=%u scan_pending=%u scan_request=%u host_tx_packets=%lu host_tx_bytes=%lu host_tx_errors=%lu host_tx_dropped=%lu fw_tx_status_success=%d fw_tx_status_failure=%d fw_tx_status_watchdog=%d fw_tx_status_unknown=%d\n",
+	       handle->scan_diag_id, phase,
+	       (unsigned long long)ktime_get_ns(),
+	       handle->scan_diag_home_chan,
+	       netif_carrier_ok(priv->netdev),
+	       netif_queue_stopped(priv->netdev),
+	       atomic_read(&handle->tx_pending), wmm_pending[0],
+	       wmm_pending[1], wmm_pending[2], wmm_pending[3],
+	       skb_queue_len(&priv->tx_q), priv->tx_stat_queue_size,
+	       handle->scan_pending_on_block, handle->scan_request != NULL,
+	       priv->stats.tx_packets, priv->stats.tx_bytes,
+	       priv->stats.tx_errors, priv->stats.tx_dropped,
+	       atomic_read(&handle->fw_tx_status_success),
+	       atomic_read(&handle->fw_tx_status_failure),
+	       atomic_read(&handle->fw_tx_status_watchdog),
+	       atomic_read(&handle->fw_tx_status_unknown));
+
+	if (query_mlan) {
+		query_start = ktime_get_ns();
+		bss_status = woal_get_bss_info(priv, MOAL_IOCTL_WAIT,
+					       &bss_info);
+		bss_us = (ktime_get_ns() - query_start) / 1000;
+
+		info = kzalloc(sizeof(*info), GFP_KERNEL);
+		if (info) {
+			query_start = ktime_get_ns();
+			debug_status = woal_get_debug_info(
+				priv, MOAL_IOCTL_WAIT, info);
+			debug_us = (ktime_get_ns() - query_start) / 1000;
+		}
+
+		stats = kzalloc(sizeof(*stats), GFP_KERNEL);
+		if (stats) {
+			query_start = ktime_get_ns();
+			stats_status = woal_get_stats_info(
+				priv, MOAL_IOCTL_WAIT, stats);
+			stats_us = (ktime_get_ns() - query_start) / 1000;
+		}
+
+		query_start = ktime_get_ns();
+		rate_status = woal_scan_diag_get_data_rate(priv, &data_rate);
+		rate_us = (ktime_get_ns() - query_start) / 1000;
+
+		query_start = ktime_get_ns();
+		ant_status = woal_scan_diag_get_antcfg(priv, &antcfg);
+		ant_us = (ktime_get_ns() - query_start) / 1000;
+	}
+	if (query_fw_channel) {
+		query_start = ktime_get_ns();
+		channel_status = woal_get_sta_channel(
+			priv, MOAL_IOCTL_WAIT, &fw_channel);
+		channel_us = (ktime_get_ns() - query_start) / 1000;
+	}
+
+	if (info)
+		PRINTM(MCMND,
+		       "SCAN_WEDGE_DIAG id=%u phase=%s mlan_status=%d query_us=%llu mlan_wmm=%u/%u/%u/%u tx_pkts_queued=%u bypass=%u data_sent=%u data_sent_cnt=%u cmd_sent=%u ps_state=%u tx_lock=%u wake_req=%u wake_tries=%u wake_timeout=%u scan_processing=%u scan_state=0x%x h2c_tx_fail=%u pkt_dropped=%u pending_cmd=0x%x cmd_timeout=%u\n",
+		       handle->scan_diag_id, phase, debug_status,
+		       (unsigned long long)debug_us,
+		       info->wmm_ac_bk, info->wmm_ac_be, info->wmm_ac_vi,
+		       info->wmm_ac_vo, info->tx_pkts_queued,
+		       info->bypass_pkt_count, info->data_sent,
+		       info->data_sent_cnt, info->cmd_sent, info->ps_state,
+		       info->tx_lock_flag,
+		       info->pm_wakeup_card_req, info->pm_wakeup_fw_try,
+		       info->pm_wakeup_timeout, info->scan_processing,
+		       info->scan_state, info->num_tx_host_to_card_failure,
+		       info->num_pkt_dropped, info->pending_cmd,
+		       info->num_cmd_timeout);
+#ifdef SDIO
+	if (info)
+		PRINTM(MCMND,
+		       "SCAN_WEDGE_DIAG id=%u phase=%s sdio_wr_bitmap=0x%x curr_wr_port=%u no_ports=%u invalid_update=%u last_int=0x%x irq=%u\n",
+		       handle->scan_diag_id, phase, info->last_recv_wr_bitmap,
+		       info->curr_wr_port, info->mpa_sent_no_ports,
+		       info->mp_invalid_update, info->last_int_status,
+		       info->num_of_irq);
+#endif
+
+	if (stats && stats_status == MLAN_STATUS_SUCCESS) {
+		if (!strcmp(phase, "PRE_SCAN")) {
+			handle->scan_diag_stats_base_valid = MTRUE;
+			handle->scan_diag_stats_base_id = handle->scan_diag_id;
+			handle->scan_diag_failed_base = stats->failed;
+			handle->scan_diag_ack_failure_base =
+				stats->ack_failure;
+			handle->scan_diag_retry_base = stats->retry;
+			handle->scan_diag_multi_retry_base = stats->multi_retry;
+			handle->scan_diag_tx_frame_base = stats->tx_frame;
+			handle->scan_diag_bcn_rcv_base = stats->bcn_rcv_cnt;
+			handle->scan_diag_tx_airtime_base = stats->txAirtime_us;
+		}
+		if (handle->scan_diag_stats_base_valid &&
+		    handle->scan_diag_stats_base_id == handle->scan_diag_id) {
+			failed_delta = stats->failed -
+				handle->scan_diag_failed_base;
+			ack_failure_delta = stats->ack_failure -
+				handle->scan_diag_ack_failure_base;
+			retry_delta = stats->retry -
+				handle->scan_diag_retry_base;
+			multi_retry_delta = stats->multi_retry -
+				handle->scan_diag_multi_retry_base;
+			tx_frame_delta = stats->tx_frame -
+				handle->scan_diag_tx_frame_base;
+			bcn_rcv_delta = stats->bcn_rcv_cnt -
+				handle->scan_diag_bcn_rcv_base;
+			tx_airtime_delta = stats->txAirtime_us -
+				handle->scan_diag_tx_airtime_base;
+		}
+		PRINTM(MCMND,
+		       "FW_TX_COUNTER_DIAG id=%u phase=%s status=%d query_us=%llu failed=%u failed_delta=%u ack_failure=%u ack_failure_delta=%u retry=%u retry_delta=%u multi_retry=%u multi_retry_delta=%u tx_frame=%u tx_frame_delta=%u rts_failure=%u bcn_rcv=%u bcn_rcv_delta=%u bcn_miss=%u\n",
+		       handle->scan_diag_id, phase, stats_status,
+		       (unsigned long long)stats_us, stats->failed,
+		       failed_delta, stats->ack_failure, ack_failure_delta,
+		       stats->retry, retry_delta, stats->multi_retry,
+		       multi_retry_delta, stats->tx_frame, tx_frame_delta,
+		       stats->rts_failure, stats->bcn_rcv_cnt, bcn_rcv_delta,
+		       stats->bcn_miss_cnt);
+		if (handle->fw_getlog_enable) {
+			PRINTM(MCMND,
+			       "FW_TX_COUNTER_DIAG id=%u phase=%s qos_failed=%u/%u/%u/%u/%u/%u/%u/%u qos_ack_failure=%u/%u/%u/%u/%u/%u/%u/%u qos_retry=%u/%u/%u/%u/%u/%u/%u/%u\n",
+			       handle->scan_diag_id, phase,
+			       stats->qos_failed_cnt[0], stats->qos_failed_cnt[1],
+			       stats->qos_failed_cnt[2], stats->qos_failed_cnt[3],
+			       stats->qos_failed_cnt[4], stats->qos_failed_cnt[5],
+			       stats->qos_failed_cnt[6], stats->qos_failed_cnt[7],
+			       stats->qos_ack_failure_cnt[0],
+			       stats->qos_ack_failure_cnt[1],
+			       stats->qos_ack_failure_cnt[2],
+			       stats->qos_ack_failure_cnt[3],
+			       stats->qos_ack_failure_cnt[4],
+			       stats->qos_ack_failure_cnt[5],
+			       stats->qos_ack_failure_cnt[6],
+			       stats->qos_ack_failure_cnt[7],
+			       stats->qos_retry_cnt[0], stats->qos_retry_cnt[1],
+			       stats->qos_retry_cnt[2], stats->qos_retry_cnt[3],
+			       stats->qos_retry_cnt[4], stats->qos_retry_cnt[5],
+			       stats->qos_retry_cnt[6], stats->qos_retry_cnt[7]);
+			PRINTM(MCMND,
+			       "FW_TX_COUNTER_DIAG id=%u phase=%s failed_amsdu=%u amsdu_ack_failure=%u tx_ampdu=%u tx_mpdus_ampdu=%u tx_watchdog=%u dwDatErr=%u sdma_stuck=%u tx_airtime_us=%llu tx_airtime_delta=%llu tx_pwr_method=%u dpd_done=%u temp=%u chan_switch_state=%u chan_switch_num=%u\n",
+			       handle->scan_diag_id, phase,
+			       stats->failed_amsdu_cnt,
+			       stats->amsdu_ack_failure_cnt,
+			       stats->tx_ampdu_cnt,
+			       stats->tx_mpdus_in_ampdu_cnt,
+			       stats->tx_watchdog_recovery_cnt,
+			       stats->dwDatErrCnt, stats->SdmaStuckCnt,
+			       (unsigned long long)stats->txAirtime_us,
+			       (unsigned long long)tx_airtime_delta,
+			       stats->TXpwrMethod, stats->isDPDdone,
+			       stats->currTemp, stats->channel_switch_state,
+			       stats->channel_number);
+		}
+	} else if (query_mlan) {
+		PRINTM(MCMND,
+		       "FW_TX_COUNTER_DIAG id=%u phase=%s status=%d query_us=%llu alloc=%u\n",
+		       handle->scan_diag_id, phase, stats_status,
+		       (unsigned long long)stats_us, stats != NULL);
+	}
+
+	tx_nss = woal_scan_diag_rate_nss(data_rate.tx_rate_format,
+					   data_rate.tx_mcs_index,
+					   data_rate.tx_nss);
+	rx_nss = woal_scan_diag_rate_nss(data_rate.rx_rate_format,
+					   data_rate.rx_mcs_index,
+					   data_rate.rx_nss);
+	if (query_mlan)
+		PRINTM(MCMND,
+		       "TX_RATE_DIAG id=%u phase=%s status=%d query_us=%llu tx_format=%u tx_rate=%u tx_mcs=%u tx_nss=%u tx_nss_encoded=%u tx_bw=%u tx_gi=%u rx_format=%u rx_rate=%u rx_mcs=%u rx_nss=%u rx_nss_encoded=%u rx_bw=%u rx_gi=%u\n",
+		       handle->scan_diag_id, phase, rate_status,
+		       (unsigned long long)rate_us, data_rate.tx_rate_format,
+		       data_rate.tx_data_rate, data_rate.tx_mcs_index, tx_nss,
+		       data_rate.tx_nss, data_rate.tx_ht_bw,
+		       data_rate.tx_ht_gi, data_rate.rx_rate_format,
+		       data_rate.rx_data_rate, data_rate.rx_mcs_index, rx_nss,
+		       data_rate.rx_nss, data_rate.rx_ht_bw,
+		       data_rate.rx_ht_gi);
+
+	if (query_mlan || query_fw_channel)
+		PRINTM(MCMND,
+		       "RF_CHANNEL_DIAG id=%u phase=%s bss_status=%d bss_query_us=%llu cached_chan=%u cached_band=0x%x media_connected=%u radio_on=%u priv_chan=%u conn_chan=%u fw_chan_status=%d fw_chan_query_us=%llu fw_chan=%u fw_band=%u fw_bw=%u fw_offset=%u fw_center=%u ant_status=%d ant_query_us=%llu physical_tx=0x%x physical_rx=0x%x physical_tx6g=0x%x physical_rx6g=0x%x user_htstream=0x%x\n",
+		       handle->scan_diag_id, phase, bss_status,
+		       (unsigned long long)bss_us, bss_info.bss_chan,
+		       bss_info.bss_band, bss_info.media_connected,
+		       bss_info.radio_on, priv->channel,
+		       priv->conn_chan.hw_value, channel_status,
+		       (unsigned long long)channel_us, fw_channel.channel,
+		       fw_channel.bandcfg.chanBand,
+		       fw_channel.bandcfg.chanWidth,
+		       fw_channel.bandcfg.chan2Offset, fw_channel.center_chan,
+		       ant_status, (unsigned long long)ant_us,
+		       antcfg.tx_antenna, antcfg.rx_antenna,
+		       antcfg.tx_antenna_6g, antcfg.rx_antenna_6g,
+		       antcfg.user_htstream);
+	kfree(info);
+	kfree(stats);
+#else
+	(void)priv;
+	(void)phase;
+	(void)query_mlan;
+	(void)query_fw_channel;
+#endif
+}
+
+/** Capture a delayed post-scan sample after normal traffic has resumed. */
+static void woal_scan_diag_post_handler(struct work_struct *work)
+{
+	struct delayed_work *delayed_work = to_delayed_work(work);
+	// Coverity violation raised for kernel's API
+	// coverity[cert_arr39_c_violation:SUPPRESS]
+	moal_handle *handle = container_of(delayed_work, moal_handle,
+					   scan_diag_post_work);
+	moal_private *priv = READ_ONCE(handle->scan_diag_post_priv);
+	t_u32 id = READ_ONCE(handle->scan_diag_post_id);
+
+	if (!priv || handle->surprise_removed == MTRUE || handle->driver_status ||
+	    id != READ_ONCE(handle->scan_diag_id))
+		return;
+
+	woal_scan_diag_snapshot(priv, "POST_SCAN_1S", MTRUE, MTRUE);
+	WRITE_ONCE(handle->scan_diag_post_priv, NULL);
+}
+
 /**
  * @brief               This function sends scan report to cfg80211
  *
@@ -14650,6 +15010,20 @@ static void woal_send_cfg_bss_scan_result(moal_private *priv)
 		}
 
 		cancel_delayed_work(&priv->phandle->scan_timeout_work);
+		woal_scan_diag_snapshot(priv, "CFG80211_DONE", MTRUE, MTRUE);
+#ifdef DEBUG_LEVEL1
+		if ((drvdbg & MCMND) && priv->phandle->evt_workqueue) {
+			cancel_delayed_work(
+				&priv->phandle->scan_diag_post_work);
+			WRITE_ONCE(priv->phandle->scan_diag_post_priv, priv);
+			WRITE_ONCE(priv->phandle->scan_diag_post_id,
+				   priv->phandle->scan_diag_id);
+			queue_delayed_work(
+				priv->phandle->evt_workqueue,
+				&priv->phandle->scan_diag_post_work,
+				msecs_to_jiffies(1000));
+		}
+#endif
 		woal_cfg80211_scan_done(scan_req, MFALSE);
 	}
 }
@@ -15704,6 +16078,8 @@ moal_handle *woal_add_card(void *card, struct device *dev, moal_if_ops *if_ops,
 #ifdef STA_CFG80211
 	INIT_DELAYED_WORK(&handle->scan_timeout_work,
 			  woal_scan_timeout_handler);
+	INIT_DELAYED_WORK(&handle->scan_diag_post_work,
+			  woal_scan_diag_post_handler);
 #endif
 
 	INIT_DELAYED_WORK(&handle->emergency_reset_work,

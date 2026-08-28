@@ -71,6 +71,9 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 	t_u32 pkt_type;
 	t_u32 tx_control;
 	t_s32 offset = 0;
+#ifdef DEBUG_LEVEL1
+	t_u8 scan_diag_nss = 0;
+#endif
 
 	ENTER();
 
@@ -215,6 +218,31 @@ t_void *wlan_ops_sta_process_txpd(t_void *priv, pmlan_buffer pmbuf)
 			wlan_cpu_to_le32(pmbuf->u.mc_tx_info.pkt_expiry);
 		mc_ctrl->mc_seq = wlan_cpu_to_le16(pmbuf->u.mc_tx_info.seq_num);
 	}
+#ifdef DEBUG_LEVEL1
+	if ((mlan_drvdbg & MCMND) && pmadapter->scan_diag_txpd_budget) {
+		if ((pmpriv->tx_rate_info & 0x3) == MLAN_RATE_FORMAT_VHT ||
+		    (pmpriv->tx_rate_info & 0x3) == MLAN_RATE_FORMAT_HE)
+			scan_diag_nss = ((pmpriv->tx_rate >> 4) & 0x3) + 1;
+		else if ((pmpriv->tx_rate_info & 0x3) == MLAN_RATE_FORMAT_HT &&
+			 pmpriv->tx_rate <= 31)
+			scan_diag_nss = (pmpriv->tx_rate / 8) + 1;
+		PRINTM(MCMND,
+		       "TXPD_DIAG scan_seq=%u sample=%u bss=%u len=%u priority=%u mbuf_flags=0x%x txpd_flags=0x%x pkt_type=0x%x delay_2ms=%u tx_control=0x%08x tx_control_1=0x%08x cached_rate=0x%x tx_rate_info=0x%x ext_rate_info=0x%x nss=%u user_htstream=0x%x channel=%u band=0x%x media_connected=%u ps_state=%u tx_lock=%u\n",
+		       pmadapter->scan_diag_seq,
+		       9 - pmadapter->scan_diag_txpd_budget, pmpriv->bss_index,
+		       plocal_tx_pd->tx_pkt_length, plocal_tx_pd->priority,
+		       pmbuf->flags, plocal_tx_pd->flags,
+		       plocal_tx_pd->tx_pkt_type, plocal_tx_pd->pkt_delay_2ms,
+		       plocal_tx_pd->tx_control, plocal_tx_pd->tx_control_1,
+		       pmpriv->tx_rate, pmpriv->tx_rate_info,
+		       pmpriv->ext_tx_rate_info, scan_diag_nss,
+		       pmadapter->user_htstream,
+		       pmpriv->curr_bss_params.bss_descriptor.channel,
+		       pmpriv->curr_bss_params.band, pmpriv->media_connected,
+		       pmadapter->ps_state, pmadapter->tx_lock_flag);
+		pmadapter->scan_diag_txpd_budget--;
+	}
+#endif
 	endian_convert_TxPD(plocal_tx_pd);
 
 	/* Adjust the data offset and length to include TxPD in pmbuf */

@@ -3330,6 +3330,13 @@ struct _moal_handle {
 	t_u8 remain_on_channel;
 	/** bss index for remain on channel */
 	t_u8 remain_bss_index;
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+	/** Explicit FW Tx-status events seen while MCMND diagnostics are enabled. */
+	atomic_t fw_tx_status_success;
+	atomic_t fw_tx_status_failure;
+	atomic_t fw_tx_status_watchdog;
+	atomic_t fw_tx_status_unknown;
+#endif
 	/** wifi hal enabled flag */
 	t_u8 wifi_hal_flag;
 #if defined(STA_CFG80211) || defined(UAP_CFG80211)
@@ -3472,6 +3479,24 @@ struct _moal_handle {
 	struct delayed_work scan_timeout_work;
 	/** scan timeout time */
 	t_u32 scan_timeout;
+	/** Monotonic id used to correlate scan wedge diagnostics. */
+	t_u32 scan_diag_id;
+	/** Connected/home channel captured when the correlated scan starts. */
+	t_u8 scan_diag_home_chan;
+	/** Delayed post-scan FW/rate/RF snapshot and its correlation state. */
+	struct delayed_work scan_diag_post_work;
+	moal_private *scan_diag_post_priv;
+	t_u32 scan_diag_post_id;
+	/** PRE_SCAN firmware-counter baseline for direct per-scan deltas. */
+	t_u8 scan_diag_stats_base_valid;
+	t_u32 scan_diag_stats_base_id;
+	t_u32 scan_diag_failed_base;
+	t_u32 scan_diag_ack_failure_base;
+	t_u32 scan_diag_retry_base;
+	t_u32 scan_diag_multi_retry_base;
+	t_u32 scan_diag_tx_frame_base;
+	t_u32 scan_diag_bcn_rcv_base;
+	t_u64 scan_diag_tx_airtime_base;
 
 #endif
 	/** emergency reset work*/
@@ -4767,6 +4792,10 @@ void woal_debug_remove(moal_private *priv);
 mlan_status woal_get_pm_info(moal_private *priv, mlan_ds_ps_info *pm_info);
 /** get mlan debug info */
 void woal_mlan_debug_info(moal_private *priv);
+#ifdef STA_CFG80211
+void woal_scan_diag_snapshot(moal_private *priv, const char *phase,
+			     t_u8 query_mlan, t_u8 query_fw_channel);
+#endif
 
 #ifdef USB
 #ifdef CONFIG_USB_SUSPEND

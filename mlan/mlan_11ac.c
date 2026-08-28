@@ -1126,6 +1126,8 @@ int wlan_cmd_append_11ac_tlv(mlan_private *pmpriv, BSSDescriptor_t *pbss_desc,
 	MrvlIETypes_OperModeNtf_t *pmrvl_oper_mode;
 	t_u16 mcs_map_user = 0;
 	t_u16 nss;
+	t_u16 advertised_rx_mcs = 0, advertised_tx_mcs = 0;
+	t_u16 advertised_rx_nss = 0, advertised_tx_nss = 0;
 	int ret_len = 0;
 	t_u8 bw_80p80 = MFALSE;
 #if defined(PCIE9098) || defined(SD9098) || defined(USB9098) ||                \
@@ -1163,6 +1165,19 @@ int wlan_cmd_append_11ac_tlv(mlan_private *pmpriv, BSSDescriptor_t *pbss_desc,
 		bw_80p80 = wlan_is_80_80_support(pmpriv, pbss_desc);
 		wlan_fill_vht_cap_tlv(pmpriv, pvht_cap, pbss_desc->bss_band,
 				      MFALSE, bw_80p80);
+		advertised_rx_mcs = wlan_le16_to_cpu(
+			pvht_cap->vht_cap.mcs_sets.rx_mcs_map);
+		advertised_tx_mcs = wlan_le16_to_cpu(
+			pvht_cap->vht_cap.mcs_sets.tx_mcs_map);
+		advertised_rx_nss =
+			wlan_get_nss_num_vht_mcs(advertised_rx_mcs);
+		advertised_tx_nss =
+			wlan_get_nss_num_vht_mcs(advertised_tx_mcs);
+		PRINTM(MCMND,
+		       "ASSOC_NSS_DIAG vht: band=0x%x user_htstream=0x%x rx_nss=%u tx_nss=%u rx_mcs_map=0x%04x tx_mcs_map=0x%04x bw_80p80=%u\n",
+		       pbss_desc->bss_band, pmadapter->user_htstream,
+		       advertised_rx_nss, advertised_tx_nss,
+		       advertised_rx_mcs, advertised_tx_mcs, bw_80p80);
 
 		HEXDUMP("VHT_CAPABILITIES IE", (t_u8 *)pvht_cap,
 			sizeof(MrvlIETypes_VHTCap_t));

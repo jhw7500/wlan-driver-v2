@@ -415,6 +415,7 @@ int wlan_cmd_append_11ax_tlv(mlan_private *pmpriv, BSSDescriptor_t *pbss_desc,
 	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
 	defined(USBIW624) || defined(SD9097)
 	t_u16 rx_nss = 0, tx_nss = 0;
+	t_u8 advertised_rx_nss = 0, advertised_tx_nss = 0;
 #endif
 	t_u8 nss = 0;
 	t_u16 cfg_value = 0;
@@ -516,6 +517,22 @@ int wlan_cmd_append_11ax_tlv(mlan_private *pmpriv, BSSDescriptor_t *pbss_desc,
 	}
 	PRINTM(MCMND, "Set: HE rx mcs set 0x%08x tx mcs set 0x%08x\n",
 	       phecap->rx_mcs_80, phecap->tx_mcs_80);
+#if defined(PCIE9098) || defined(SD9098) || defined(USB9098) ||                \
+	defined(PCIE9097) || defined(USB9097) || defined(SDIW624) ||           \
+	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
+	defined(USBIW624) || defined(SD9097)
+	for (nss = 1; nss <= 8; nss++) {
+		if (GET_HE_NSSMCS(phecap->rx_mcs_80, nss) != NO_NSS_SUPPORT)
+			advertised_rx_nss++;
+		if (GET_HE_NSSMCS(phecap->tx_mcs_80, nss) != NO_NSS_SUPPORT)
+			advertised_tx_nss++;
+	}
+	PRINTM(MCMND,
+	       "ASSOC_NSS_DIAG he: band=0x%x user_htstream=0x%x rx_nss=%u tx_nss=%u limit_rx_nss=%u limit_tx_nss=%u rx_mcs_80=0x%08x tx_mcs_80=0x%08x bw_80p80=%u\n",
+	       pbss_desc->bss_band, pmadapter->user_htstream,
+	       advertised_rx_nss, advertised_tx_nss, rx_nss, tx_nss,
+	       phecap->rx_mcs_80, phecap->tx_mcs_80, bw_80p80);
+#endif
 	if (!bw_80p80) {
 		/** reset BIT3 and BIT4 channel width ,not support 80 + 80*/
 		/** not support 160Mhz now, if support,not reset bit3 */

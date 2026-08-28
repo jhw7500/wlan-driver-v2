@@ -1871,6 +1871,23 @@ mlan_status wlan_recv_event(pmlan_private priv, mlan_event_id event_id,
 	}
 	pcb = &priv->adapter->callbacks;
 
+#ifdef DEBUG_LEVEL1
+	if (event_id == MLAN_EVENT_ID_DRV_SCAN_REPORT &&
+	    (mlan_drvdbg & MCMND)) {
+		priv->adapter->scan_diag_seq++;
+		if (!priv->adapter->scan_diag_seq)
+			priv->adapter->scan_diag_seq++;
+		priv->adapter->scan_diag_txpd_budget = 8;
+		PRINTM(MCMND,
+		       "TXPD_DIAG arm scan_seq=%u bss=%u budget=%u channel=%u band=0x%x user_htstream=0x%x\n",
+		       priv->adapter->scan_diag_seq, priv->bss_index,
+		       priv->adapter->scan_diag_txpd_budget,
+		       priv->curr_bss_params.bss_descriptor.channel,
+		       priv->curr_bss_params.band,
+		       priv->adapter->user_htstream);
+	}
+#endif
+
 	if (pmevent)
 		/* The caller has provided the event. */
 		pcb->moal_recv_event(priv->adapter->pmoal_handle,
@@ -8544,6 +8561,17 @@ mlan_status wlan_cmd_802_11_rf_antenna(pmlan_private pmpriv,
 				wlan_cpu_to_le16(HostCmd_ACT_GET_BOTH);
 		}
 	}
+	if (IS_STREAM_2X2(pmpriv->adapter->feature_control))
+		PRINTM(MCMND,
+		       "ANTCFG_DIAG hostcmd: action=0x%x tx_action=0x%x tx=0x%04x rx_action=0x%x rx=0x%04x tx6g=0x%02x rx6g=0x%02x size=%u user_htstream=0x%x\n",
+		       cmd_action, wlan_le16_to_cpu(pantenna->action_tx),
+		       wlan_le16_to_cpu(pantenna->tx_antenna_mode),
+		       wlan_le16_to_cpu(pantenna->action_rx),
+		       wlan_le16_to_cpu(pantenna->rx_antenna_mode),
+		       pantenna->tx_antenna_mode_6g,
+		       pantenna->rx_antenna_mode_6g,
+		       wlan_le16_to_cpu(cmd->size),
+		       pmpriv->adapter->user_htstream);
 	LEAVE();
 	return MLAN_STATUS_SUCCESS;
 }
@@ -8566,11 +8594,12 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 	t_u16 rx_ant_mode = wlan_le16_to_cpu(pantenna->rx_antenna_mode);
 	t_u8 tx_ant_mode_6g = pantenna->tx_antenna_mode_6g;
 	t_u8 rx_ant_mode_6g = pantenna->rx_antenna_mode_6g;
+	mlan_adapter *pmadapter = pmpriv->adapter;
+	t_u32 user_htstream_before = pmadapter->user_htstream;
 #if defined(PCIE9098) || defined(SD9098) || defined(USB9098) ||                \
 	defined(PCIE9097) || defined(USB9097) || defined(SDIW624) ||           \
 	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
 	defined(USBIW624) || defined(SD9097)
-	mlan_adapter *pmadapter = pmpriv->adapter;
 	t_u8 ant_tx_set = MFALSE;
 	t_u8 ant_rx_set = MFALSE;
 #endif
@@ -8680,6 +8709,12 @@ mlan_status wlan_ret_802_11_rf_antenna(pmlan_private pmpriv,
 				       rx_ant_mode);
 		}
 #endif
+		PRINTM(MCMND,
+		       "ANTCFG_DIAG response: tx_action=0x%x tx=0x%04x rx_action=0x%x rx=0x%04x tx6g=0x%02x rx6g=0x%02x user_htstream=0x%x->0x%x\n",
+		       wlan_le16_to_cpu(pantenna->action_tx), tx_ant_mode,
+		       wlan_le16_to_cpu(pantenna->action_rx), rx_ant_mode,
+		       tx_ant_mode_6g, rx_ant_mode_6g, user_htstream_before,
+		       pmadapter->user_htstream);
 	} else
 		PRINTM(MINFO,
 		       "RF_ANT_RESP: action = 0x%x, Mode = 0x%04x, Evaluate time = %d, Current antenna = %d\n",

@@ -4729,6 +4729,7 @@ mlan_status wlan_radio_ioctl_ant_cfg(pmlan_adapter pmadapter,
 	t_u16 cmd_action = 0;
 	mlan_ds_ant_cfg *ant_cfg = MNULL;
 	mlan_ds_ant_cfg_1x1 *ant_cfg_1x1 = MNULL;
+	t_u32 user_htstream_before = 0;
 
 	ENTER();
 
@@ -4739,6 +4740,7 @@ mlan_status wlan_radio_ioctl_ant_cfg(pmlan_adapter pmadapter,
 	if (pioctl_req->action == MLAN_ACT_SET) {
 		/* User input validation */
 		if (IS_STREAM_2X2(pmadapter->feature_control)) {
+			user_htstream_before = pmadapter->user_htstream;
 #if defined(PCIE9098) || defined(SD9098) || defined(USB9098) ||                \
 	defined(PCIE9097) || defined(USB9097) || defined(SDIW624) ||           \
 	defined(SDAW693) || defined(PCIEAW693) || defined(PCIEIW624) ||        \
@@ -4852,6 +4854,11 @@ mlan_status wlan_radio_ioctl_ant_cfg(pmlan_adapter pmadapter,
 					ant_cfg->rx_antenna =
 						ant_cfg->tx_antenna;
 			}
+			PRINTM(MCMND,
+			       "ANTCFG_DIAG request: tx=0x%x rx=0x%x tx6g=0x%x rx6g=0x%x user_htstream=0x%x->0x%x\n",
+			       ant_cfg->tx_antenna, ant_cfg->rx_antenna,
+			       ant_cfg->tx_antenna_6g, ant_cfg->rx_antenna_6g,
+			       user_htstream_before, pmadapter->user_htstream);
 		} else if (!radio_cfg->param.ant_cfg_1x1.antenna ||
 			   ((radio_cfg->param.ant_cfg_1x1.antenna !=
 			     RF_ANTENNA_AUTO) &&
