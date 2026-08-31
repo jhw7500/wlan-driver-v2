@@ -2671,6 +2671,9 @@ mlan_status wlan_ops_uap_ioctl(t_void *adapter, pmlan_ioctl_req pioctl_req)
 		else if (radiocfg->sub_command == MLAN_OID_ANT_CFG)
 			status =
 				wlan_radio_ioctl_ant_cfg(pmadapter, pioctl_req);
+		else if (radiocfg->sub_command == MLAN_OID_ANT_NSS_CFG)
+			status = wlan_radio_ioctl_ant_nss_cfg(pmadapter,
+							      pioctl_req);
 		else if (radiocfg->sub_command == MLAN_OID_BAND_CFG)
 			status = wlan_radio_ioctl_band_cfg(pmadapter,
 							   pioctl_req);

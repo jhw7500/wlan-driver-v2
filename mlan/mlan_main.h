@@ -3777,6 +3777,8 @@ mlan_status wlan_radio_ioctl_radio_ctl(pmlan_adapter pmadapter,
 
 mlan_status wlan_radio_ioctl_ant_cfg(pmlan_adapter pmadapter,
 				     pmlan_ioctl_req pioctl_req);
+mlan_status wlan_radio_ioctl_ant_nss_cfg(pmlan_adapter pmadapter,
+					 pmlan_ioctl_req pioctl_req);
 mlan_status wlan_handle_antcfg(mlan_private *pmpriv, t_u32 init_antcfg);
 
 mlan_status wlan_cmd_tx_rate_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *cmd,

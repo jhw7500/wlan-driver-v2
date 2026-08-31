@@ -228,3 +228,34 @@ dmesg -w | grep -E 'ANTCFG_DIAG|ASSOC_NSS_DIAG|SCAN_WEDGE_DIAG'
 
 - Notion KB: [mlanutl mcstiercfg / rate 설정 종합](https://app.notion.com/p/3678a230a04e81cd95b0cb871c336a0e)
 - Notion: [NXP moal dev_cap_mask 인터페이스별 제어](https://app.notion.com/p/3668a230a04e815e8f65d8caf9475ed2)
+
+## antcfgnss SET — 광고 NSS 전용 설정 경로 (2026-08-31, 이슈 #41)
+
+광고 NSS intent(`user_htstream`)를 물리 안테나 설정과 분리해 직접 기록하는 host 전용
+경로. `MLAN_OID_ANT_NSS_CFG`(0x00030006) → `wlan_radio_ioctl_ant_nss_cfg()`(mlan_misc.c)로
+처리되며 **RF_ANTENNA HostCmd를 발행하지 않는다** — 물리 antenna 상태는 불변이고,
+FW의 마스크 정상화 동작(위 "물리 antenna와 advertised NSS의 분리" 절의 비보장 계약)에
+의존하지 않는다.
+
+```
+mlanutl mlan0 antcfgnss            # GET (기존과 동일, MLAN_OID_ANT_CFG 경유)
+mlanutl mlan0 antcfgnss 0x2121    # SET: 5Gtx=2 5Grx=1 2Gtx=2 2Grx=1 (0x 접두 필수)
+```
+
+- 니블 배치는 `user_htstream`과 동일: `[3:0]` 2G Rx, `[7:4]` 2G Tx, `[11:8]` 5G Rx,
+  `[15:12]` 5G Tx.
+- SET 검증: **지원 밴드의 니블은 1..하드웨어 상한만 허용, 0 거부**(`hw_dev_mcs_support`
+  기반, 파워온 init과 동일 계산; AW693 MAC2는 2G 1x1로 축소). 니블 0은 하드웨어 상한이
+  0인(밴드 미지원) 자리에만 허용 — 11n HT 빌더에는 0 가드가 없어 광고 0 스트림이
+  HT MCS set을 통째로 비우는 결함을 막기 위함이다. 위반 시 `MLAN_ERROR_INVALID_PARAMETER`.
+  값은 0x 접두 필수(진수 혼동·파싱 fail-open 방지), 대상 카드(9098/9097/AW693/IW624)
+  외에는 SET 거부.
+- 활성 연결 중에도 SET 가능(RF_ANTENNA의 연결 중 거부 제약 없음). 단 광고 반영은
+  다음 (re)association부터다.
+- **순서 제약**: 이후의 `antcfg <mask>` SET과 FW reload(`wlan_handle_antcfg`)는 안테나
+  마스크로부터 `user_htstream`을 재계산해 이 intent를 **덮어쓴다**. 적용 순서는 항상
+  antcfg(물리) → antcfgnss(광고).
+- 이관 계획(이슈 #41): 광고 NSS 입력의 정식 경로를 이 명령으로 옮기고, `antcfg`는
+  순수 물리(RF chain) 용도로 회귀한다. TX NSS 제한도 `mcstiercfg ht 7` 부작용 대신
+  이 경로의 TX 니블로 옮기되, user_htstream TX 니블 단독으로 실제 FW 송신 NSS가
+  제한되는지는 보드 A/B 검증이 선행돼야 한다(미검증).
