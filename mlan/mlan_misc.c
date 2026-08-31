@@ -4887,6 +4887,109 @@ exit:
 }
 
 /**
+ *  @brief Set/Get the host-side advertised NSS intent (user_htstream)
+ *
+ *  Host-only path: updates the stream counts the association IEs are
+ *  built from without issuing an RF_ANTENNA HostCmd, so the physical
+ *  antenna configuration is left untouched.
+ *
+ *  Each supported band/direction nibble must be 1..hardware limit; a
+ *  zero nibble is accepted only where the hardware/band limit itself
+ *  is zero (band not supported). The 11n HT builders have no zero
+ *  guard, so an advertised-zero stream count would empty the HT MCS
+ *  set. Note that a later antcfg SET or FW reload recomputes
+ *  user_htstream from the antenna mask and overrides this intent.
+ *
+ *  @param pmadapter    A pointer to mlan_adapter structure
+ *  @param pioctl_req   A pointer to ioctl request buffer
+ *
+ *  @return     MLAN_STATUS_SUCCESS --success, otherwise fail
+ */
+mlan_status wlan_radio_ioctl_ant_nss_cfg(pmlan_adapter pmadapter,
+					 pmlan_ioctl_req pioctl_req)
+{
+#if defined(PCIE9098) || defined(SD9098) || defined(USB9098) ||                \
+	defined(PCIE9097) || defined(SD9097) || defined(USB9097) ||            \
+	defined(SDAW693) || defined(SDIW624) || defined(PCIEAW693) ||          \
+	defined(PCIEIW624) || defined(USBIW624)
+	mlan_ds_radio_cfg *radio_cfg = MNULL;
+	t_u16 hw_limit;
+	t_u32 value;
+	t_u32 vn, hwn;
+	int shift;
+
+	ENTER();
+
+	radio_cfg = (mlan_ds_radio_cfg *)pioctl_req->pbuf;
+	if (!IS_STREAM_2X2(pmadapter->feature_control)) {
+		pioctl_req->status_code = MLAN_ERROR_IOCTL_INVALID;
+		LEAVE();
+		return MLAN_STATUS_FAILURE;
+	}
+
+	if (pioctl_req->action == MLAN_ACT_SET) {
+		/* user_htstream is consumed only on these card types (see
+		 * the HT/VHT/HE IE builders); refuse a SET that would be a
+		 * silent no-op elsewhere.
+		 */
+		if (!(IS_CARD9098(pmadapter->card_type) ||
+		      IS_CARD9097(pmadapter->card_type) ||
+		      IS_CARDAW693(pmadapter->card_type) ||
+		      IS_CARDIW624(pmadapter->card_type))) {
+			pioctl_req->status_code = MLAN_ERROR_IOCTL_INVALID;
+			LEAVE();
+			return MLAN_STATUS_FAILURE;
+		}
+		value = radio_cfg->param.ant_cfg.user_htstream;
+		/* Per-band/direction nibble ceiling from the hardware MCS
+		 * support, mirroring the power-on user_htstream init.
+		 */
+		hw_limit = pmadapter->hw_dev_mcs_support;
+		if (pmadapter->fw_bands & BAND_A)
+			hw_limit |= (t_u16)(hw_limit << 8);
+#if defined(SDAW693) || defined(PCIEAW693)
+		/* AW693 MAC2 supports only 2G 1x1 (see wlan_handle_antcfg) */
+		if (IS_CARDAW693(pmadapter->card_type) &&
+		    pmadapter->second_mac)
+			hw_limit &= 0x0011;
+#endif
+		if (value & ~(t_u32)0xFFFF) {
+			pioctl_req->status_code = MLAN_ERROR_INVALID_PARAMETER;
+			LEAVE();
+			return MLAN_STATUS_FAILURE;
+		}
+		for (shift = 0; shift < 16; shift += 4) {
+			vn = (value >> shift) & 0xF;
+			hwn = (t_u32)((hw_limit >> shift) & 0xF);
+			/* Zero only where the band itself is unsupported:
+			 * the 11n HT builders lack a zero guard, so an
+			 * advertised-zero stream count would empty the HT
+			 * MCS set.
+			 */
+			if ((hwn == 0) ? (vn != 0) : (vn < 1 || vn > hwn)) {
+				pioctl_req->status_code =
+					MLAN_ERROR_INVALID_PARAMETER;
+				LEAVE();
+				return MLAN_STATUS_FAILURE;
+			}
+		}
+		pmadapter->user_htstream = (t_u16)value;
+		PRINTM(MCMND, "ant_nss_cfg: user_htstream=0x%x\n",
+		       pmadapter->user_htstream);
+	}
+	radio_cfg->param.ant_cfg.user_htstream = pmadapter->user_htstream;
+
+	LEAVE();
+	return MLAN_STATUS_SUCCESS;
+#else
+	ENTER();
+	pioctl_req->status_code = MLAN_ERROR_IOCTL_INVALID;
+	LEAVE();
+	return MLAN_STATUS_FAILURE;
+#endif
+}
+
+/**
  *  @brief Set antenna configuration
  *
  *  @param pmadapter    A pointer to mlan_adapter structure

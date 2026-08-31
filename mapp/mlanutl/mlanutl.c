@@ -158,6 +158,7 @@ static int process_txratecfg(int argc, char *argv[]);
 static int process_ratebitmapcfg(int argc, char *argv[]);
 static int process_ratemaxcfg(int argc, char *argv[]);
 static int process_mcstiercfg(int argc, char *argv[]);
+static int process_antcfgnss(int argc, char *argv[]);
 /* Prints the antcfg derived NSS limit (user_htstream) in one line. */
 static int get_user_htstream(t_u32 *out);
 static void print_nss_intent(const char *indent, t_u32 uh);
@@ -567,6 +568,7 @@ struct command_node command_list[] = {
 	{"autodfs", process_autodfs_cfg},
 	{"cfpcode", process_cfp_code},
 	{"antcfg", process_set_get_tx_rx_ant},
+	{"antcfgnss", process_antcfgnss},
 	{"get_chnrgpwr", process_get_chnrgpwr},
 	{"comparergpwr", process_compare_rgpwr},
 	{"getcfgchanlist", process_getcfgchanlist},
@@ -674,6 +676,7 @@ static char *usage[] = {
 	"         min_ba_threshold", "         11dcfg", "         11dclrtbl",
 	"         addbapara", "         addbareject", "         addts",
 	"         amsduaggrctrl", "         antcfg",
+	"         antcfgnss",
 #ifdef STA_SUPPORT
 	"         arpfilter",
 #endif
@@ -25596,6 +25599,91 @@ static void print_nss_intent(const char *indent, t_u32 uh)
 	       "  [user_htstream=0x%04X]\n",
 	       indent, NSS_2G_RX(uh), NSS_2G_TX(uh), NSS_5G_RX(uh),
 	       NSS_5G_TX(uh), uh);
+}
+
+/**
+ *  @brief Set/Get the advertised NSS intent (user_htstream) without
+ *         touching the physical antenna configuration.
+ *
+ *  Usage: mlanutl mlanX antcfgnss [<user_htstream>]
+ *         <user_htstream> hex nibbles: 5Gtx|5Grx|2Gtx|2Grx (e.g. 0x2121)
+ *         nibble 0 = no limit
+ */
+static int process_antcfgnss(int argc, char *argv[])
+{
+	t_u8 *buffer = NULL;
+	struct eth_priv_cmd *cmd = NULL;
+	struct ifreq ifr;
+	t_u32 data = 0;
+	int ret = MLAN_STATUS_SUCCESS;
+
+	if (argc != 3 && argc != 4) {
+		printf("ERR:Invalid number of arguments\n");
+		printf("Usage: mlanutl <interface> antcfgnss [<user_htstream>]\n");
+		printf("       <user_htstream>: 0x-prefixed hex nibbles"
+		       " 5Gtx|5Grx|2Gtx|2Grx (e.g. 0x2121)\n");
+		printf("       each supported band nibble must be 1..hw limit;"
+		       " 0 only for an unsupported band\n");
+		printf("       SET updates only the advertised NSS intent"
+		       " (physical antenna untouched) and takes\n");
+		printf("       effect on the next (re)association; a later"
+		       " antcfg SET overrides this intent\n");
+		return MLAN_STATUS_FAILURE;
+	}
+
+	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
+	if (!buffer) {
+		printf("ERR:Cannot allocate buffer!\n");
+		return MLAN_STATUS_FAILURE;
+	}
+	prepare_buffer(buffer, argv[2], (t_u32)(argc - 3), &argv[3]);
+
+	cmd = (struct eth_priv_cmd *)malloc(sizeof(struct eth_priv_cmd));
+	if (!cmd) {
+		printf("ERR:Cannot allocate buffer!\n");
+		free(buffer);
+		return MLAN_STATUS_FAILURE;
+	}
+#ifdef USERSPACE_32BIT_OVER_KERNEL_64BIT
+	memset(cmd, 0, sizeof(struct eth_priv_cmd));
+	memcpy(&cmd->buf, &buffer, sizeof(buffer));
+#else
+	cmd->buf = buffer;
+#endif
+	cmd->used_len = 0;
+	cmd->total_len = BUFFER_LENGTH;
+
+	memset(&ifr, 0, sizeof(struct ifreq));
+	strncpy(ifr.ifr_ifrn.ifrn_name, dev_name,
+		sizeof(ifr.ifr_ifrn.ifrn_name) - 1);
+	ifr.ifr_ifru.ifru_data = (void *)cmd;
+
+	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr)) {
+		perror("mlanutl");
+		fprintf(stderr, "mlanutl: antcfgnss fail\n");
+		ret = MLAN_STATUS_FAILURE;
+		goto done;
+	}
+	if (cmd->used_len == (int)sizeof(data)) {
+		memcpy(&data, buffer, sizeof(data));
+		printf("user_htstream=0x%04X  (2G rx=%u tx=%u, 5G rx=%u tx=%u)\n",
+		       data, NSS_2G_RX(data), NSS_2G_TX(data), NSS_5G_RX(data),
+		       NSS_5G_TX(data));
+		if (argc == 4)
+			printf("(applies from the next (re)association; a"
+			       " later antcfg SET overrides this intent)\n");
+	} else {
+		fprintf(stderr,
+			"mlanutl: antcfgnss unexpected reply length %d\n",
+			cmd->used_len);
+		ret = MLAN_STATUS_FAILURE;
+	}
+done:
+	if (cmd)
+		free(cmd);
+	if (buffer)
+		free(buffer);
+	return ret;
 }
 
 static int get_ht_stream_mode(void)

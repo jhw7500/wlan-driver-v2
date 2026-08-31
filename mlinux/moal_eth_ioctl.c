@@ -15485,7 +15485,12 @@ done:
 }
 
 /**
- * @brief Get the host-side NSS intent independently of the antcfg ABI.
+ * @brief Set/Get the host-side NSS intent independently of the antcfg ABI.
+ *
+ * SET writes only the advertised-NSS intent (user_htstream) through a
+ * host-only mlan path; no RF_ANTENNA HostCmd is issued, so the physical
+ * antenna configuration is left untouched. GET keeps the original
+ * MLAN_OID_ANT_CFG read-out unchanged.
  *
  * @param priv       Pointer to moal_private structure
  * @param respbuf    Response buffer
@@ -15493,17 +15498,35 @@ done:
  *
  * @return Number of bytes written, negative for failure.
  */
-static int woal_priv_get_antcfg_nss(moal_private *priv, t_u8 *respbuf,
-				    t_u32 respbuflen)
+static int woal_priv_set_get_antcfg_nss(moal_private *priv, t_u8 *respbuf,
+					t_u32 respbuflen)
 {
 	int header_len = strlen(CMD_NXP) + strlen(PRIV_CMD_ANT_CFG_NSS);
 	mlan_ds_radio_cfg *radio;
 	mlan_ioctl_req *req;
 	mlan_status status;
 	t_u32 user_htstream;
+	int data = 0;
+	int user_data_len = 0;
 
 	ENTER();
-	if ((int)strlen(respbuf) != header_len) {
+	if ((int)strlen(respbuf) > header_len) {
+		/* Require a 0x-prefixed value: parse_arguments() fails open
+		 * (leaves data at 0) on garbage, and a decimal value here is
+		 * almost always a nibble-notation mistake.
+		 */
+		if (strncmp((char *)respbuf + header_len, "0x", 2) &&
+		    strncmp((char *)respbuf + header_len, "0X", 2)) {
+			LEAVE();
+			return -EINVAL;
+		}
+		parse_arguments(respbuf + header_len, &data, 1,
+				&user_data_len);
+		if (user_data_len != 1 || data <= 0 || data > 0xFFFF) {
+			LEAVE();
+			return -EINVAL;
+		}
+	} else if ((int)strlen(respbuf) != header_len) {
 		LEAVE();
 		return -EINVAL;
 	}
@@ -15522,9 +15545,15 @@ static int woal_priv_get_antcfg_nss(moal_private *priv, t_u8 *respbuf,
 		return -ENOMEM;
 	}
 	radio = (mlan_ds_radio_cfg *)req->pbuf;
-	radio->sub_command = MLAN_OID_ANT_CFG;
 	req->req_id = MLAN_IOCTL_RADIO_CFG;
-	req->action = MLAN_ACT_GET;
+	if (user_data_len) {
+		radio->sub_command = MLAN_OID_ANT_NSS_CFG;
+		req->action = MLAN_ACT_SET;
+		radio->param.ant_cfg.user_htstream = (t_u32)data;
+	} else {
+		radio->sub_command = MLAN_OID_ANT_CFG;
+		req->action = MLAN_ACT_GET;
+	}
 
 	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
 	if (status != MLAN_STATUS_SUCCESS) {
@@ -23696,8 +23725,9 @@ int woal_android_priv_cmd(struct net_device *dev, struct ifreq *req)
 		} else if (strnicmp(buf + strlen(CMD_NXP),
 				    PRIV_CMD_ANT_CFG_NSS,
 				    strlen(PRIV_CMD_ANT_CFG_NSS)) == 0) {
-			/* Get host-side NSS intent without changing antcfg ABI. */
-			len = woal_priv_get_antcfg_nss(priv, buf,
+			/* Set/Get host-side NSS intent without touching the
+			 * physical antenna configuration. */
+			len = woal_priv_set_get_antcfg_nss(priv, buf,
 						priv_cmd.total_len);
 			goto handled;
 		} else if (strnicmp(buf + strlen(CMD_NXP), PRIV_CMD_ANT_CFG,

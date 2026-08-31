@@ -633,6 +633,9 @@ static mlan_status wlan_radio_ioctl(pmlan_adapter pmadapter,
 	case MLAN_OID_ANT_CFG:
 		status = wlan_radio_ioctl_ant_cfg(pmadapter, pioctl_req);
 		break;
+	case MLAN_OID_ANT_NSS_CFG:
+		status = wlan_radio_ioctl_ant_nss_cfg(pmadapter, pioctl_req);
+		break;
 	case MLAN_OID_REMAIN_CHAN_CFG:
 		status =
 			wlan_radio_ioctl_remain_chan_cfg(pmadapter, pioctl_req);
