@@ -3999,6 +3999,10 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 		if (!netif_carrier_ok(priv->netdev))
 			netif_carrier_on(priv->netdev);
 		woal_wake_queue(priv->netdev);
+		/* 로밍/링크업 완료 — 브리지 클론 MAC 유선 재학습 announce.
+		 * 보안망은 아직 키 설치 전이라 이 발화가 유실될 수 있고,
+		 * 그 경우 PORT_RELEASE 쪽 재발화가 커버한다. */
+		moal_bridge_announce_link_up(priv->phandle, priv);
 		moal_connection_status_check_pmqos(pmoal);
 
 		/* Register mgmt frame subtypes for logging:
@@ -4389,6 +4393,9 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 #endif
 		woal_broadcast_event(priv, CUS_EVT_PORT_RELEASE,
 				     strlen(CUS_EVT_PORT_RELEASE));
+		/* 키 설치 후 데이터 포트 개방 — DRV_CONNECTED 직후 발화가
+		 * 키 전 유실됐을 경우를 커버하는 재발화. */
+		moal_bridge_announce_link_up(priv->phandle, priv);
 		break;
 	case MLAN_EVENT_ID_FW_PRE_BCN_LOST:
 #ifdef STA_WEXT

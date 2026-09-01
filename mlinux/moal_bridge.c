@@ -1089,6 +1089,90 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
 }
 
 /*
+ * ---------- Link-up announce (로밍 유선 재학습 강제) ----------
+ */
+
+/**
+ * moal_bridge_announce_link_up - 로밍/링크업 직후 클론 MAC 유선 재학습
+ *
+ * 로밍 시 상단 유선 스위치 FDB 가 옛 AP 포트를 유지해 하향 트래픽이
+ * ~2-5초 유실된다(TEST13/14 프레임 실측, issue #47). 링크업 완료 시점에
+ * 클론 MAC 을 소스로 한 브로드캐스트 802.2 LLC XID(Layer-2 Update,
+ * hostapd 가 STA 재결합 시 쓰는 것과 동일 포맷)를 공중으로 1발 보내
+ * 새 AP 포트로 즉시 재학습시킨다. 스위치는 SA 만으로 학습하므로 IP
+ * 불요 — L3 무관 투명 브리지 설계와 정합.
+ *
+ * 소스 MAC 은 br 캐시가 아닌 현재 dev_addr (재클론 대응 — tx_hairpin 의
+ * 비교 규칙과 동일). 송신은 p2w 큐/전용 kthread 경유라 이벤트 컨텍스트가
+ * SDIO TX 에 블로킹되지 않는다. DRV_CONNECTED 와 PORT_RELEASE 양쪽에서
+ * 불려 보안망에서 최대 2발 나갈 수 있으나 무해한 중복이다(키 설치 전
+ * 1발이 유실될 수 있어 의도된 재발화). 기본 off — bridge_roam_announce
+ * module param 으로 opt-in 해야 발화한다.
+ *
+ * @param handle    moal_handle*
+ * @param wlan_priv 이벤트를 올린 BSS 의 moal_private*
+ */
+void moal_bridge_announce_link_up(void *handle, void *wlan_priv)
+{
+	struct moal_bridge *br;
+	struct sk_buff *skb;
+	struct ethhdr *eth;
+	u8 *llc;
+
+	/* opt-in 게이트 (기본 off): 실기 검증 전이므로 module param 으로
+	 * 명시 활성화한 경우에만 발화. 0644 라 보드에서 announce 유/무
+	 * A/B 회귀 확인을 리로드 없이 할 수 있다. */
+	if (!READ_ONCE(bridge_roam_announce))
+		return;
+
+	rcu_read_lock();
+	br = rcu_dereference(((moal_handle *)handle)->bridge);
+	if (!br || !atomic_read(&br->active) || br->wlan_priv != wlan_priv)
+		goto out;
+	if (unlikely(!moal_bridge_dev_ready(br->wlan_dev)))
+		goto out;
+
+	skb = dev_alloc_skb(ETH_ZLEN);
+	if (!skb) {
+		atomic_long_inc(&br->peer_to_wlan.oom_drops);
+		goto out;
+	}
+	memset(skb_put(skb, ETH_ZLEN), 0, ETH_ZLEN);
+	skb_reset_mac_header(skb);
+	eth = eth_hdr(skb);
+	eth_broadcast_addr(eth->h_dest);
+	ether_addr_copy(eth->h_source, br->wlan_dev->dev_addr);
+	/* 802.3 length(6) + LLC XID: dsap 0x00, ssap 0x01, ctrl 0xAF(XID
+	 * response), fmt 0x81 type 1 win 0. 어떤 호스트 스택도 소비하지
+	 * 않는 학습 갱신 전용 무해 프레임. */
+	eth->h_proto = htons(6);
+	llc = (u8 *)(eth + 1);
+	llc[0] = 0x00;
+	llc[1] = 0x01;
+	llc[2] = 0xaf;
+	llc[3] = 0x81;
+	llc[4] = 0x01;
+	llc[5] = 0x00;
+	skb->dev = br->wlan_dev;
+	skb->protocol = htons(ETH_P_802_2);
+
+	if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
+		atomic_dec(&br->p2w_qlen);
+		atomic_long_inc(&br->peer_to_wlan.dropped);
+		dev_kfree_skb_any(skb);
+		goto out;
+	}
+	moal_bridge_stamp_enq(skb);
+	skb_queue_tail(&br->p2w_queue, skb);
+	wake_up(&br->p2w_wait);
+	moal_bridge_ka_kick(br);
+	atomic_long_inc(&br->announce_tx);
+	BR_DBG("announce link-up src=%pM\n", br->wlan_dev->dev_addr);
+out:
+	rcu_read_unlock();
+}
+
+/*
  * ---------- ETH → WLAN Forwarding (rx_handler) ----------
  */
 
@@ -1770,6 +1854,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 "rx_pull avg=%ldus max=%ldus n=%ld\n"
 			 "tx_write avg=%ldus max=%ldus n=%ld\n"
 			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n"
+			 "announce on=%d tx=%ld\n"
 			 "iface=%s peer=%s pending_iface=%s pending_state=%s\n"
 			 "switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
@@ -1806,6 +1891,8 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->hairpin_tx_fwd),
 			 atomic_long_read(&br->hairpin_arp_tee),
 			 atomic_long_read(&br->hairpin_arp_inject),
+			 READ_ONCE(bridge_roam_announce),
+			 atomic_long_read(&br->announce_tx),
 			 wlan_name,
 			 peer_name,
 			 pending_name,
@@ -2333,6 +2420,8 @@ static void __moal_bridge_deinit_locked(moal_handle *handle)
 	       atomic_long_read(&br->hairpin_tx_fwd),
 	       atomic_long_read(&br->hairpin_arp_tee),
 	       atomic_long_read(&br->hairpin_arp_inject));
+	PRINTM(MMSG, "bridge: announce tx=%ld\n",
+	       atomic_long_read(&br->announce_tx));
 
 	/* 8. peer 참조 반환 + 메모리 해제. */
 	if (!atomic_read(&br->peer_released))

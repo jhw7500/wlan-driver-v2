@@ -112,6 +112,11 @@ int bridge_debug;
  *  + ARP tee/inject. 유선 peer IP 인지(peer_route/ip_discovery) 불요.
  *  기본 0. runtime 변경 가능 (0644). */
 int bridge_local_hairpin;
+/** Roam announce: 로밍/링크업 완료 시 클론 MAC 소스 L2 update 프레임을
+ *  발사해 상단 유선 스위치 재학습을 강제 (issue #47). 실기 미검증 기능의
+ *  opt-in 게이트 — 기본 0(미사용). module param 전용(전역 정책이므로 카드
+ *  블록 단위인 mod_para conf 에 두지 않는다). runtime 변경 가능 (0644). */
+int bridge_roam_announce;
 int bridge_keepalive_ms = 1;
 /** bridge_keepalive_idle_ms: adaptive keepalive idle cutoff (ms).
  *  0 = legacy free-running timer (default), >0 = self-stop after idle. */
@@ -3985,6 +3990,8 @@ module_param(bridge_consume_link_local, int, 0644);
 MODULE_PARM_DESC(bridge_consume_link_local, "0=default(stack deliver), 1=consume in driver (kfree_skb). Used to A/B test mlan0_rx_dropped vs LLDP.");
 module_param(bridge_local_hairpin, int, 0644);
 MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable). Fleet precondition: apply wlan iface arp_ignore=1 seal (wlan-package) or weak-host ARP opens on air — driver warns once via dmesg if unsealed");
+module_param(bridge_roam_announce, int, 0644);
+MODULE_PARM_DESC(bridge_roam_announce, "Bridge roam announce: 0=off(default), 1=fire clone-MAC sourced L2 update frame on roam/link-up so upstream wired switches re-learn toward the new AP port (runtime changeable)");
 module_param(wifi_reset_config, int, 0);
 MODULE_PARM_DESC(
 	wifi_reset_config,
