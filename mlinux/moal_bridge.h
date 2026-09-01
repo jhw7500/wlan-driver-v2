@@ -162,4 +162,9 @@ void moal_bridge_announce_link_up(void *handle, void *wlan_priv);
  *  인지(peer_route/ip_discovery) 없이 BD↔peer 통신 성립. 기본 0. */
 extern int bridge_local_hairpin;
 
+/** bridge_roam_announce: moal_init.c module param + mod_para conf (0644,
+ *  runtime 변경 가능). 1 이면 로밍/링크업 완료 시 클론 MAC 소스 L2 update
+ *  announce 발사. 기본 0 — 실기 미검증 기능의 opt-in 게이트. */
+extern int bridge_roam_announce;
+
 #endif /* _MOAL_BRIDGE_H_ */

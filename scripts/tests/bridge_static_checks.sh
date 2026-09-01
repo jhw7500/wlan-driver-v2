@@ -694,7 +694,8 @@ check_bridge_bool_parser_contract() {
     sed 's/[[:space:]][[:space:]]*/ /g')"
   grep -Fq 'strncmp(line, "bridge_runtime_switch=", strlen("bridge_runtime_switch=")) == 0'     <<< "$flat" || return 1
   grep -Fq 'strncmp(line, "bridge_runtime_deferred=", strlen("bridge_runtime_deferred=")) == 0'     <<< "$flat" || return 1
-  [ "$(grep -Fo 'parse_line_read_bridge_bool(' <<< "$parser" | wc -l)" -eq 2 ]
+  grep -Fq 'strncmp(line, "bridge_roam_announce=", strlen("bridge_roam_announce=")) == 0'     <<< "$flat" || return 1
+  [ "$(grep -Fo 'parse_line_read_bridge_bool(' <<< "$parser" | wc -l)" -eq 3 ]
 }
 
 check_bridge_bool_fixture_contract() {

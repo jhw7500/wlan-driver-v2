@@ -1106,7 +1106,8 @@ int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb)
  * 비교 규칙과 동일). 송신은 p2w 큐/전용 kthread 경유라 이벤트 컨텍스트가
  * SDIO TX 에 블로킹되지 않는다. DRV_CONNECTED 와 PORT_RELEASE 양쪽에서
  * 불려 보안망에서 최대 2발 나갈 수 있으나 무해한 중복이다(키 설치 전
- * 1발이 유실될 수 있어 의도된 재발화).
+ * 1발이 유실될 수 있어 의도된 재발화). 기본 off — bridge_roam_announce
+ * (mod_para conf / module param) 로 opt-in 해야 발화한다.
  *
  * @param handle    moal_handle*
  * @param wlan_priv 이벤트를 올린 BSS 의 moal_private*
@@ -1117,6 +1118,12 @@ void moal_bridge_announce_link_up(void *handle, void *wlan_priv)
 	struct sk_buff *skb;
 	struct ethhdr *eth;
 	u8 *llc;
+
+	/* opt-in 게이트 (기본 off): 실기 검증 전이므로 mod_para conf 또는
+	 * module param 으로 명시 활성화한 경우에만 발화. 0644 라 보드에서
+	 * announce 유/무 A/B 회귀 확인을 리로드 없이 할 수 있다. */
+	if (!READ_ONCE(bridge_roam_announce))
+		return;
 
 	rcu_read_lock();
 	br = rcu_dereference(((moal_handle *)handle)->bridge);
@@ -1847,7 +1854,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 "rx_pull avg=%ldus max=%ldus n=%ld\n"
 			 "tx_write avg=%ldus max=%ldus n=%ld\n"
 			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n"
-			 "announce tx=%ld\n"
+			 "announce on=%d tx=%ld\n"
 			 "iface=%s peer=%s pending_iface=%s pending_state=%s\n"
 			 "switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
@@ -1884,6 +1891,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->hairpin_tx_fwd),
 			 atomic_long_read(&br->hairpin_arp_tee),
 			 atomic_long_read(&br->hairpin_arp_inject),
+			 READ_ONCE(bridge_roam_announce),
 			 atomic_long_read(&br->announce_tx),
 			 wlan_name,
 			 peer_name,
