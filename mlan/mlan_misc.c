@@ -4756,36 +4756,10 @@ mlan_status wlan_radio_ioctl_ant_cfg(pmlan_adapter pmadapter,
 				   IS_CARDIW624(pmadapter->card_type)) {
 				ant_cfg->tx_antenna &= 0x0303;
 				ant_cfg->rx_antenna &= 0x0303;
-				/** 2G antcfg TX */
-				if (ant_cfg->tx_antenna & 0x00FF) {
-					pmadapter->user_htstream &= ~0xF0;
-					pmadapter->user_htstream |=
-						(bitcount(ant_cfg->tx_antenna &
-							  0x00FF)
-						 << 4);
-				}
-				/* 5G antcfg tx */
-				if (ant_cfg->tx_antenna & 0xFF00) {
-					pmadapter->user_htstream &= ~0xF000;
-					pmadapter->user_htstream |=
-						(bitcount(ant_cfg->tx_antenna &
-							  0xFF00)
-						 << 12);
-				}
-				/* 2G antcfg RX */
-				if (ant_cfg->rx_antenna & 0x00FF) {
-					pmadapter->user_htstream &= ~0xF;
-					pmadapter->user_htstream |= bitcount(
-						ant_cfg->rx_antenna & 0x00FF);
-				}
-				/* 5G antcfg RX */
-				if (ant_cfg->rx_antenna & 0xFF00) {
-					pmadapter->user_htstream &= ~0xF00;
-					pmadapter->user_htstream |=
-						(bitcount(ant_cfg->rx_antenna &
-							  0xFF00)
-						 << 8);
-				}
+				/* antcfg is physical-only (issue #41): the
+				 * advertised-NSS intent (user_htstream) is
+				 * owned by MLAN_OID_ANT_NSS_CFG and is no
+				 * longer derived from the antenna masks. */
 				if ((IS_CARDAW693(pmadapter->card_type)) ||
 				    (IS_CARDIW624(pmadapter->card_type))) {
 					ant_cfg->tx_antenna_6g &= 0x03;
@@ -4897,8 +4871,8 @@ exit:
  *  zero nibble is accepted only where the hardware/band limit itself
  *  is zero (band not supported). The 11n HT builders have no zero
  *  guard, so an advertised-zero stream count would empty the HT MCS
- *  set. Note that a later antcfg SET or FW reload recomputes
- *  user_htstream from the antenna mask and overrides this intent.
+ *  set. This OID is the sole runtime input for user_htstream: antcfg
+ *  is physical-only and no longer touches the intent (issue #41).
  *
  *  @param pmadapter    A pointer to mlan_adapter structure
  *  @param pioctl_req   A pointer to ioctl request buffer
@@ -5041,33 +5015,10 @@ mlan_status wlan_handle_antcfg(mlan_private *pmpriv, t_u32 init_antcfg)
 				ant_cfg.tx_antenna &= 0x1;
 				ant_cfg.rx_antenna &= 0x1;
 			}
-			/** 2G antcfg TX */
-			if (ant_cfg.tx_antenna & 0x00FF) {
-				pmadapter->user_htstream &= ~0xF0;
-				pmadapter->user_htstream |=
-					(bitcount(ant_cfg.tx_antenna & 0x00FF)
-					 << 4);
-			}
-			/* 5G antcfg tx */
-			if (ant_cfg.tx_antenna & 0xFF00) {
-				pmadapter->user_htstream &= ~0xF000;
-				pmadapter->user_htstream |=
-					(bitcount(ant_cfg.tx_antenna & 0xFF00)
-					 << 12);
-			}
-			/* 2G antcfg RX */
-			if (ant_cfg.rx_antenna & 0x00FF) {
-				pmadapter->user_htstream &= ~0xF;
-				pmadapter->user_htstream |=
-					bitcount(ant_cfg.rx_antenna & 0x00FF);
-			}
-			/* 5G antcfg RX */
-			if (ant_cfg.rx_antenna & 0xFF00) {
-				pmadapter->user_htstream &= ~0xF00;
-				pmadapter->user_htstream |=
-					(bitcount(ant_cfg.rx_antenna & 0xFF00)
-					 << 8);
-			}
+			/* antcfg is physical-only (issue #41): the module
+			 * parameter no longer seeds the advertised-NSS
+			 * intent (user_htstream) - that stays at its
+			 * power-on default until MLAN_OID_ANT_NSS_CFG. */
 			if ((IS_CARDAW693(pmadapter->card_type)) ||
 			    (IS_CARDIW624(pmadapter->card_type))) {
 				/* AW693 MAC2 supports only 2G 1x1. */
