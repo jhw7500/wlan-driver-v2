@@ -69,6 +69,10 @@ struct moal_bridge {
 	 *  arp_ignore==0 (wlan-package weak-host 봉인 미적용) 감지용 */
 	atomic_t hairpin_seal_warned;
 
+	/** 로밍/링크업 announce: 클론 MAC 소스 L2 update 프레임의 p2w 인큐
+	 *  성공 횟수. 보드 실측 게이트(로밍 직후 발화 여부)의 관측 지표. */
+	atomic_long_t announce_tx;
+
 	/** w2p (WLAN→ETH) */
 	struct sk_buff_head w2p_queue;
 	atomic_t w2p_qlen;             /**< hard cap counter for w2p_queue */
@@ -149,6 +153,9 @@ void moal_bridge_pending_start(void);
 void moal_bridge_pending_cleanup(void);
 int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv);
 int moal_bridge_tx_hairpin(struct moal_bridge *br, struct sk_buff *skb);
+/* 로밍/링크업 완료 시점(moal_shim 이벤트 경로)에서 호출 — 브리지 소유
+ * BSS(wlan_priv 일치)일 때만 클론 MAC 소스 L2 update 프레임을 발사한다. */
+void moal_bridge_announce_link_up(void *handle, void *wlan_priv);
 
 /** bridge_local_hairpin: moal_init.c module param (0644, runtime 변경 가능).
  *  1 이면 로컬발 TX(dst==클론 MAC) divert + ARP tee/inject — 유선 peer IP
