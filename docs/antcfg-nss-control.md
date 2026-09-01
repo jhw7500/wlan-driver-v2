@@ -5,10 +5,10 @@ mlan WLAN 드라이버에서 공간 스트림 수(NSS / MIMO)를 제어하고 �
 
 ## TL;DR
 
-- **광고 NSS 제어 입력**의 정식 경로는 `antcfgnss` SET이다(2026-08-31, 이슈 #41 /
-  PR #42). `antcfg`는 물리 RF chain 전용으로 회귀한다 — SET 시 광고 intent
-  (`user_htstream`)까지 파생 갱신하는 겸용 해석은 과도기 호환으로만 유지되며
-  forward-compatible 보장이 없다.
+- **광고 NSS 제어 입력**의 유일한 경로는 `antcfgnss` SET이다(2026-08-31, 이슈 #41 /
+  PR #42). `antcfg`는 **순수 물리(RF chain) 전용**이다 — SET 시 광고 intent
+  (`user_htstream`)를 파생 갱신하던 겸용 해석은 2026-09-01 제거됐다(런타임 SET과
+  `antcfg=` 모듈 파라미터 init 경로 모두). antcfg SET은 이제 intent를 건드리지 않는다.
 - 상태는 3층으로 구분한다: **물리 mask**(`antcfg` GET) / **광고 intent**(`antcfgnss`
   GET, `user_htstream`) / **실효 NSS**(연결 후 `iw dev <if> link`·`getdatarate`).
   세 층은 서로 다른 상태이며 일치할 의무가 없다 — 아래 "상태 3층 계약" 참조.
@@ -47,22 +47,14 @@ path 1개 = 1 stream(NSS=1), path 2개(A+B) = 2 stream(NSS=2).
 | `0x301` | A+B | A | 2G 2x2 / 5G 1x1 |
 | `0x103` | A | A+B | 2G 1x1 / 5G 2x2 |
 
-### NSS 제어 명령 (과도기 — 구계약)
+### 구계약 폐기 안내 (2026-09-01)
 
-> 광고 NSS만 바꾸려면 `antcfgnss`를 사용한다(아래 절). `antcfg` SET은 광고 intent와
-> 무관하게 **물리 mask가 RF_ANTENNA HostCmd로 FW까지 전달**되므로, 광고 제한 목적으로
-> 쓰는 것은 과도기 호환 용법이다.
-
-```bash
-# 양 대역 1x1을 요청하고 advertised NSS도 1로 제한
-mlanutl mlan0 antcfg 0x101
-
-# NSS=2 복귀
-mlanutl mlan0 antcfg 0x303
-
-# advertised Tx 1SS / Rx 2SS를 요청
-mlanutl mlan0 antcfg 0x101 0x303
-```
+> `antcfg`로 광고 NSS를 바꾸던 구계약 용법(`antcfg 0x101` = 물리+광고 동시 1x1,
+> `antcfg 0x101 0x303` = 광고 Tx1/Rx2 요청)은 **더 이상 동작하지 않는다** —
+> antcfg SET은 물리 mask만 FW로 전달하고 `user_htstream`을 건드리지 않는다
+> (런타임 SET·`antcfg=` 모듈 파라미터 모두). 광고 NSS는 `antcfgnss`로만 바꾼다
+> (아래 절). 이로써 "연결 중 antcfg SET이 FW 거부에도 intent를 덮는" 결합
+> 부작용과 SET 순서 제약(antcfg 먼저 → antcfgnss 나중)도 함께 사라졌다.
 
 이 브랜치와 함께 빌드한 `mlanutl`의 GET 출력 예 (9098 = 2-word 응답, 6G 줄은
 IW624/AW693처럼 6G mask가 있는 카드에서만 출력):
@@ -74,8 +66,8 @@ NSS limit (antcfg): 2G rx=1 tx=2, 5G rx=1 tx=2  [user_htstream=0x2121]
 
 ## 물리 antenna와 advertised NSS의 분리
 
-`antcfg 0x303 0x101`의 SET이 성공한 뒤 GET이 아래처럼 보이는 것은 이
-드라이버에서 표현 가능한 상태다.
+물리 mask와 광고 intent는 서로 다른 상태다. 예를 들어 아래는 정상 상태다
+(물리 FW 기본 2x2 + `antcfgnss 0x2121`).
 
 | 상태 | 예 | 의미 |
 |------|----|------|
@@ -91,15 +83,13 @@ NSS limit (antcfg): 2G rx=1 tx=2, 5G rx=1 tx=2  [user_htstream=0x2121]
 | `[11:8]` | 5G Rx NSS | 1 |
 | `[15:12]` | 5G Tx NSS | 2 |
 
-SET 경로는 요청 mask의 bit 수로 `user_htstream`을 갱신하고, VHT/HE
-association capability builder는 이 값을 사용해 최종 MCS map/NSS를 제한한다.
-반면 GET 응답은 firmware의 물리 mask를 반환하며 host intent를 덮어쓰지 않는다.
-따라서 **SET exit code 0은 요청이 ioctl/HostCmd 경로에 접수됐다는 뜻이지, 이후
-physical GET이 요청값과 같다는 보장은 아니다.**
-
-이 분리는 현재 포트의 코드에서 의도적으로 유지하는 host 정책이다. 다만 firmware가
-비대칭 physical Rx 요청을 `0x303`으로 정상화하는 이유 자체는 firmware 규격/로그로
-별도 확인해야 한다.
+`user_htstream`의 입력은 `antcfgnss` SET뿐이고(2026-09-01부터 — 구계약에서는
+`antcfg` SET이 mask bit 수로 파생 갱신했음), VHT/HE association capability
+builder가 이 값으로 최종 MCS map/NSS를 제한한다. `antcfg` GET 응답은 firmware의
+물리 mask를 반환하며 host intent를 덮어쓰지 않는다. 물리 SET에 대해서는
+**SET exit code 0이 요청 접수를 뜻할 뿐, 이후 physical GET이 요청값과 같다는
+보장은 아니다**(firmware가 비대칭 Rx 요청을 `0x303`으로 정상화한 사례 — 이유는
+firmware 규격/로그로 별도 확인 필요).
 
 ### `0x0303/0x0101` 정상화의 계약 판정 (2026-08-31 확정, 이슈 #35/#41)
 
@@ -113,9 +103,9 @@ forward-compatible 보장이 없다. 대응은 정상화 의존의 제거다:
   wlan-package#220). `antcfg 0x0303 0x0303`(순수 물리·대칭) + `antcfgnss 0x2121`
   조합이 기존 부팅 구성(`antcfg 0x0303 0x0101`)과 런타임 완전 동등함은 실기로
   실증됐다(이슈 #41 코멘트, 2026-08-31).
-- **과도기 운용 주의**: 활성 연결 중 `antcfg` SET은 FW가 거부(cmd 0x20, exit 255)해도
-  host intent(`user_htstream`)는 요청값으로 갱신되는 결합 부작용이 있다(#41 실측).
-  연결 중 `antcfg` SET 금지.
+- ~~과도기 운용 주의~~ **해소(2026-09-01)**: "활성 연결 중 `antcfg` SET이 FW 거부(cmd
+  0x20, exit 255)에도 intent를 요청값으로 갱신"하던 결합 부작용은 antcfg의 intent
+  파생 제거로 사라졌다. 물리 SET의 연결 중 FW 거부 자체는 여전하다(기지 제약).
 
 ### 2026-08-25 수정 전 드라이버 재현 결과의 현재 해석
 
@@ -315,15 +305,18 @@ mlanutl mlan0 antcfgnss 0x2121    # SET: 5Gtx=2 5Grx=1 2Gtx=2 2Grx=1 (0x 접두 
   외에는 SET 거부.
 - 활성 연결 중에도 SET 가능(RF_ANTENNA의 연결 중 거부 제약 없음). 단 광고 반영은
   다음 (re)association부터다.
-- **순서 제약**: 이후의 `antcfg <mask>` SET과 FW reload(`wlan_handle_antcfg`)는 안테나
-  마스크로부터 `user_htstream`을 재계산해 이 intent를 **덮어쓴다**. 적용 순서는 항상
-  antcfg(물리) → antcfgnss(광고).
-- 이관 계획(이슈 #41 → wlan-package#220): 광고 NSS 입력의 정식 경로를 이 명령으로
-  옮기고, `antcfg`는 순수 물리(RF chain) 용도로 회귀한다. 부팅 경로는 `antcfg`를
-  적용하지 않는다(물리는 FW 기본 2x2). TX NSS 제한도 `mcstiercfg ht 7` 부작용 대신
-  이 경로의 TX 니블을 쓴다.
-- 선행 검증 완료(2026-08-31 실기 A/B, 이슈 #41 코멘트): TX 니블 단독 실효(ht7 없이
-  intent TX1 → 실효 TX NSS1)와 방향 독립(TX1/RX2 → 실측 TX1·RX2) 성립, 전 칸에서
-  **실효 TX NSS = min(TX 니블, RX 니블)** 규칙 실측(단일 AP — 교차 확인 잔여).
-  reassociate 후 지속성, 음성 입력 3종 거부도 확인. assoc req IE의 스니퍼 실측은
-  잔여(OTA 스니퍼 필요).
+- ~~순서 제약~~ **해소(2026-09-01)**: `antcfg` SET과 `antcfg=` 모듈 파라미터의
+  `user_htstream` 재계산이 제거되어(이슈 #41 ③) 이 intent를 덮어쓰는 경로가 없다.
+  이 명령이 `user_htstream`의 유일한 런타임 입력이며, SET 순서 제약도 없다.
+- 이관 완료(이슈 #41 → wlan-package#220 종결): 광고 NSS 입력의 정식 경로가 이
+  명령으로 옮겨졌고, `antcfg`는 순수 물리(RF chain) 전용이 됐다. 부팅 경로는
+  `antcfg`를 적용하지 않는다(물리는 FW 기본 2x2). TX NSS 제한도 `mcstiercfg ht 7`
+  부작용 대신 이 경로의 TX 니블을 쓴다.
+- 검증 완료(2026-08-31 실기 A/B + 2026-09-01 재실측·교차, 이슈 #41 코멘트):
+  TX 니블 단독 실효(ht7 없이 intent TX1 → 실효 TX NSS1)와 방향 독립(TX1/RX2 →
+  실측 TX1·RX2) 성립, 전 칸에서 **실효 TX NSS = min(TX 니블, RX 니블)** 규칙 실측.
+  **적용 스코프(교차 AP 실측)**: 이 규칙은 HE(/VHT) 협상 링크의 규칙이다 — TX 니블은
+  VHT/HE TX map 클램프 경유라 **HT-only 링크에서는 무효**하고, RX 니블만 작동한다
+  (HT cap 1x1 광고 → FW device-wide 1SS). HT 환경에서 TX 제한이 필요하면 RX 포함
+  (0x1111/0x2121)이어야 한다. reassociate 후 지속성, 음성 입력 3종 거부도 확인.
+  assoc req IE의 스니퍼 실측은 잔여(OTA 스니퍼 필요 — 보류).

@@ -25649,8 +25649,8 @@ static int process_antcfgnss(int argc, char *argv[])
 		       " 0 only for an unsupported band\n");
 		printf("       SET updates only the advertised NSS intent"
 		       " (physical antenna untouched) and takes\n");
-		printf("       effect on the next (re)association; a later"
-		       " antcfg SET overrides this intent\n");
+		printf("       effect on the next (re)association; antcfg is"
+		       " physical-only and does not touch it\n");
 		return MLAN_STATUS_FAILURE;
 	}
 
@@ -25661,8 +25661,7 @@ static int process_antcfgnss(int argc, char *argv[])
 	       data, NSS_2G_RX(data), NSS_2G_TX(data), NSS_5G_RX(data),
 	       NSS_5G_TX(data));
 	if (argc == 4)
-		printf("(applies from the next (re)association; a"
-		       " later antcfg SET overrides this intent)\n");
+		printf("(applies from the next (re)association)\n");
 	return MLAN_STATUS_SUCCESS;
 }
 
