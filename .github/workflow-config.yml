@@ -38,8 +38,9 @@ workflows:
     description: "Issue triage and labeling"
 
   gemini-auto-review:
-    enabled: false
-    description: "Automatic PR review with Gemini (disabled — 키 프로젝트 권한 미해결)"
+    enabled: true
+    auto: true
+    description: "Automatic PR review with Gemini"
 
   gemini-scheduled-triage:
     enabled: false
@@ -55,10 +56,10 @@ workflows:
     auto: true
     description: "Claude automatic PR review"
 
-  # OpenCode workflows (코드는 유지하되 미사용 — disable)
+  # OpenCode workflows (멘션 /oc 활성, auto-review 는 미사용 유지)
   opencode:
-    enabled: false
-    description: "OpenCode integration (disabled, 코드만 보존)"
+    enabled: true
+    description: "OpenCode integration (manual: /oc)"
 
   opencode-auto-review:
     enabled: false
