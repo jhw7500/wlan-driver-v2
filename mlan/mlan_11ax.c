@@ -918,10 +918,78 @@ static mlan_status wlan_11ax_ioctl_hecfg(pmlan_adapter pmadapter,
 		PRINTM(MERROR, "FW don't support 6E AX\n");
 		return MLAN_STATUS_FAILURE;
 	}
-	if (pioctl_req->action == MLAN_ACT_SET)
+	if (pioctl_req->action == MLAN_ACT_SET) {
+		/* A zero-length capability never reaches the firmware: the
+		 * command builder skips the TLV and the SET degenerates to a
+		 * silent no-op (issue #52 - mcstiercfg hits this when it
+		 * modifies a pre-association GET whose reply carried no HE
+		 * capability TLV). Reject it loudly; most callers discard
+		 * the return code, so the log is the only signal. */
+		if (!cfg->param.he_cfg.he_cap.len) {
+			PRINTM(MERROR,
+			       "11ax cfg SET without HE capability payload\n");
+			pioctl_req->status_code = MLAN_ERROR_INVALID_PARAMETER;
+			LEAVE();
+			return MLAN_STATUS_FAILURE;
+		}
+		/* Record the advertised-capability intent on the host at SET
+		 * time, like VHT does: the association IE builder reads only
+		 * the host copy, and the firmware SET response does not echo
+		 * a capability TLV to refresh it (issue #52). The band demux
+		 * mirrors wlan_ret_11ax_cfg - 5G/6G bits win, so a "both"
+		 * SET updates only the 5G slot: the request carries a single
+		 * blob and the 2G hardware capability differs beyond the MCS
+		 * maps. */
+		if (cfg->param.he_cfg.he_cap.ext_id == HE_CAPABILITY) {
+			MrvlIEtypes_He_cap_t *user_tlv;
+			t_u8 stored_len;
+			t_u16 copy_len =
+				cfg->param.he_cfg.he_cap.len +
+				sizeof(MrvlIEtypesHeader_t);
+
+			if (cfg->param.he_cfg.band & (MBIT(1) | MBIT(2))) {
+				pmpriv->user_hecap_len = MIN(
+					copy_len, sizeof(pmpriv->user_he_cap));
+				memcpy_ext(pmadapter,
+					   (t_u8 *)&pmpriv->user_he_cap,
+					   (t_u8 *)&cfg->param.he_cfg.he_cap,
+					   copy_len,
+					   sizeof(pmpriv->user_he_cap));
+				user_tlv = (MrvlIEtypes_He_cap_t *)&pmpriv
+						   ->user_he_cap;
+				stored_len = pmpriv->user_hecap_len;
+			} else {
+				pmpriv->user_2g_hecap_len =
+					MIN(copy_len,
+					    sizeof(pmpriv->user_2g_he_cap));
+				memcpy_ext(pmadapter,
+					   (t_u8 *)&pmpriv->user_2g_he_cap,
+					   (t_u8 *)&cfg->param.he_cfg.he_cap,
+					   copy_len,
+					   sizeof(pmpriv->user_2g_he_cap));
+				user_tlv = (MrvlIEtypes_He_cap_t *)&pmpriv
+						   ->user_2g_he_cap;
+				stored_len = pmpriv->user_2g_hecap_len;
+				/* Keep the 2G invariant enforced at hw-spec
+				 * seeding */
+				user_tlv->he_phy_cap[0] &=
+					~AX_2G_40MHZ_SUPPORT;
+			}
+			/* Same role-based TWT normalization as the hw-spec
+			 * seeding */
+			if (pmpriv->bss_role == MLAN_BSS_ROLE_STA)
+				user_tlv->he_mac_cap[0] &=
+					~HE_MAC_CAP_TWT_RESP_SUPPORT;
+			else
+				user_tlv->he_mac_cap[0] &=
+					~HE_MAC_CAP_TWT_REQ_SUPPORT;
+			DBG_HEXDUMP(MCMND, "user he cap (hecfg SET)",
+				    (t_u8 *)user_tlv, stored_len);
+		}
 		cmd_action = HostCmd_ACT_GEN_SET;
-	else
+	} else {
 		cmd_action = HostCmd_ACT_GEN_GET;
+	}
 
 	/* Send request to firmware */
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_11AX_CFG, cmd_action, 0,
@@ -1066,6 +1134,8 @@ mlan_status wlan_ret_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 	HostCmd_DS_11AX_CFG *axcfg = &resp->params.axcfg;
 	MrvlIEtypes_Extension_t *tlv = MNULL;
 	t_u16 left_len = 0, tlv_type = 0, tlv_len = 0;
+	t_u16 action = 0;
+	t_u8 hecap_tlv_seen = MFALSE;
 	/** mlan_ds_11ax_he_6g_capa */
 	mlan_ds_11ax_he_6g_capa *he_6g_cap = MNULL;
 
@@ -1077,6 +1147,7 @@ mlan_status wlan_ret_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 	cfg = (mlan_ds_11ax_cfg *)pioctl_buf->pbuf;
 	cfg->param.he_cfg.band = axcfg->band_config;
 	hecap = (mlan_ds_11ax_he_capa *)&cfg->param.he_cfg.he_cap;
+	action = wlan_le16_to_cpu(axcfg->action);
 
 	/* TLV parse */
 	left_len = resp->size - sizeof(HostCmd_DS_11AX_CFG) - S_DS_GEN;
@@ -1088,12 +1159,22 @@ mlan_status wlan_ret_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 		if (tlv_type == EXTENSION) {
 			switch (tlv->ext_id) {
 			case HE_CAPABILITY:
+				hecap_tlv_seen = MTRUE;
 				hecap->id = tlv_type;
 				hecap->len = tlv_len;
 				memcpy_ext(pmadapter, (t_u8 *)&hecap->ext_id,
 					   (t_u8 *)&tlv->ext_id, tlv_len,
 					   sizeof(mlan_ds_11ax_he_capa) -
 						   sizeof(MrvlIEtypesHeader_t));
+				/* Only a SET response may refresh the host
+				 * intent (firmware view of what it applied).
+				 * A GET response must not: the host copy is
+				 * the advertised-capability intent recorded
+				 * at SET time, and a plain query would
+				 * clobber it with firmware state (issue
+				 * #52). Mirrors the VHT response handler. */
+				if (action != HostCmd_ACT_GEN_SET)
+					break;
 				if (cfg->param.he_cfg.band & MBIT(1) ||
 				    cfg->param.he_cfg.band & MBIT(2)) {
 					memcpy_ext(
@@ -1155,6 +1236,39 @@ mlan_status wlan_ret_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 		left_len -= (sizeof(MrvlIEtypesHeader_t) + tlv_len);
 		tlv = (MrvlIEtypes_Extension_t *)((t_u8 *)tlv + tlv_len +
 						  sizeof(MrvlIEtypesHeader_t));
+	}
+
+	/* Before the first association the firmware answers a GET with an
+	 * empty HE capability TLV. Backfill the reply from the host copy so
+	 * the GET->modify->SET chain (mcstiercfg) still produces a complete
+	 * TLV when run before the first association (issue #52). Band demux
+	 * mirrors the parse loop above. */
+	if (action == HostCmd_ACT_GEN_GET && !hecap_tlv_seen) {
+		MrvlIEtypes_Extension_t *user_tlv;
+		t_u8 user_len;
+
+		if (cfg->param.he_cfg.band & MBIT(1) ||
+		    cfg->param.he_cfg.band & MBIT(2)) {
+			user_tlv = (MrvlIEtypes_Extension_t *)pmpriv
+					   ->user_he_cap;
+			user_len = pmpriv->user_hecap_len;
+		} else {
+			user_tlv = (MrvlIEtypes_Extension_t *)pmpriv
+					   ->user_2g_he_cap;
+			user_len = pmpriv->user_2g_hecap_len;
+		}
+		if (user_len > sizeof(MrvlIEtypesHeader_t)) {
+			hecap->id = wlan_le16_to_cpu(user_tlv->type);
+			hecap->len = user_len - sizeof(MrvlIEtypesHeader_t);
+			memcpy_ext(pmadapter, (t_u8 *)&hecap->ext_id,
+				   (t_u8 *)&user_tlv->ext_id,
+				   user_len - sizeof(MrvlIEtypesHeader_t),
+				   sizeof(mlan_ds_11ax_he_capa) -
+					   sizeof(MrvlIEtypesHeader_t));
+			PRINTM(MCMND,
+			       "11ax cfg GET backfilled from host copy (len=%d)\n",
+			       user_len);
+		}
 	}
 
 done:
