@@ -3533,7 +3533,8 @@ require(ordered(mgmt_case, "event_len < MLAN_MGMT_EVENT_PAYLOAD_OFFSET",
                 "metadata = ", "rx_snr = metadata->snr"),
         "management-event consumer reads prefix bytes before validating length")
 
-antcfg_nss = c_function(eth_ioctl_c, "static int woal_priv_get_antcfg_nss")
+antcfg_nss = c_function(eth_ioctl_c,
+                        "static int woal_priv_set_get_antcfg_nss")
 antcfg = c_function(eth_ioctl_c, "static int woal_priv_set_get_tx_rx_ant")
 require(ordered(antcfg, "user_data_len != 1", "user_data_len != 2",
                 "user_data_len != 4", "FEATURE_CTRL_STREAM_2X2"),
