@@ -884,6 +884,31 @@ t_u16 wlan_11ax_bandconfig_allowed(mlan_private *pmpriv,
 }
 
 /**
+ *  @brief Reapply the host HE capability invariants from hw-spec seeding
+ *
+ *  Role-based TWT bits, and no 40MHz-in-2.4G on the 2G slot. Every host
+ *  write path (SET ioctl and SET response echo) must call this - the
+ *  firmware SET carries the un-normalized user payload, so its echo would
+ *  otherwise resurrect the normalized-away bits.
+ *
+ *  @param pmpriv       A pointer to mlan_private structure
+ *  @param user_cap     Host user HE capability copy (raw TLV bytes)
+ *  @param is_2g        MTRUE for the 2G slot
+ */
+static void wlan_11ax_normalize_user_he_cap(pmlan_private pmpriv,
+					    t_u8 *user_cap, t_u8 is_2g)
+{
+	MrvlIEtypes_He_cap_t *user_tlv = (MrvlIEtypes_He_cap_t *)user_cap;
+
+	if (is_2g)
+		user_tlv->he_phy_cap[0] &= ~AX_2G_40MHZ_SUPPORT;
+	if (pmpriv->bss_role == MLAN_BSS_ROLE_STA)
+		user_tlv->he_mac_cap[0] &= ~HE_MAC_CAP_TWT_RESP_SUPPORT;
+	else
+		user_tlv->he_mac_cap[0] &= ~HE_MAC_CAP_TWT_REQ_SUPPORT;
+}
+
+/**
  *  @brief Set 11ax configuration
  *
  *  @param pmadapter    A pointer to mlan_adapter structure
@@ -955,6 +980,8 @@ static mlan_status wlan_11ax_ioctl_hecfg(pmlan_adapter pmadapter,
 					   (t_u8 *)&cfg->param.he_cfg.he_cap,
 					   copy_len,
 					   sizeof(pmpriv->user_he_cap));
+				wlan_11ax_normalize_user_he_cap(
+					pmpriv, pmpriv->user_he_cap, MFALSE);
 				user_tlv = (MrvlIEtypes_He_cap_t *)&pmpriv
 						   ->user_he_cap;
 				stored_len = pmpriv->user_hecap_len;
@@ -967,22 +994,12 @@ static mlan_status wlan_11ax_ioctl_hecfg(pmlan_adapter pmadapter,
 					   (t_u8 *)&cfg->param.he_cfg.he_cap,
 					   copy_len,
 					   sizeof(pmpriv->user_2g_he_cap));
+				wlan_11ax_normalize_user_he_cap(
+					pmpriv, pmpriv->user_2g_he_cap, MTRUE);
 				user_tlv = (MrvlIEtypes_He_cap_t *)&pmpriv
 						   ->user_2g_he_cap;
 				stored_len = pmpriv->user_2g_hecap_len;
-				/* Keep the 2G invariant enforced at hw-spec
-				 * seeding */
-				user_tlv->he_phy_cap[0] &=
-					~AX_2G_40MHZ_SUPPORT;
 			}
-			/* Same role-based TWT normalization as the hw-spec
-			 * seeding */
-			if (pmpriv->bss_role == MLAN_BSS_ROLE_STA)
-				user_tlv->he_mac_cap[0] &=
-					~HE_MAC_CAP_TWT_RESP_SUPPORT;
-			else
-				user_tlv->he_mac_cap[0] &=
-					~HE_MAC_CAP_TWT_REQ_SUPPORT;
 			DBG_HEXDUMP(MCMND, "user he cap (hecfg SET)",
 				    (t_u8 *)user_tlv, stored_len);
 		}
@@ -1188,6 +1205,9 @@ mlan_status wlan_ret_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 						tlv_len +
 							sizeof(MrvlIEtypesHeader_t),
 						sizeof(pmpriv->user_he_cap));
+					wlan_11ax_normalize_user_he_cap(
+						pmpriv, pmpriv->user_he_cap,
+						MFALSE);
 					PRINTM(MCMND, "user_hecap_len=%d\n",
 					       pmpriv->user_hecap_len);
 				} else {
@@ -1202,6 +1222,9 @@ mlan_status wlan_ret_11ax_cfg(pmlan_private pmpriv, HostCmd_DS_COMMAND *resp,
 						tlv_len +
 							sizeof(MrvlIEtypesHeader_t),
 						sizeof(pmpriv->user_2g_he_cap));
+					wlan_11ax_normalize_user_he_cap(
+						pmpriv,
+						pmpriv->user_2g_he_cap, MTRUE);
 					PRINTM(MCMND, "user_2g_hecap_len=%d\n",
 					       pmpriv->user_2g_hecap_len);
 				}
