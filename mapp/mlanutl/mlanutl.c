@@ -25535,14 +25535,15 @@ done:
 	return ret;
 }
 
-/* Reads the host side NSS intent (user_htstream) the driver reports next to
- * the firmware antenna mode. The antenna mode alone is not enough: the
- * firmware can drive 2x2 while the host deliberately advertises fewer
- * streams, and the association IEs follow the host value.
- * Returns 0 on success. Drivers that only report tx/rx are treated as
- * "not available" so callers can degrade quietly.
+/* Runs one antcfgnss ioctl round trip (0..1 argument) and reads the 4-byte
+ * user_htstream reply into *out. Verbose mode reports failures the way the
+ * CLI command does; quiet mode stays silent so callers can degrade when the
+ * driver lacks the command or only reports tx/rx. cmdname is what goes on
+ * the wire — the CLI forwards argv[2] verbatim (dispatch is case-insensitive
+ * but the driver match is not). Returns 0 on success.
  */
-static int get_user_htstream(t_u32 *out)
+static int antcfgnss_ioctl(char *cmdname, t_u32 nargs, char *args[],
+			   t_u32 *out, int verbose)
 {
 	t_u8 *buffer = NULL;
 	struct eth_priv_cmd *cmd = NULL;
@@ -25551,12 +25552,17 @@ static int get_user_htstream(t_u32 *out)
 	int ret = -1;
 
 	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
-	if (!buffer)
+	if (!buffer) {
+		if (verbose)
+			printf("ERR:Cannot allocate buffer!\n");
 		return -1;
+	}
 
-	prepare_buffer(buffer, "antcfgnss", 0, NULL);
+	prepare_buffer(buffer, cmdname, nargs, args);
 	cmd = (struct eth_priv_cmd *)malloc(sizeof(struct eth_priv_cmd));
 	if (!cmd) {
+		if (verbose)
+			printf("ERR:Cannot allocate buffer!\n");
 		free(buffer);
 		return -1;
 	}
@@ -25575,8 +25581,17 @@ static int get_user_htstream(t_u32 *out)
 		sizeof(ifr.ifr_ifrn.ifrn_name) - 1);
 	ifr.ifr_ifru.ifru_data = (void *)cmd;
 
-	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr) == 0 &&
-	    cmd->used_len == (int)sizeof(data)) {
+	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr)) {
+		if (verbose) {
+			perror("mlanutl");
+			fprintf(stderr, "mlanutl: antcfgnss fail\n");
+		}
+	} else if (cmd->used_len != (int)sizeof(data)) {
+		if (verbose)
+			fprintf(stderr,
+				"mlanutl: antcfgnss unexpected reply length %d\n",
+				cmd->used_len);
+	} else {
 		memcpy(&data, buffer, sizeof(data));
 		*out = data;
 		ret = 0;
@@ -25585,6 +25600,18 @@ static int get_user_htstream(t_u32 *out)
 	free(cmd);
 	free(buffer);
 	return ret;
+}
+
+/* Reads the host side NSS intent (user_htstream) the driver reports next to
+ * the firmware antenna mode. The antenna mode alone is not enough: the
+ * firmware can drive 2x2 while the host deliberately advertises fewer
+ * streams, and the association IEs follow the host value.
+ * Returns 0 on success. Drivers that only report tx/rx are treated as
+ * "not available" so callers can degrade quietly.
+ */
+static int get_user_htstream(t_u32 *out)
+{
+	return antcfgnss_ioctl("antcfgnss", 0, NULL, out, 0);
 }
 
 /* user_htstream packs one nibble per band/direction. */
@@ -25611,11 +25638,7 @@ static void print_nss_intent(const char *indent, t_u32 uh)
  */
 static int process_antcfgnss(int argc, char *argv[])
 {
-	t_u8 *buffer = NULL;
-	struct eth_priv_cmd *cmd = NULL;
-	struct ifreq ifr;
 	t_u32 data = 0;
-	int ret = MLAN_STATUS_SUCCESS;
 
 	if (argc != 3 && argc != 4) {
 		printf("ERR:Invalid number of arguments\n");
@@ -25631,59 +25654,16 @@ static int process_antcfgnss(int argc, char *argv[])
 		return MLAN_STATUS_FAILURE;
 	}
 
-	buffer = (t_u8 *)malloc(BUFFER_LENGTH);
-	if (!buffer) {
-		printf("ERR:Cannot allocate buffer!\n");
+	if (antcfgnss_ioctl(argv[2], (t_u32)(argc - 3), &argv[3], &data, 1))
 		return MLAN_STATUS_FAILURE;
-	}
-	prepare_buffer(buffer, argv[2], (t_u32)(argc - 3), &argv[3]);
 
-	cmd = (struct eth_priv_cmd *)malloc(sizeof(struct eth_priv_cmd));
-	if (!cmd) {
-		printf("ERR:Cannot allocate buffer!\n");
-		free(buffer);
-		return MLAN_STATUS_FAILURE;
-	}
-#ifdef USERSPACE_32BIT_OVER_KERNEL_64BIT
-	memset(cmd, 0, sizeof(struct eth_priv_cmd));
-	memcpy(&cmd->buf, &buffer, sizeof(buffer));
-#else
-	cmd->buf = buffer;
-#endif
-	cmd->used_len = 0;
-	cmd->total_len = BUFFER_LENGTH;
-
-	memset(&ifr, 0, sizeof(struct ifreq));
-	strncpy(ifr.ifr_ifrn.ifrn_name, dev_name,
-		sizeof(ifr.ifr_ifrn.ifrn_name) - 1);
-	ifr.ifr_ifru.ifru_data = (void *)cmd;
-
-	if (ioctl(sockfd, MLAN_ETH_PRIV, &ifr)) {
-		perror("mlanutl");
-		fprintf(stderr, "mlanutl: antcfgnss fail\n");
-		ret = MLAN_STATUS_FAILURE;
-		goto done;
-	}
-	if (cmd->used_len == (int)sizeof(data)) {
-		memcpy(&data, buffer, sizeof(data));
-		printf("user_htstream=0x%04X  (2G rx=%u tx=%u, 5G rx=%u tx=%u)\n",
-		       data, NSS_2G_RX(data), NSS_2G_TX(data), NSS_5G_RX(data),
-		       NSS_5G_TX(data));
-		if (argc == 4)
-			printf("(applies from the next (re)association; a"
-			       " later antcfg SET overrides this intent)\n");
-	} else {
-		fprintf(stderr,
-			"mlanutl: antcfgnss unexpected reply length %d\n",
-			cmd->used_len);
-		ret = MLAN_STATUS_FAILURE;
-	}
-done:
-	if (cmd)
-		free(cmd);
-	if (buffer)
-		free(buffer);
-	return ret;
+	printf("user_htstream=0x%04X  (2G rx=%u tx=%u, 5G rx=%u tx=%u)\n",
+	       data, NSS_2G_RX(data), NSS_2G_TX(data), NSS_5G_RX(data),
+	       NSS_5G_TX(data));
+	if (argc == 4)
+		printf("(applies from the next (re)association; a"
+		       " later antcfg SET overrides this intent)\n");
+	return MLAN_STATUS_SUCCESS;
 }
 
 static int get_ht_stream_mode(void)
