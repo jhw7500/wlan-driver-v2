@@ -114,7 +114,8 @@ int bridge_debug;
 int bridge_local_hairpin;
 /** Roam announce: 로밍/링크업 완료 시 클론 MAC 소스 L2 update 프레임을
  *  발사해 상단 유선 스위치 재학습을 강제 (issue #47). 실기 미검증 기능의
- *  opt-in 게이트 — 기본 0(미사용). runtime 변경 가능 (0644). */
+ *  opt-in 게이트 — 기본 0(미사용). module param 전용(전역 정책이므로 카드
+ *  블록 단위인 mod_para conf 에 두지 않는다). runtime 변경 가능 (0644). */
 int bridge_roam_announce;
 int bridge_keepalive_ms = 1;
 /** bridge_keepalive_idle_ms: adaptive keepalive idle cutoff (ms).
@@ -1176,15 +1177,6 @@ static mlan_status parse_cfg_read_block(t_u8 *data, t_u32 size,
 			}
 			bridge_runtime_deferred_cfg = out_data;
 			bridge_runtime_deferred_present = 1;
-		} else if (strncmp(line, "bridge_roam_announce=",
-				   strlen("bridge_roam_announce=")) == 0) {
-			if (parse_line_read_bridge_bool(
-				    line, "bridge_roam_announce",
-				    &out_data) != MLAN_STATUS_SUCCESS)
-				goto err;
-			bridge_roam_announce = out_data;
-			PRINTM(MMSG, "bridge_roam_announce = %d\n",
-			       bridge_roam_announce);
 		} else if (strncmp(line, "bridge_mode",
 				   strlen("bridge_mode")) == 0) {
 			if (parse_line_read_int(line, &out_data) !=
