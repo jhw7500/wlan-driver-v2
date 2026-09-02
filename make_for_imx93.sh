@@ -46,6 +46,19 @@ PKG_CONFIG_PATH=${SYSROOT}/usr/lib/pkgconfig
 
 MOD_SUFFIX=${MOD_SUFFIX:-_imx93}
 
+# 재현 빌드: __FILE__/디버그 comp_dir 가 절대경로로 산출물에 박혀 체크아웃
+# 경로가 다르면(예: worktree) 동일 소스도 바이트가 달라진다(.ko 는 경로
+# 문자열, 유저스페이스는 -g 디버그 경로 → build-id 상이) — wlan-package
+# DRIVER_COMPONENTS lock 이 byte-exact 라 재빌드마다 lock 이 깨지던 근본
+# 원인. 소스 루트를 '.' 로 매핑한다. 커널 모듈은 KCFLAGS, 유저스페이스는
+# SDK env CFLAGS append (루트 Makefile 경유 빌드 체인에도 적용되도록
+# 앱별 make 변수 대신 env 를 쓴다).
+REPRO_PREFIX_MAP="-ffile-prefix-map=${SCRIPT_DIR}=."
+export KCFLAGS="${KCFLAGS:+${KCFLAGS} }${REPRO_PREFIX_MAP}"
+# 유저스페이스: 앱 Makefile 들이 CFLAGS := 로 env 를 덮으므로 CC 에 싣는다
+# (모든 컴파일/링크가 $(CC) 경유 — 커널은 Kbuild 자체 CC 라 무영향).
+export CC="${CC} ${REPRO_PREFIX_MAP}"
+
 MLANUTL_CFLAGS="-DSTA_SUPPORT -DUAP_SUPPORT -DWIFI_DIRECT_SUPPORT -DMFG_CMD_SUPPORT -DTDLS_SUPPORT -DMULTI_CHAN_SUPPORT -DDFS_TESTING_SUPPORT -DREASSOCIATION"
 # mlanevent 는 이벤트 수신 전용(netlink read-only)이라 드라이버 기능 플래그가 거의 불필요.
 # WIFI_DIRECT_SUPPORT 만 P2P 이벤트 파싱 블록을 켠다.
