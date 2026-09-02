@@ -141,12 +141,26 @@ antenna 설정 처리 자체는 변경하지 않는다.
 
 - 세 층은 서로 다른 상태이고 일치할 의무가 없다. SET exit 0은 "요청이 ioctl/HostCmd
   경로에 접수됨"이지 세 층의 일치 보장이 아니다.
-- **실효 TX NSS = min(TX 니블, RX 니블)** — 2026-08-31 실기 A/B 4칸 매트릭스 실측
-  (SD9098 p149.115 + 4SS AP, 이슈 #41 코멘트). intent TX2/RX1이 실효 TX1이 되는 것이
-  특징. 메커니즘(FW 내부 대칭화 vs AP의 OpMode 해석)은 미규명(추정)이며, 타 AP 교차
-  확인 전에는 일반화하지 않는다(#41 잔여 항목).
-- assoc 요청 IE의 광고 map 바이트 실측은 HostMlme 특성상 host 측 mgmt dump로는 잡히지
-  않아 OTA 스니퍼가 필요하다(#41 잔여 항목).
+- **실효 TX NSS = min(`mcstiercfg ht` 티어, RX 니블, TX 니블)** — 2026-09-02 OTA 실측으로
+  확정(HE 링크, 5조건 매트릭스, 이슈 #41 `issuecomment-5503166256`). 구 기술
+  `min(TX 니블, RX 니블)`은 `mcstiercfg ht` 항이 빠져 있어 **폐기**한다: `ht 7`(1x1)이
+  걸려 있으면 antcfgnss가 `0x2222`(min=2)여도 실효 TX NSS는 1이다.
+  제품 구성은 `ht/vht/he 7`(wifi_init_conf.json의 "antcfg와 묶인 제품 안전 불변식",
+  연결 전 SET)이므로 **제품 상태에서는 TX 니블만 올려서 TX NSS2를 세울 수 없다** —
+  TX NSS2가 필요하면 `mcstiercfg ht 15`를 함께 풀어야 한다.
+- **실효 RX NSS = RX 니블 단독** — `mcstiercfg ht` 티어에 묶이지 않는다. `ht 7`에서도
+  RX 니블이 2면 실효 RX NSS2(720.6 Mbps HE-MCS7)가 선다. TX와 달리 HT 티어는 상한이
+  아니다(2026-09-02 실측).
+- **광고 HT 스트림 수 = min(`mcstiercfg ht` 티어, RX 니블)** — 두 knob이 각각 상한이고
+  낮은 쪽이 광고된다. 드라이버 GET이 clamp를 그대로 표시한다:
+  `HT (11n) : 2x2 (MCS 0~15)  ->  advertised 1x1 on 5G`.
+- **광고 IE는 min으로 collapse되지 않는다** — HE/VHT의 Rx map은 RX 니블을, Tx map은
+  TX 니블을 각각 그대로 싣는다(비대칭 유지). min은 광고 층위가 아니라 링크 결과 층위의
+  현상이므로 두 층을 분리해 기술한다.
+- assoc 요청 IE의 광고 map 바이트는 HostMlme 특성상 host 측 mgmt dump로 잡히지 않고,
+  보드 netmon으로도 불가하다(association이 FW `wlan_cmd_802_11_associate` 경로라
+  rtap 탭에 노출되지 않음). **2026-09-02 OTA 실측 완료** — 절차는 아래
+  "OTA 스니퍼 절차" 참조.
 
 ## mlanutl ABI 호환성
 
@@ -314,9 +328,54 @@ mlanutl mlan0 antcfgnss 0x2121    # SET: 5Gtx=2 5Grx=1 2Gtx=2 2Grx=1 (0x 접두 
   부작용 대신 이 경로의 TX 니블을 쓴다.
 - 검증 완료(2026-08-31 실기 A/B + 2026-09-01 재실측·교차, 이슈 #41 코멘트):
   TX 니블 단독 실효(ht7 없이 intent TX1 → 실효 TX NSS1)와 방향 독립(TX1/RX2 →
-  실측 TX1·RX2) 성립, 전 칸에서 **실효 TX NSS = min(TX 니블, RX 니블)** 규칙 실측.
+  실측 TX1·RX2) 성립, 전 칸에서 `min(TX 니블, RX 니블)` 규칙 실측 — 단 이 4칸은 모두
+  `mcstiercfg ht 7` 하에서 측정돼 HT 항이 변수로 드러나지 않았다. **2026-09-02 OTA
+  실측으로 `min(ht 티어, RX 니블, TX 니블)`으로 대체됨** (위 "세 층" 절 참조).
   **적용 스코프(교차 AP 실측)**: 이 규칙은 HE(/VHT) 협상 링크의 규칙이다 — TX 니블은
   VHT/HE TX map 클램프 경유라 **HT-only 링크에서는 무효**하고, RX 니블만 작동한다
   (HT cap 1x1 광고 → FW device-wide 1SS). HT 환경에서 TX 제한이 필요하면 RX 포함
   (0x1111/0x2121)이어야 한다. reassociate 후 지속성, 음성 입력 3종 거부도 확인.
-  assoc req IE의 스니퍼 실측은 잔여(OTA 스니퍼 필요 — 보류).
+  assoc req IE의 스니퍼 실측은 **2026-09-02 완료**(#41 `issuecomment-5503070380`,
+  정정 `issuecomment-5503166256`). 광고 map 바이트가 antcfgnss 니블과 1:1 대응함을
+  A/B/A 조작 실험으로 확인했고, 같은 실측에서 위 min 규칙에 `mcstiercfg ht` 항을 추가했다.
+
+
+## OTA 스니퍼 절차 (assoc req IE 실측)
+
+광고 map 바이트는 OTA 캡처가 유일한 관측 경로다. 2026-09-02 실측에 쓴 절차를 남긴다.
+
+**모니터 인터페이스** — root는 monitor vif 생성에만 필요하고 캡처 자체에는 불필요하다
+(`dumpcap`이 `cap_net_admin,cap_net_raw`를 갖고 사용자가 `wireshark` 그룹이면 된다).
+
+```sh
+PHY=$(basename $(readlink /sys/class/net/wlan0/phy80211))
+sudo ip link set wlan0 down                                  # phy가 #channels<=1이면 필수
+sudo iw phy "$PHY" interface add mon0 type monitor
+sudo ip link set mon0 up
+sudo iw dev mon0 set freq 5220                               # 대상 AP의 primary 채널
+```
+
+**캡처·트리거**
+
+```sh
+dumpcap -i mon0 -f "type mgt" -a duration:30 -w cap.pcapng &
+ssh <board> "wpa_cli -i mlan0 bssid 0 <AP-BSSID>; wpa_cli -i mlan0 reassociate"
+tshark -r cap.pcapng -Y "wlan.fc.type_subtype==2 && wlan.sa==<STA-MAC>" -V
+```
+
+**함정**
+
+- `wpa_cli reassociate`가 내는 것은 **Reassociation Request(subtype 2)** 다.
+  `wlan.fc.type_subtype==0`(Association Request)만 필터링하면 프레임이 캡처돼 있어도 못 찾는다.
+- 동일 SSID가 여러 채널에 있으면 deauth 후 다른 채널 AP로 붙어 모니터가 보는 채널에서
+  사라진다. `wpa_cli -i mlan0 bssid 0 <BSSID>`로 고정하고, 시험 후
+  `bssid 0 00:00:00:00:00:00`으로 반드시 해제한다.
+- 스니퍼 NIC은 11ax일 필요가 없다. (re)assoc req는 legacy OFDM 레이트로 송신되므로
+  11ac 동글로도 HE Capabilities 바이트를 그대로 받는다.
+- Ubuntu `libpcap0.8`은 libnl 없이 빌드돼 `dumpcap -I`(rfmon)가 동작하지 않는다.
+  monitor vif를 `iw`로 직접 만들어야 하며, 이를 권한 문제로 오진하기 쉽다.
+
+**교차 검증** — `mlanutl <if> mcstiercfg` GET의 `advertised` 주석이 실제 OTA 광고값과
+일치함을 2026-09-02 실측에서 확인했다(`HE Rx: 0xFFF0 -> advertised 0xFFFC (NSS limit 1)`
+↔ 캡처된 `Rx HE-MCS Map <= 80 MHz: 0xfffc`). 이후에는 GET을 광고값의 1차 오라클로 쓸 수
+있으나, 새 코드 경로를 도입했을 때는 OTA로 재확인한다.
