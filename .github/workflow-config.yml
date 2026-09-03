@@ -39,7 +39,6 @@ workflows:
 
   gemini-auto-review:
     enabled: true
-    auto: true
     description: "Automatic PR review with Gemini"
 
   gemini-scheduled-triage:
@@ -53,7 +52,6 @@ workflows:
 
   claude-code-review:
     enabled: true
-    auto: true
     description: "Claude automatic PR review"
 
   # OpenCode workflows (멘션 /oc 활성, auto-review 는 미사용 유지)
