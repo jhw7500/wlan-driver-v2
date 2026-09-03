@@ -111,3 +111,5 @@ Mode of Rx path is 0x303
 
 - Notion KB: [mlanutl mcstiercfg / rate 설정 종합](https://app.notion.com/p/3678a230a04e81cd95b0cb871c336a0e)
 - Notion: [NXP moal dev_cap_mask 인터페이스별 제어](https://app.notion.com/p/3668a230a04e815e8f65d8caf9475ed2)
+
+<!-- codex connectivity smoke: 확인용 일회성 PR — 머지하지 않는다 -->
