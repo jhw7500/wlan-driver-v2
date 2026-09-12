@@ -287,3 +287,7 @@ VHT AP `jhw_wlan`(58:86:94, 5200 VHT 20MHz)과 HE AP(04:ba:d6, 5220 80MHz), 제�
 | 재적용 후 | 54M ×50 | 6M ×50 |
 
 - 의도대로 **TX 6M 고정 + RX ≤54M(AP RA)** 이 성립한다. legacy-only 는 무훅 유지, 6M 고정만 매 연결 재적용. 6M 단일 word 는 legacy 라 게이트를 안 탄다(AP rate set 에 6M 존재 전제). 로그 `.omc/research/legacy_tx6m_he_run1.log`.
+
+### 11.1a 정정 (2026-09-12) — vermagic 문자열 불일치는 적재 차단 사유가 아니었다
+
+보드 커널(`6.6.3-lts-next-gccf0a99701a7-dirty`)에 새 트리 빌드(`vermagic 6.6.3-lts-next-g1c0b4db17dce`) 모듈을 `insmod`(강제 옵션 없음)로 정상 적재·연결함을 실측했다(wlan-proc 0.6.6, srcversion 일치, 링크 정상). 이유: 보드 커널이 `CONFIG_MODVERSIONS=y` 라 `kernel/module/version.c:same_magic()`이 `__versions` 섹션이 있는 모듈에 대해 vermagic 의 **커널 릴리스 문자열 부분을 비교에서 제외**하고(첫 공백 이후의 SMP/preempt/mod_unload/modversions/aarch64 만 비교) 심볼 CRC 로 호환성을 판정한다. 따라서 §11.1 의 utsrelease overlay 는 불필요했고, "적재 불가" 예고는 오진이었다. 과거 "Invalid module format"(2018년 mlan.ko/moal.ko)은 CRC·ABI 자체가 다른 경우였다. 다른 커널 트리로 빌드한 모듈의 적재 가능 여부는 vermagic 문자열이 아니라 CRC(헤더·config 동일성)로 판단한다.
