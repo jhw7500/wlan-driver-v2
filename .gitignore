@@ -70,3 +70,10 @@ docs/superpowers/
 # clangd (호스트 종속 — 각자 빌드 시 생성)
 compile_commands.json
 .cache/
+
+# 세션 스냅샷 (session-handoff) — 레포 루트, 추적하지 않음 (추적 handoff 는 docs/*handoff*.md)
+/HANDOFF.*.md
+
+# playwright-mcp 콘솔/페이지 덤프, 루트에 떨어지는 스크린샷
+.playwright-mcp/
+/*.png
