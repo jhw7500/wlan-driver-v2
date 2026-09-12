@@ -33,8 +33,15 @@ fi
 
 #export KERNELDIR ?= /opt/sda/mini-6.6.3/imx-6.6.3-1.0.0-build/build-wayland/tmp/work/imx8mmevk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git
 #export CROSS_COMPILE?=/shared/fsl-imx-xwayland/6.6-nanbield/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
-#export KERNELDIR=${KERNELDIR:-/opt/sda/imx93/imx-6.6.3-1.0.0-build/build_fsl-imx-wayland/tmp/work/imx93_11x11_lpddr4x_evk-poky-linux/linux-imx/6.6.3+git/build}
-export KERNELDIR=${KERNELDIR:-/opt/sda/imx93/imx-6.6.3-1.0.0-build/build_fsl-imx-wayland/tmp/work/imx93_11x11_lpddr4x_evk-poky-linux/linux-imx/6.6.3+git/linux-imx-6.6.3+git}
+# Yocto linux-imx 의 out-of-tree 모듈 빌드 트리는 ${WORKDIR}/build 다(Module.symvers, .config,
+# include/generated/utsrelease.h 보유). 이전 기본값 .../6.6.3+git/linux-imx-6.6.3+git 는
+# 2026-09-10 커널 재빌드 이후 존재하지 않는다. 다른 커널 트리를 쓰려면 KERNELDIR 로 덮어쓴다.
+export KERNELDIR=${KERNELDIR:-/opt/sda/imx93/imx-6.6.3-1.0.0-build/build_fsl-imx-wayland/tmp/work/imx93_11x11_lpddr4x_evk-poky-linux/linux-imx/6.6.3+git/build}
+[ -f "${KERNELDIR}/Module.symvers" ] || {
+    echo "Sorry, KERNELDIR is not a configured kernel build tree (no Module.symvers): ${KERNELDIR}" >&2
+    exit 1
+}
+echo "make_for_imx93.sh: KERNELDIR=${KERNELDIR} ($(sed -n 's/.*"\(.*\)".*/\1/p' "${KERNELDIR}/include/generated/utsrelease.h" 2>/dev/null))"
 export CROSS_COMPILE=${CROSS_COMPILE:-${SDK_LOC}/sysroots/x86_64-pokysdk-linux/usr/bin/aarch64-poky-linux/aarch64-poky-linux-}
 
 SYSROOT=${SDK_LOC}/sysroots/${SDK_NAME}
