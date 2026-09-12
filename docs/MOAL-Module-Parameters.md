@@ -230,6 +230,7 @@ perm `0644`일 때만 sysfs 런타임 변경 가능하며, `bridge_iface`는 전
 | ✅ `bridge_keepalive_ms` | int | 0644 | 1ms | ✓ | ✓(`_present`) | fe46fea |
 | ✅ `bridge_consume_link_local` | int | 0644 | 0 | ✓ | ✗ | 69d1b43 |
 | ✅ `bridge_local_hairpin` | int | 0644 | 0(off) | ✓(sysfs) | ✗ | 81a5805 |
+| ✅ `bridge_roam_announce` | int | 0644 | 0(off) | ✓(sysfs) | ✗ | 2f442df, ebe3c22, f8a998a |
 | ✏️ `net_rx` | int | 0 | 1 | ✗ | ✓ | 의미확장 5835c85 |
 | ✅ `mgmt_hex_dump` | int | 0 | 0(off) | ✗ | ✓(per-adapter) | 8d7c2d1 |
 
@@ -426,6 +427,24 @@ association 및 active owner 전환은 target-ready evidence일 뿐 `mlan1`을 �
 data-plane 성공을 증명하지 않는다. same-MAC/multi-BSSID 환경에서 mlan1 data-plane이
 실패하는 현상은 runtime bridge policy와 별개로 추적·보고한다.
 
+### 11.11 `bridge_roam_announce` — int, 기본 0(off), perm 0644
+
+투명 L2 브리지의 로밍/링크업 완료 시 현재 WLAN `dev_addr`(클론 MAC)를 source로 한
+브로드캐스트 802.2 LLC XID Layer-2 Update 프레임을 발사한다. STA의
+`MLAN_EVENT_ID_DRV_CONNECTED`와 보안망 키 설치 후 `MLAN_EVENT_ID_FW_PORT_RELEASE`에서
+호출하며, 브리지 활성·bridge-owned BSS·WLAN ready 조건을 모두 만족할 때만 p2w 큐에
+인큐한다. 값 변경 자체는 프레임을 발사하지 않고 다음 연결 이벤트부터 적용된다.
+
+모듈 전역 정책이므로 카드 블록 단위 `wifi_mod_para.conf` 파싱은 지원하지 않는다.
+모듈 인자 `bridge_roam_announce=1` 또는 런타임
+`/sys/module/moal/parameters/bridge_roam_announce`로 제어한다. 현재 값과 인큐 누계는
+`/sys/kernel/moal_bridge/stats`의 `announce on=<0|1> tx=<N>`으로 확인한다. 실제 송신
+완료는 `bridge_debug=1`의 `bridge: announce link-up src=<MAC>` 로그와 WLAN TX 프레임
+캡처를 함께 확인한다.
+
+전체 운영·A/B·프레임 검증 절차는
+[`docs/bridge-roam-announce.md`](bridge-roam-announce.md)를 따른다.
+
 ---
 
 ## 12. 설정 우선순위 & 수명주기
@@ -576,6 +595,7 @@ PCIE9098_0 = { ... pcie_int_mode=1 net_rx=1 bridge_mode=0 bridge_debug=0 ... }
 | `06bc662` | 2026-04-17 | keepalive `_present` 버그 수정(explicit off 존중) |
 | `69d1b43` | 2026-05-08 | `bridge_consume_link_local` 신규(RXDROP 트리아지) |
 | `8d7c2d1` | 2026-05-14 | `mgmt_hex_dump` 신규(`/proc/mwlan/adapter*/mgmt_dump` 256KB ring) |
+| `2f442df` / `ebe3c22` / `f8a998a` | 2026-09-01 | `bridge_roam_announce` 구현, 기본-off 게이트, module-param-only 범위 확정 |
 
 ---
 
@@ -590,6 +610,10 @@ insmod moal.ko ... bridge_mode=1 bridge_peer=eth0
 
 # 브릿지 디버깅 (런타임)
 echo 1 > /sys/module/moal/parameters/bridge_debug
+
+# 로밍/링크업 clone-MAC L2 announce 활성화 및 상태 확인 (런타임)
+echo 1 > /sys/module/moal/parameters/bridge_roam_announce
+grep -E '^(active=|announce |iface=)' /sys/kernel/moal_bridge/stats
 
 # modprobe 설정 파일 (/etc/modprobe.d/mrvl.conf)
 options moal drv_mode=3 max_sta_bss=1 max_uap_bss=1 cfg80211_wext=0xf
