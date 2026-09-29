@@ -139,6 +139,10 @@ apf_ping_echo = c_function(
 passphrase_ioctl = c_function(
     eth_ioctl_c, "static int woal_setget_priv_passphrase"
 )
+get_txpwrlimit = c_function(
+    eth_ioctl_c, "static int woal_priv_get_txpwrlimit"
+)
+get_txpwrlimit_code = re.sub(r"\s+", "", c_code(get_txpwrlimit))
 ssu_store_start = main_c.rfind("t_void woal_store_ssu_dump")
 ssu_store = c_function(
     main_c[ssu_store_start:], "t_void woal_store_ssu_dump"
@@ -146,6 +150,21 @@ ssu_store = c_function(
 ssu_read = c_function(proc_c, "static int woal_ssu_dump_read")
 proc_exit = c_function(proc_c, "void woal_proc_exit")
 add_card = c_function(main_c, "moal_handle *woal_add_card")
+
+
+trpc_wire_header = "sizeof(t_u16)+sizeof(t_u16)"
+require(
+    f"moal_memcpy_ext(priv->phandle,pos,&misc->param.trpc_cfg,{trpc_wire_header},"
+    in get_txpwrlimit_code
+    and f"pos+={trpc_wire_header};" in get_txpwrlimit_code
+    and (
+        "moal_memcpy_ext(priv->phandle,pos,misc->param.trpc_cfg.trpc_buf,"
+        "misc->param.trpc_cfg.length,"
+    )
+    in get_txpwrlimit_code
+    and "pt_base_version" not in get_txpwrlimit_code,
+    "get_txpwrlimit leaks internal pt_base_version into the legacy private-command ABI",
+)
 
 
 def ssu_dump_access_is_serialized(

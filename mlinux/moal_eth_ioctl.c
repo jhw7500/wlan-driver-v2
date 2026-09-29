@@ -8715,10 +8715,16 @@ static int woal_priv_get_txpwrlimit(moal_private *priv, t_u8 *respbuf,
 	ret = header_len + sizeof(t_u16) + sizeof(t_u16) +
 	      misc->param.trpc_cfg.length;
 	pos = respbuf + header_len;
+	/* pt_base_version is internal MLAN metadata. Keep the private command
+	 * response ABI as sub_band, length, trpc_buf for existing utilities.
+	 */
 	moal_memcpy_ext(priv->phandle, pos, &misc->param.trpc_cfg,
-			sizeof(t_u16) + sizeof(t_u16) +
-				misc->param.trpc_cfg.length,
+			sizeof(t_u16) + sizeof(t_u16),
 			respbuflen - header_len);
+	pos += sizeof(t_u16) + sizeof(t_u16);
+	moal_memcpy_ext(priv->phandle, pos, misc->param.trpc_cfg.trpc_buf,
+			misc->param.trpc_cfg.length,
+			respbuflen - header_len - sizeof(t_u16) - sizeof(t_u16));
 done:
 	if (status != MLAN_STATUS_PENDING)
 		kfree(req);
