@@ -827,7 +827,7 @@ static int moal_bridge_loop_repeat(struct moal_bridge *br, bool w2p,
 	h = jhash(l2, min_t(unsigned int, linear, MOAL_BR_LOOP_HASH_LEN),
 		  MOAL_BR_LOOP_SEED ^ frame_len);
 	idx = jhash_1word(h, MOAL_BR_LOOP_SEED);
-	switch (moal_bridge_loopguard_observe(lg, h, idx, (u32)jiffies,
+	switch (moal_bridge_loopguard_observe(lg, h, idx, (u64)jiffies,
 					     (u32)msecs_to_jiffies(MOAL_BR_LOOP_WIN_MS))) {
 	case MOAL_BR_LOOP_DUP:
 		atomic_long_inc(dup);

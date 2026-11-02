@@ -24,6 +24,15 @@
  * the two directions cannot happen (they use separate tables); a lost race
  * between two frames of the same direction under-counts, it never drops a
  * frame that was not a repeat.
+ *
+ * Sweep: a slot keeps only 24 tick bits, so a slot left untouched for a whole
+ * 2^24-tick period (4.66 h at HZ=1000) would alias back into its window and a
+ * sparse same-key frame could be dropped. The table is therefore zeroed on the
+ * first observation that comes MOAL_BR_LOOP_SWEEP_TICKS (half a period) or
+ * more after the previous sweep; no slot is ever consulted when it is older
+ * than that, so the masked elapsed time is always the true one. A loop that
+ * straddles a sweep gets MOAL_BR_LOOP_K-1 extra frames through, once per sweep
+ * interval.
  */
 
 #ifndef _MOAL_BRIDGE_LOOPGUARD_H
@@ -33,9 +42,11 @@
 #define MOAL_BR_LOOP_K 3 /* n-th identical frame within the window is dropped */
 #define MOAL_BR_LOOP_TICK_MASK 0xffffffu
 #define MOAL_BR_LOOP_CNT_MAX 0xffu
+#define MOAL_BR_LOOP_SWEEP_TICKS (1u << 23) /* zero the table this often: half the tick period */
 
 struct moal_bridge_loopguard {
 	u64 slot[MOAL_BR_LOOP_SLOTS];
+	u64 sweep_tick; /* full-width tick of the last sweep */
 };
 
 enum moal_br_loop_verdict {
@@ -45,11 +56,29 @@ enum moal_br_loop_verdict {
 };
 
 /**
+ * moal_bridge_loopguard_sweep - forget every slot
+ * @lg:  per-direction table
+ * @now: current tick, full-width jiffies
+ *
+ * Lock-free like the slots: a producer writing concurrently may lose its slot,
+ * which only under-counts.
+ */
+static inline void moal_bridge_loopguard_sweep(struct moal_bridge_loopguard *lg, u64 now)
+{
+	unsigned int i;
+
+	WRITE_ONCE(lg->sweep_tick, now);
+	for (i = 0; i < MOAL_BR_LOOP_SLOTS; i++)
+		WRITE_ONCE(lg->slot[i], 0);
+}
+
+/**
  * moal_bridge_loopguard_observe - record one unicast frame and judge it
  * @lg:    per-direction table
  * @tag:   32-bit frame hash (identity of the frame bytes)
  * @idx:   slot index candidate; masked to the table size here
- * @now24: current tick, low 24 bits of jiffies (caller truncates)
+ * @now:   current tick, full-width jiffies; the slot keeps its low 24 bits and
+ *         the sweep clock uses the full value
  * @win:   window length in ticks; the window is fixed from the first sighting
  *
  * The caller has already excluded group addresses and checked the runtime
@@ -57,15 +86,19 @@ enum moal_br_loop_verdict {
  */
 static inline enum moal_br_loop_verdict
 moal_bridge_loopguard_observe(struct moal_bridge_loopguard *lg, u32 tag, u32 idx,
-			      u32 now24, u32 win)
+			      u64 now, u32 win)
 {
 	u64 *slot = &lg->slot[idx & (MOAL_BR_LOOP_SLOTS - 1)];
-	u64 cur = READ_ONCE(*slot);
-	u32 slot_tag = (u32)(cur >> 32);
-	u32 slot_tick = (u32)(cur >> 8) & MOAL_BR_LOOP_TICK_MASK;
-	u32 cnt = (u32)(cur & MOAL_BR_LOOP_CNT_MAX);
+	u32 now24 = (u32)now & MOAL_BR_LOOP_TICK_MASK;
+	u64 cur;
+	u32 slot_tag, slot_tick, cnt;
 
-	now24 &= MOAL_BR_LOOP_TICK_MASK;
+	if (now - READ_ONCE(lg->sweep_tick) >= MOAL_BR_LOOP_SWEEP_TICKS)
+		moal_bridge_loopguard_sweep(lg, now);
+	cur = READ_ONCE(*slot);
+	slot_tag = (u32)(cur >> 32);
+	slot_tick = (u32)(cur >> 8) & MOAL_BR_LOOP_TICK_MASK;
+	cnt = (u32)(cur & MOAL_BR_LOOP_CNT_MAX);
 	if (cnt && slot_tag == tag &&
 	    ((now24 - slot_tick) & MOAL_BR_LOOP_TICK_MASK) <= win) {
 		if (cnt < MOAL_BR_LOOP_CNT_MAX)

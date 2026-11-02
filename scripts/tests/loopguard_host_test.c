@@ -17,7 +17,7 @@ static int fails;
 
 int main(void)
 {
-	struct moal_bridge_loopguard lg = { { 0 } };
+	struct moal_bridge_loopguard lg = { { 0 }, 0 };
 	const u32 win = 50;	/* window in ticks */
 	enum moal_br_loop_verdict v1, v2, v3, v4;
 
@@ -43,9 +43,10 @@ int main(void)
 	EXPECT(v1 == MOAL_BR_LOOP_PASS && v2 == MOAL_BR_LOOP_DUP && v3 == MOAL_BR_LOOP_PASS,
 	       "repeat at the window edge counts, repeat past the window restarts");
 
-	/* 4. 24-bit tick wrap-around inside the window still matches */
-	v1 = moal_bridge_loopguard_observe(&lg, 0x44444444u, 3, 0xfffffeu, win);
-	v2 = moal_bridge_loopguard_observe(&lg, 0x44444444u, 3, 0x000001u, win);
+	/* 4. 24-bit tick wrap-around inside the window still matches (jiffies keeps
+	 *    counting past the 24-bit boundary; only the slot truncates) */
+	v1 = moal_bridge_loopguard_observe(&lg, 0x44444444u, 3, 0x00fffffeu, win);
+	v2 = moal_bridge_loopguard_observe(&lg, 0x44444444u, 3, 0x01000001u, win);
 	EXPECT(v1 == MOAL_BR_LOOP_PASS && v2 == MOAL_BR_LOOP_DUP, "tick wrap-around within window matches");
 
 	/* 5. counter saturates without wrapping back to pass */
@@ -61,6 +62,21 @@ int main(void)
 	v1 = moal_bridge_loopguard_observe(&lg, 0x66666666u, MOAL_BR_LOOP_SLOTS + 1, 6000, win);
 	v2 = moal_bridge_loopguard_observe(&lg, 0x66666666u, 1, 6001, win);
 	EXPECT(v1 == MOAL_BR_LOOP_PASS && v2 == MOAL_BR_LOOP_DUP, "index beyond the table wraps onto the same slot");
+
+	/* 7. a stale slot must not alias into the window one full 24-bit tick
+	 *    period later (Codex review on PR #118): frames at 1000 and 1001, then
+	 *    the same key 2^24 ticks (4.66 h at HZ=1000) after the first one */
+	v1 = moal_bridge_loopguard_observe(&lg, 0x77777777u, 11, 1000, win);
+	v2 = moal_bridge_loopguard_observe(&lg, 0x77777777u, 11, 1001, win);
+	v3 = moal_bridge_loopguard_observe(&lg, 0x77777777u, 11, 1000 + (1u << 24), win);
+	EXPECT(v1 == MOAL_BR_LOOP_PASS && v2 == MOAL_BR_LOOP_DUP && v3 == MOAL_BR_LOOP_PASS,
+	       "same key one full tick period later is a fresh sighting, not a drop");
+
+	/* 8. detection keeps working after the table was swept */
+	v1 = moal_bridge_loopguard_observe(&lg, 0x77777777u, 11, 1000 + (1u << 24) + 1, win);
+	v2 = moal_bridge_loopguard_observe(&lg, 0x77777777u, 11, 1000 + (1u << 24) + 2, win);
+	EXPECT(v1 == MOAL_BR_LOOP_DUP && v2 == MOAL_BR_LOOP_DROP,
+	       "repeats right after a sweep still count: dup, drop");
 
 	printf("loopguard host test: %d failure(s)\n", fails);
 	return fails ? 1 : 0;
