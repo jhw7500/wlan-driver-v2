@@ -21,6 +21,7 @@
 #include <linux/kthread.h>
 #include <linux/wait.h>
 #include <linux/hrtimer.h>
+#include "moal_bridge_loopguard.h"
 
 #define MOAL_BR_W2P_QUEUE_MAX 512
 #define MOAL_BR_P2W_QUEUE_MAX 512
@@ -72,6 +73,18 @@ struct moal_bridge {
 	/** 로밍/링크업 announce: 클론 MAC 소스 L2 update 프레임의 p2w 인큐
 	 *  성공 횟수. 보드 실측 게이트(로밍 직후 발화 여부)의 관측 지표. */
 	atomic_long_t announce_tx;
+
+	/** Loop guard (#117, bridge_loop_guard=1): per-direction duplicate
+	 *  suppression of L2 unicast (moal_bridge_loopguard.h). dup = 2nd
+	 *  identical frame inside the window (still forwarded), drop =
+	 *  MOAL_BR_LOOP_K-th or later (dropped; also added to that direction's
+	 *  dropped counter). Tables are zeroed by the kzalloc of *br. */
+	struct moal_bridge_loopguard lg_w2p;
+	struct moal_bridge_loopguard lg_p2w;
+	atomic_long_t loop_dup_w2p;
+	atomic_long_t loop_drop_w2p;
+	atomic_long_t loop_dup_p2w;
+	atomic_long_t loop_drop_p2w;
 
 	/** w2p (WLAN→ETH) */
 	struct sk_buff_head w2p_queue;
@@ -167,5 +180,12 @@ extern int bridge_local_hairpin;
  *  기본 0 — 실기 미검증 기능의 opt-in 게이트. 전역 정책이라 module param
  *  전용(카드 블록 단위 mod_para conf 미지원 — 스코프 오해 방지). */
 extern int bridge_roam_announce;
+
+/** bridge_loop_guard: moal_init.c module param (0644, runtime 변경 가능).
+ *  1(기본) 이면 방향별로 앞 128 B 와 길이가 같은 L2 유니캐스트가 첫 관측부터
+ *  50 ms 창 안에 MOAL_BR_LOOP_K 번째 나타날 때 버린다(그 뒤 바이트는 비교하지
+ *  않는다) — 브리지 두 대가 같은 유선 세그먼트·같은 ESS 에 있을 때 생기는
+ *  순환(#117) 차단. 0 은 A/B 대조군. */
+extern int bridge_loop_guard;
 
 #endif /* _MOAL_BRIDGE_H_ */

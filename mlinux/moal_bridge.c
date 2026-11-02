@@ -14,6 +14,7 @@
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
 #include <linux/freezer.h>
+#include <linux/jhash.h>
 
 /** DBDC guard: only one bridge instance allowed globally */
 static atomic_t bridge_instance_active = ATOMIC_INIT(0);
@@ -798,6 +799,51 @@ static bool moal_bridge_arp_is_for_self(struct moal_bridge *br,
 }
 
 /*
+ * ---------- Loop guard (#117) ----------
+ * Rule and slot logic: moal_bridge_loopguard.h. Both producers call this with
+ * the L2 header pointer, the linear bytes available from it and the frame
+ * length. Frames to group addresses are never judged, so broadcast/multicast
+ * forwarding is unchanged. Returns 1 when the frame is a repeat that must be
+ * dropped; the caller frees the skb and bumps its direction's dropped counter.
+ */
+#define MOAL_BR_LOOP_HASH_LEN 128u	/* bytes hashed from the L2 header */
+#define MOAL_BR_LOOP_WIN_MS 50u		/* fixed window from first sighting */
+#define MOAL_BR_LOOP_SEED 0x6c6f6f70u	/* "loop" */
+
+static int moal_bridge_loop_repeat(struct moal_bridge *br, bool w2p,
+				   const unsigned char *l2, unsigned int linear,
+				   unsigned int frame_len)
+{
+	const struct ethhdr *eth = (const struct ethhdr *)l2;
+	struct moal_bridge_loopguard *lg = w2p ? &br->lg_w2p : &br->lg_p2w;
+	atomic_long_t *dup = w2p ? &br->loop_dup_w2p : &br->loop_dup_p2w;
+	atomic_long_t *drop = w2p ? &br->loop_drop_w2p : &br->loop_drop_p2w;
+	u32 h, idx;
+
+	if (!READ_ONCE(bridge_loop_guard))
+		return 0;
+	if (linear < ETH_HLEN || is_multicast_ether_addr(eth->h_dest))
+		return 0;
+	h = jhash(l2, min_t(unsigned int, linear, MOAL_BR_LOOP_HASH_LEN),
+		  MOAL_BR_LOOP_SEED ^ frame_len);
+	idx = jhash_1word(h, MOAL_BR_LOOP_SEED);
+	switch (moal_bridge_loopguard_observe(lg, h, idx, (u64)jiffies,
+					     (u32)msecs_to_jiffies(MOAL_BR_LOOP_WIN_MS))) {
+	case MOAL_BR_LOOP_DUP:
+		atomic_long_inc(dup);
+		return 0;
+	case MOAL_BR_LOOP_DROP:
+		atomic_long_inc(drop);
+		BR_DBG("%s LOOP drop dst=%pM src=%pM proto=0x%04x len=%u\n",
+		       w2p ? "w2p" : "p2w", eth->h_dest, eth->h_source,
+		       ntohs(eth->h_proto), frame_len);
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/*
  * ---------- WLAN → ETH Forwarding ----------
  */
 
@@ -912,6 +958,14 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 					kfree_skb(skb);
 					return 1;
 				}
+				if (moal_bridge_loop_repeat(br, true, skb->data,
+							    skb_headlen(skb),
+							    skb->len)) {
+					atomic_long_inc(
+						&br->wlan_to_peer.dropped);
+					kfree_skb(skb);
+					return 1; /* consumed: loop repeat */
+				}
 				if (atomic_inc_return(&br->w2p_qlen) >
 				    MOAL_BR_W2P_QUEUE_MAX) {
 					atomic_dec(&br->w2p_qlen);
@@ -935,6 +989,12 @@ int moal_bridge_rx_fast(struct moal_bridge *br, struct sk_buff *skb, void *priv)
 	/* Multicast/Broadcast, 비IPv4 유니캐스트, 또는 iph pull 실패 →
 	 * clone + 원본 스택 배달 */
 	if (unlikely(!moal_bridge_dev_ready(br->peer_dev))) {
+		atomic_long_inc(&br->wlan_to_peer.dropped);
+	} else if (moal_bridge_loop_repeat(br, true, skb->data,
+					   skb_headlen(skb), skb->len)) {
+		/* loop repeat: no clone to the peer; the original still goes
+		 * to the local stack below (unicast only — group addresses are
+		 * never judged) */
 		atomic_long_inc(&br->wlan_to_peer.dropped);
 	} else {
 		struct sk_buff *skb2 = skb_clone(skb, GFP_ATOMIC);
@@ -1371,6 +1431,16 @@ moal_bridge_peer_rx_handler(struct sk_buff **pskb)
 			*pskb = NULL;
 			return RX_HANDLER_CONSUMED;
 		}
+		if (moal_bridge_loop_repeat(br, false, (const unsigned char *)eth,
+					    skb_headlen(skb) +
+						    (skb->data - (unsigned char *)eth),
+					    skb->len +
+						    (skb->data - (unsigned char *)eth))) {
+			atomic_long_inc(&br->peer_to_wlan.dropped);
+			kfree_skb(skb);
+			*pskb = NULL;
+			return RX_HANDLER_CONSUMED;
+		}
 		if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
 			atomic_dec(&br->p2w_qlen);
 			atomic_long_inc(&br->peer_to_wlan.dropped);
@@ -1543,6 +1613,17 @@ static int moal_bridge_peer_pt_func(struct sk_buff *skb,
 		return 0;
 	}
 
+	{
+		const unsigned char *l2 = skb_mac_header(skb);
+		unsigned int off = skb->data - l2;
+
+		if (moal_bridge_loop_repeat(br, false, l2, skb_headlen(skb) + off,
+					    skb->len + off)) {
+			atomic_long_inc(&br->peer_to_wlan.dropped);
+			dev_kfree_skb_any(skb);
+			return 0;
+		}
+	}
 	if (atomic_inc_return(&br->p2w_qlen) > MOAL_BR_P2W_QUEUE_MAX) {
 		atomic_dec(&br->p2w_qlen);
 		atomic_long_inc(&br->peer_to_wlan.dropped);
@@ -1855,6 +1936,7 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 "tx_write avg=%ldus max=%ldus n=%ld\n"
 			 "hairpin on=%d tx_fwd=%ld arp_tee=%ld arp_inject=%ld\n"
 			 "announce on=%d tx=%ld\n"
+			 "loop on=%d w2p_dup=%ld w2p_drop=%ld p2w_dup=%ld p2w_drop=%ld\n"
 			 "iface=%s peer=%s pending_iface=%s pending_state=%s\n"
 			 "switch_ok=%ld switch_fail=%ld rollback_ok=%ld rollback_fail=%ld\n",
 			 atomic_long_read(&br->wlan_to_peer.fwd_packets),
@@ -1893,6 +1975,11 @@ static ssize_t stats_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 atomic_long_read(&br->hairpin_arp_inject),
 			 READ_ONCE(bridge_roam_announce),
 			 atomic_long_read(&br->announce_tx),
+			 READ_ONCE(bridge_loop_guard),
+			 atomic_long_read(&br->loop_dup_w2p),
+			 atomic_long_read(&br->loop_drop_w2p),
+			 atomic_long_read(&br->loop_dup_p2w),
+			 atomic_long_read(&br->loop_drop_p2w),
 			 wlan_name,
 			 peer_name,
 			 pending_name,

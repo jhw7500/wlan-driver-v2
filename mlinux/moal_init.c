@@ -117,6 +117,10 @@ int bridge_local_hairpin;
  *  opt-in 게이트 — 기본 0(미사용). module param 전용(전역 정책이므로 카드
  *  블록 단위인 mod_para conf 에 두지 않는다). runtime 변경 가능 (0644). */
 int bridge_roam_announce;
+/** Loop guard (#117): per-direction duplicate suppression of L2 unicast so
+ *  a mis-wired bridge pair (same wired segment, same ESS) cannot keep a frame
+ *  circulating. 1 = on (default), 0 = off (A/B control). runtime (0644). */
+int bridge_loop_guard = 1;
 int bridge_keepalive_ms = 1;
 /** bridge_keepalive_idle_ms: adaptive keepalive idle cutoff (ms).
  *  0 = legacy free-running timer (default), >0 = self-stop after idle. */
@@ -3992,6 +3996,8 @@ module_param(bridge_local_hairpin, int, 0644);
 MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=divert local TX(dst==own/clone MAC) to peer + ARP tee/inject. Enables BD<->wired-peer IP comm without peer IP knowledge (runtime changeable). Fleet precondition: apply wlan iface arp_ignore=1 seal (wlan-package) or weak-host ARP opens on air — driver warns once via dmesg if unsealed");
 module_param(bridge_roam_announce, int, 0644);
 MODULE_PARM_DESC(bridge_roam_announce, "Bridge roam announce: 0=off(default), 1=fire clone-MAC sourced L2 update frame on roam/link-up so upstream wired switches re-learn toward the new AP port (runtime changeable)");
+module_param(bridge_loop_guard, int, 0644);
+MODULE_PARM_DESC(bridge_loop_guard, "Bridge loop guard: 1=on(default) drop an L2 unicast frame whose first 128 bytes and length repeat 3 times within a fixed 50 ms window in the same direction (breaks the two-bridge same-segment loop, issue 117; group addresses exempt; a sustained same-key stream passes 2 frames per window), 0=off (A/B control, runtime changeable)");
 module_param(wifi_reset_config, int, 0);
 MODULE_PARM_DESC(
 	wifi_reset_config,
