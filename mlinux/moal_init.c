@@ -3997,7 +3997,7 @@ MODULE_PARM_DESC(bridge_local_hairpin, "Bridge local hairpin: 0=off(default), 1=
 module_param(bridge_roam_announce, int, 0644);
 MODULE_PARM_DESC(bridge_roam_announce, "Bridge roam announce: 0=off(default), 1=fire clone-MAC sourced L2 update frame on roam/link-up so upstream wired switches re-learn toward the new AP port (runtime changeable)");
 module_param(bridge_loop_guard, int, 0644);
-MODULE_PARM_DESC(bridge_loop_guard, "Bridge loop guard: 1=on(default) drop an L2 unicast frame that repeats byte-identically 3 times within 50 ms in the same direction (breaks the two-bridge same-segment loop, issue 117; group addresses exempt), 0=off (A/B control, runtime changeable)");
+MODULE_PARM_DESC(bridge_loop_guard, "Bridge loop guard: 1=on(default) drop an L2 unicast frame whose first 128 bytes and length repeat 3 times within a fixed 50 ms window in the same direction (breaks the two-bridge same-segment loop, issue 117; group addresses exempt; a sustained same-key stream passes 2 frames per window), 0=off (A/B control, runtime changeable)");
 module_param(wifi_reset_config, int, 0);
 MODULE_PARM_DESC(
 	wifi_reset_config,

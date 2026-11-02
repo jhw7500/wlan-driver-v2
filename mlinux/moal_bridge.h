@@ -182,9 +182,10 @@ extern int bridge_local_hairpin;
 extern int bridge_roam_announce;
 
 /** bridge_loop_guard: moal_init.c module param (0644, runtime 변경 가능).
- *  1(기본) 이면 방향별로 바이트까지 같은 L2 유니캐스트가 50 ms 창 안에
- *  MOAL_BR_LOOP_K 번째 나타날 때 버린다 — 브리지 두 대가 같은 유선 세그먼트·
- *  같은 ESS 에 있을 때 생기는 순환(#117) 차단. 0 은 A/B 대조군. */
+ *  1(기본) 이면 방향별로 앞 128 B 와 길이가 같은 L2 유니캐스트가 첫 관측부터
+ *  50 ms 창 안에 MOAL_BR_LOOP_K 번째 나타날 때 버린다(그 뒤 바이트는 비교하지
+ *  않는다) — 브리지 두 대가 같은 유선 세그먼트·같은 ESS 에 있을 때 생기는
+ *  순환(#117) 차단. 0 은 A/B 대조군. */
 extern int bridge_loop_guard;
 
 #endif /* _MOAL_BRIDGE_H_ */

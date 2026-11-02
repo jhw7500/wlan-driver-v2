@@ -8,9 +8,12 @@
  * MAC-based rules cannot separate loop traffic from client traffic here: the
  * driver has no clone-mode flag and STA RX h_dest is always its own MAC.
  * Instead each direction remembers a hash of recently forwarded L2 unicast
- * frames and drops a byte-identical frame seen MOAL_BR_LOOP_K times within a
- * fixed window that starts at the first sighting. Group addresses are exempt,
- * so broadcast/multicast forwarding is untouched.
+ * frames (key: first 128 bytes plus frame length, hashed in moal_bridge.c;
+ * bytes past 128 are not compared) and drops a frame whose key is seen
+ * MOAL_BR_LOOP_K times within a fixed window that starts at the first
+ * sighting. Group addresses are exempt, so broadcast/multicast forwarding is
+ * untouched. A sustained stream of same-key frames passes MOAL_BR_LOOP_K-1
+ * frames per window and loses the rest.
  *
  * This header holds only the slot logic so it can be unit-tested on the host
  * (scripts/tests/loopguard_host_test.sh); hashing the skb, reading jiffies and
