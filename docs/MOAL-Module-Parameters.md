@@ -231,6 +231,7 @@ perm `0644`일 때만 sysfs 런타임 변경 가능하며, `bridge_iface`는 전
 | ✅ `bridge_consume_link_local` | int | 0644 | 0 | ✓ | ✗ | 69d1b43 |
 | ✅ `bridge_local_hairpin` | int | 0644 | 0(off) | ✓(sysfs) | ✗ | 81a5805 |
 | ✅ `bridge_roam_announce` | int | 0644 | 0(off) | ✓(sysfs) | ✗ | 2f442df, ebe3c22, f8a998a |
+| ✅ `bridge_loop_guard` | int | 0644 | 1(on) | ✓(sysfs) | ✗ | #117 |
 | ✏️ `net_rx` | int | 0 | 1 | ✗ | ✓ | 의미확장 5835c85 |
 | ✅ `mgmt_hex_dump` | int | 0 | 0(off) | ✗ | ✓(per-adapter) | 8d7c2d1 |
 
@@ -444,6 +445,23 @@ data-plane 성공을 증명하지 않는다. same-MAC/multi-BSSID 환경에서 m
 
 전체 운영·A/B·프레임 검증 절차는
 [`docs/bridge-roam-announce.md`](bridge-roam-announce.md)를 따른다.
+
+### 11.12 `bridge_loop_guard` — int, 기본 1(on), perm 0644
+
+브리지 두 대의 peer(eth0)가 같은 유선 세그먼트에 있고 두 STA가 같은 ESS에 붙으면
+유선↔무선 경로가 둘이 되어 프레임이 순환한다(#117). AP가 멀티캐스트를 STA별
+유니캐스트로 바꿔 보내므로 순환하는 것은 L2 유니캐스트다. 이 가드는 방향(w2p·p2w)별로
+최근 포워딩한 L2 유니캐스트의 해시(앞 128 B + 길이)를 기억하고, 바이트까지 같은
+프레임이 첫 관측부터 50 ms 안에 세 번째로 나타나면 버린다. 그룹 주소(브로드캐스트·
+멀티캐스트)는 판정하지 않으므로 1:1 결선의 브로드캐스트 포워딩은 바뀌지 않는다.
+
+드라이버에는 클론 모드 플래그가 없고 STA RX의 `h_dest`는 항상 자기 MAC이라 MAC 기반
+규칙은 쓸 수 없다. 그래서 모드와 무관한 중복 억제를 채택했다. 판정 로직은
+`mlinux/moal_bridge_loopguard.h`에 있고 호스트 테스트 `scripts/tests/loopguard_host_test.sh`가
+고정한다. 런타임 `/sys/module/moal/parameters/bridge_loop_guard`로 끄면(0) 같은 .ko에서
+A/B 대조군이 된다. 감지·폐기 누계는 `/sys/kernel/moal_bridge/stats`의
+`loop on=<0|1> w2p_dup= w2p_drop= p2w_dup= p2w_drop=` 줄이며, 폐기는 해당 방향의 `drop=`에도
+더해진다. 한계·검증 절차는 [`docs/moal-bridge-loop-guard.md`](moal-bridge-loop-guard.md).
 
 ---
 
