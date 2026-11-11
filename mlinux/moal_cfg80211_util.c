@@ -7957,7 +7957,8 @@ void woal_rtt_pmsr_work_handler(struct work_struct *work)
 				NL80211_PMSR_STATUS_SUCCESS :
 				NL80211_PMSR_STATUS_FAILURE;
 	result.ftm.rtt_avg = saved.rtt;
-	result.ftm.dist_avg = (s64)saved.distance_mm * 256;
+	/* NL80211_PMSR_FTM_RESP_ATTR_DIST_AVG is integer millimetres. */
+	result.ftm.dist_avg = saved.distance_mm;
 	result.ftm.num_ftmr_attempts = saved.burst_num;
 	result.ftm.num_ftmr_successes = saved.success_number;
 	result.ftm.rtt_avg_valid = result.ftm.dist_avg_valid = 1;

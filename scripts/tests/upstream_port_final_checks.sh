@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
-# Compile selected production MOAL paths with host-only kernel/firmware doubles.
+# Link production MLAN conversion and selected MOAL paths with host-only doubles.
 # The fixture never opens sockets, accesses a device, or builds a kernel/SDK.
 rtt_host_regressions() {
 python3 - "$ROOT" <<'PY_RTT'
@@ -130,7 +130,8 @@ static struct workqueue_struct host_queue;
 static int auto_result=1,stop_failure,cfg_fail_peer=-1,start_fail_peer=-1;
 static int started[32],start_count,stop_count,event_count,event_peers,event_version,cancel_calls;
 static int wait_hook,hook_error,timeout_count,report_count,complete_count;
-static s64 reported_distance;
+static s64 reported_distance,reported_rtt;
+void host_convert_ftm(t_u32 tof,wifi_rtt_result_v3 *result);
 static struct cfg80211_pmsr_request *finished_request;
 void woal_rtt_ap_result_received(moal_private *priv,t_u8 *data,int len);
 static void emit_result(moal_private *priv,int peer);
@@ -232,7 +233,8 @@ struct cfg80211_pmsr_result {
 #define NL80211_PMSR_STATUS_FAILURE 1
 static void cfg80211_pmsr_report(struct wireless_dev *w,struct cfg80211_pmsr_request *req,struct cfg80211_pmsr_result *result,int gfp) {
     (void)w;(void)gfp;assert(req && req!=finished_request);report_count++;reported_distance=result->ftm.dist_avg;
-    assert(result->ftm.rtt_avg==123 && result->ftm.num_ftmr_successes==4);
+    reported_rtt=result->ftm.rtt_avg;
+    assert(result->ftm.rtt_avg_valid && result->ftm.dist_avg_valid && result->ftm.num_ftmr_successes==4);
 }
 static void cfg80211_pmsr_complete(struct wireless_dev *w,struct cfg80211_pmsr_request *req,int gfp) {
     (void)w;(void)gfp;assert(req && req!=finished_request);complete_count++;finished_request=req;
@@ -252,6 +254,20 @@ static int woal_request_ioctl(moal_private *p,mlan_ioctl_req *r,int wait) {
 }
 '''
 test_helpers = r'''static int check(int ok,const char *message);
+/* Literal expectations follow the current one-way-ps MLAN contract and the
+ * cfg80211 millimetre ABI, not the expressions being tested. Firmware units
+ * still require independent device/vendor qualification. */
+static const struct tof_case { t_u32 tof; t_s64 rtt; int mm; } tof_cases[] = {
+    {0,0,0}, {1,2,0}, {3,6,0}, {4,8,1}, {10,20,3},
+    {3333,6666,999}, {10000,20000,3000},
+    {4294967295U,8589934590LL,1288490188}
+};
+static void emit_ftm_measurement(moal_private *priv,const wifi_rtt_result_v3 *result) {
+    t_u8 data[1+sizeof(wifi_rtt_result_element)+sizeof(*result)]={0};
+    wifi_rtt_result_element elem={0};elem.len=sizeof(*result);
+    memcpy(data+1,&elem,sizeof(elem));memcpy(data+1+sizeof(elem),result,sizeof(*result));
+    woal_rtt_ap_result_received(priv,data,sizeof(data));
+}
 static int perform_cancel(struct wiphy *w,struct wireless_dev *d,int a,int b) {
     struct cancel_input input={0};input.count=b?2:1;input.peers[0][0]=2;input.peers[0][5]=a;
     if(b){input.peers[1][0]=2;input.peers[1][5]=b;}
@@ -332,7 +348,14 @@ tests = r'''static int check(int ok,const char *message) { if(!ok)fprintf(stderr
 int main(int argc,char **argv) {
     moal_handle h;moal_private p;struct wiphy w;struct wireless_dev d;struct net_device n;
     int fail=0;assert(argc==2);init_fixture(&h,&p,&w,&d,&n);
-    if(!strcmp(argv[1],"v1-copy")) {
+    if(!strcmp(argv[1],"vendor-distance-units")) {
+        for(size_t i=0;i<sizeof(tof_cases)/sizeof(tof_cases[0]);i++) {
+            wifi_rtt_result_v3 converted={0};host_convert_ftm(tof_cases[i].tof,&converted);
+            wifi_rtt_result *value=&converted.rtt_result_v2.rtt_result;
+            fail+=check(value->rtt==tof_cases[i].rtt,"production MLAN converts ToF to RTT in ps");
+            fail+=check(value->distance_mm==tof_cases[i].mm,"production vendor result is in mm, including u32 maximum");
+        }
+    } else if(!strcmp(argv[1],"v1-copy")) {
         for(int count=1;count<=MAX_RTT_CONFIG_NUM;count+=MAX_RTT_CONFIG_NUM-1) {
             input_v1.rtt_config_num=count;input_v1.rtt_config[count-1].bw=WIFI_RTT_BW_80;
             fail+=check(!woal_cfg80211_subcmd_rtt_range_request(&w,&d,&input_v1,sizeof(input_v1)),"v1 request accepted");
@@ -425,6 +448,19 @@ int main(int argc,char **argv) {
         queue_accept=0;fail+=check(submit_targets(&w,&d,1,1)==-EBUSY,"queue failure returned to caller");
         fail+=check(h.rtt_owner==RTT_OWNER_IDLE && h.rtt_priv==NULL,"queue failure releases unpublished work");
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4,20,0)
+    } else if(!strcmp(argv[1],"pmsr-distance-units")) {
+        struct ieee80211_channel channel={5180};struct cfg80211_pmsr_request req={0};
+        req.n_peers=1;req.peers[0].addr[0]=2;req.peers[0].addr[5]=1;req.peers[0].chandef.chan=&channel;
+        auto_result=0;
+        for(size_t i=0;i<sizeof(tof_cases)/sizeof(tof_cases[0]);i++) {
+            wifi_rtt_result_v3 converted={0};host_convert_ftm(tof_cases[i].tof,&converted);
+            finished_request=NULL;
+            fail+=check(!woal_cfg80211_start_pmsr(&w,&d,&req),"known-value PMSR request accepted");
+            emit_ftm_measurement(&p,&converted);woal_rtt_pmsr_work_handler(&h.rtt_pmsr_work);
+            fail+=check(reported_rtt==tof_cases[i].rtt,"production PMSR retains RTT in ps");
+            fail+=check(reported_distance==tof_cases[i].mm,"production PMSR reports millimetres without a fixed-point scale");
+            fail+=check(report_count==(int)i+1 && complete_count==(int)i+1,"one report and completion for each known input");
+        }
     } else if(!strncmp(argv[1],"pmsr-",5)) {
         struct ieee80211_channel channel={5180};struct cfg80211_pmsr_request req={0},wrong={0};
         req.n_peers=1;req.peers[0].addr[0]=2;req.peers[0].addr[5]=1;req.peers[0].chandef.chan=&channel;
@@ -442,7 +478,7 @@ int main(int argc,char **argv) {
                 fail+=check(submit_targets(&w,&d,3,1)==-EBUSY,"vendor cannot replace PMSR owner");
                 if(!strcmp(argv[1],"pmsr-report")) {
                     woal_rtt_pmsr_work_handler(&h.rtt_pmsr_work);woal_cfg80211_abort_pmsr(&w,&d,&req);
-                    fail+=check(report_count==1 && complete_count==1 && reported_distance==6400 && !stop_count,"deferred PMSR reports once and completed abort is no-op");
+                    fail+=check(report_count==1 && complete_count==1 && reported_distance==25 && reported_rtt==123 && !stop_count,"deferred PMSR reports mm once and completed abort is no-op");
                 } else {
                     woal_cfg80211_abort_pmsr(&w,&d,&wrong);
                     fail+=check(p.pmsr_request==&req,"unmatched abort does not detach live request");
@@ -519,6 +555,35 @@ int main(int argc,char **argv) {
     return fail?1:0;
 }
 '''
+ftm_adapter = r'''#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#include "mlan.h"
+#include "mlan_util.h"
+#include "mlan_join.h"
+#include "mlan_fw.h"
+#include "mlan_main.h"
+static void *host_memset(void *handle,void *data,t_u8 value,t_u32 count) {
+    (void)handle;return __builtin_memset(data,value,count);
+}
+static void *host_memcpy_ext(void *handle,void *dest,const void *src,t_u32 count,t_u32 capacity) {
+    (void)handle;assert(count<=capacity);return __builtin_memcpy(dest,src,count);
+}
+void host_convert_ftm(t_u32 tof,wifi_rtt_result_v3 *result) {
+    static mlan_adapter adapter;
+    mlan_private priv={0};Event_WLS_FTM_t input={0};
+    size_t payload=1+sizeof(wifi_rtt_result_element)+sizeof(*result);
+    mlan_event *output=calloc(1,sizeof(*output)+payload);assert(output);
+    adapter.callbacks.moal_memset=host_memset;adapter.callbacks.moal_memcpy_ext=host_memcpy_ext;
+    priv.adapter=&adapter;input.u.ftm_complete.avg_tof=wlan_cpu_to_le32(tof);
+    input.u.ftm_complete.mac[0]=2;input.u.ftm_complete.mac[5]=1;
+    input.u.ftm_complete.protocol_num_measurements=4;
+    assert(wlan_convert_to_wifi_rtt_result_v3(&priv,&input,sizeof(input),output,0)==MLAN_STATUS_SUCCESS);
+    assert(output->event_len==payload && output->event_buf[0]==1);
+    __builtin_memcpy(result,output->event_buf+1+sizeof(wifi_rtt_result_element),sizeof(*result));
+    free(output);
+}
+'''
 functions = "\n".join(function(util,n) for n in (
     "woal_ftm_session_ctrl","woal_rtt_config_at","woal_rtt_release","woal_rtt_queue_request",
     "woal_rtt_work_handler","woal_cfg80211_subcmd_rtt_range_request",
@@ -532,8 +597,13 @@ functions += "\n#endif\n"
 functions += function(sta,"woal_cfg80211_get_tx_power") + function(sdio,"woal_sdio_shutdown")
 with tempfile.TemporaryDirectory(prefix="moal-rtt-host-") as temp:
     source=Path(temp)/"regression.c";binary=Path(temp)/"regression"
+    adapter_source=Path(temp)/"ftm_adapter.c";adapter_object=Path(temp)/"ftm_adapter.o";mlan_object=Path(temp)/"mlan_cmdevt.o"
+    adapter_source.write_text(ftm_adapter)
+    cflags=["cc","-std=gnu11","-O1","-g","-ffunction-sections","-fdata-sections","-DSTA_SUPPORT","-DUAP_SUPPORT","-DSD9098","-DPCIE9098","-I"+str(root/"mlan")]
+    subprocess.run(cflags+["-Wno-pointer-to-int-cast","-Wno-address-of-packed-member","-c",str(root/"mlan/mlan_cmdevt.c"),"-o",str(mlan_object)],check=True)
+    subprocess.run(cflags+["-Wall","-Wextra","-Werror","-Wstrict-prototypes","-Wno-unused-parameter","-c",str(adapter_source),"-o",str(adapter_object)],check=True)
     source.write_text(prelude+fields+post_fields+extra+functions+test_helpers+concurrency_helpers+drain_helpers+tests)
-    cases = ("v1-copy","v3-copy","failed-start","tx-power","sparse-shutdown","overlap",
+    cases = ("vendor-distance-units","pmsr-distance-units","v1-copy","v3-copy","failed-start","tx-power","sparse-shutdown","overlap",
              "partial-v1","partial-v3","active-cancel","pending-during-wait","cancel-errors","cancel-all",
              "failed-stop","timeout-stop-failed","timeout-stop","early-results","event-filter",
              "config-failure","start-failure-worker","worker-allocation-failure","queue-failure",
@@ -544,7 +614,7 @@ with tempfile.TemporaryDirectory(prefix="moal-rtt-host-") as temp:
         code = (version[0]<<16)|(version[1]<<8)|version[2]
         subprocess.run(["cc","-std=gnu11","-O1","-g","-pthread","-Wall","-Wextra","-Werror",
                         "-Wstrict-prototypes","-Wno-unused-parameter","-Wno-unused-variable","-Wno-unused-function",
-                        "-DCFG80211_VERSION_CODE="+str(code),"-I"+str(root/"mlan"),str(source),"-o",str(binary)],check=True)
+                        "-DCFG80211_VERSION_CODE="+str(code),"-I"+str(root/"mlan"),str(source),str(adapter_object),str(mlan_object),"-Wl,--gc-sections","-o",str(binary)],check=True)
         count = 0
         for case in cases:
             if case.startswith("pmsr-") and version < (4,20,0): continue
