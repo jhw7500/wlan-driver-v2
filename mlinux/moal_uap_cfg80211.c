@@ -22,6 +22,7 @@
  */
 
 #include "moal_cfg80211.h"
+#include "moal_cfg80211_util.h"
 #include "moal_uap_cfg80211.h"
 /** deauth reason code */
 #define REASON_CODE_DEAUTH_LEAVING 3
@@ -3262,6 +3263,7 @@ int woal_cfg80211_del_virt_if(struct wiphy *wiphy, struct net_device *dev)
 	if (!priv)
 		return ret;
 	if (vir_priv && vir_priv->netdev == dev) {
+		woal_rtt_quiesce(handle, vir_priv);
 		woal_stop_queue(dev);
 		netif_carrier_off(dev);
 		netif_device_detach(dev);
@@ -3368,6 +3370,7 @@ void woal_remove_virtual_interface(moal_handle *handle)
 		priv = handle->priv[i];
 		if (priv) {
 			if (priv->bss_virtual) {
+				woal_rtt_quiesce(handle, priv);
 				PRINTM(MCMND, "Remove virtual interface %s\n",
 				       priv->netdev->name);
 #ifdef CONFIG_PROC_FS
@@ -3396,6 +3399,7 @@ void woal_remove_virtual_interface(moal_handle *handle)
 			if (priv) {
 				if (priv->bss_virtual &&
 				    priv->wdev->wiphy == handle->wiphy) {
+					woal_rtt_quiesce(ref_handle, priv);
 					PRINTM(MCMND,
 					       "Remove virtual interfaces from pref mac %s\n",
 					       priv->netdev->name);

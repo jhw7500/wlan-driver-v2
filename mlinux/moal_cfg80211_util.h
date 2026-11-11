@@ -1007,6 +1007,9 @@ enum attr_rtt {
 };
 
 void woal_rtt_work_handler(struct work_struct *work);
+void woal_rtt_pmsr_work_handler(struct work_struct *work);
+void woal_rtt_quiesce(moal_handle *handle, moal_private *owner);
+void woal_rtt_reopen(moal_handle *handle);
 void woal_rtt_ap_result_received(moal_private *priv, t_u8 *data, int len);
 
 mlan_status woal_cfg80211_event_rtt_result(moal_private *priv, t_u8 *data,

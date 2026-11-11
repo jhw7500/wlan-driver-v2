@@ -1486,6 +1486,7 @@ void woal_clean_up(moal_handle *handle)
 	int i;
 	moal_private *priv;
 	int cfg80211_wext = 0;
+	woal_rtt_quiesce(handle, NULL);
 	cfg80211_wext = handle->params.cfg80211_wext;
 #ifdef STA_CFG80211
 	if (IS_STA_CFG80211(cfg80211_wext) && handle->scan_request &&
@@ -3060,15 +3061,29 @@ mlan_status woal_init_sw(moal_handle *handle)
 
 	handle->is_plinkstats_timer_set = MFALSE;
 
-	spin_lock_init(&handle->rtt_result_lock);
-	init_waitqueue_head(&handle->ftm_result_wait_q);
+	if (!handle->rtt_initialized) {
+		mutex_init(&handle->rtt_mutex);
+		mutex_init(&handle->rtt_quiesce_mutex);
+		spin_lock_init(&handle->rtt_result_lock);
+		init_waitqueue_head(&handle->ftm_result_wait_q);
+		MLAN_INIT_WORK(&handle->rtt_work, woal_rtt_work_handler);
+		MLAN_INIT_WORK(&handle->rtt_pmsr_work,
+			       woal_rtt_pmsr_work_handler);
+		handle->rtt_initialized = MTRUE;
+	}
+	handle->rtt_terminating = MFALSE;
+	handle->rtt_quiescing = MFALSE;
+	handle->rtt_owner = RTT_OWNER_IDLE;
+	handle->rtt_current_index = -1;
+	handle->rtt_work_done = MTRUE;
+	handle->rtt_pmsr_result_ready = MFALSE;
+	handle->ftm_session_in_progress = MFALSE;
 	handle->ftm_result_wait_q_woken = MFALSE;
 	handle->rtt_range_cancel = MFALSE;
 	handle->rtt_total_ap_count = 0;
 	handle->rtt_completed_ap_count = 0;
 	handle->rtt_result_buf_len = 0;
 	handle->rtt_priv = NULL;
-	MLAN_INIT_WORK(&handle->rtt_work, woal_rtt_work_handler);
 
 	/* RTT Cabability */
 	handle->rtt_capa.rtt_one_sided_supported = MTRUE;
@@ -7329,6 +7344,7 @@ void woal_remove_interface(moal_handle *handle, t_u8 bss_index)
 
 	if (!priv || !priv->netdev)
 		goto error;
+	woal_rtt_quiesce(handle, priv);
 	dev = priv->netdev;
 
 	if (priv->media_connected == MTRUE) {
@@ -16586,6 +16602,7 @@ static mlan_status woal_switch_drv_mode_internal(moal_handle *handle,
 	bridge_suspended = true;
 	destructive = true;
 	handle->fw_reseting = MTRUE;
+	woal_rtt_quiesce(handle, NULL);
 
 	/* Reset all interfaces */
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
@@ -17669,6 +17686,10 @@ static int woal_request_fw_reload_internal(moal_handle *phandle, t_u8 mode,
 	bridge_suspended = false;
 	if (ret)
 		goto done;
+	/* Reopen only after primary and companion recovery both succeeded. */
+	woal_rtt_reopen(handle);
+	if (ref_handle)
+		woal_rtt_reopen(ref_handle);
 	wifi_status = WIFI_STATUS_OK;
 done:
 	if (ret) {

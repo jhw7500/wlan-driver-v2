@@ -7690,31 +7690,34 @@ static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 		return -EFAULT;
 	}
 
-	/* If FTM session is in progress, return immediately without querying FW
-	 */
-	if (handle->ftm_session_in_progress) {
-		PRINTM(MCMND,
-		       "FTM session in progress, skipping get_tx_power\n");
-		*dbm = 0;
+	mutex_lock(&handle->rtt_mutex);
+	if (handle->rtt_terminating || handle->rtt_quiescing ||
+	    READ_ONCE(handle->ftm_session_in_progress)) {
+		ret = (handle->rtt_terminating || handle->rtt_quiescing) ?
+			      -ENODEV : -EBUSY;
+		mutex_unlock(&handle->rtt_mutex);
 		LEAVE();
-		return 0;
+		return ret;
 	}
 
 	priv = woal_get_priv(handle, MLAN_BSS_ROLE_ANY);
 
 	if (!priv) {
 		PRINTM(MFATAL, "Unable to get priv in %s()\n", __func__);
+		mutex_unlock(&handle->rtt_mutex);
 		LEAVE();
 		return -EFAULT;
 	}
 
 	if (woal_set_get_tx_power(priv, MLAN_ACT_GET, &power_cfg) !=
 	    MLAN_STATUS_SUCCESS) {
+		mutex_unlock(&handle->rtt_mutex);
 		LEAVE();
 		return -EFAULT;
 	}
 
 	*dbm = power_cfg.power_level;
+	mutex_unlock(&handle->rtt_mutex);
 
 	LEAVE();
 	return ret;

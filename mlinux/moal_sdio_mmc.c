@@ -1351,28 +1351,27 @@ void woal_sdio_shutdown(struct device *dev)
 
 	if (handle->partial_io_enable == MTRUE) {
 		for (i = 0; i < MIN(handle->priv_num, MLAN_MAX_BSS_NUM); i++) {
+			priv = handle->priv[i];
+			if (!priv)
+				continue;
 #ifdef STA_SUPPORT
-			if (handle->priv[i])
-				woal_cancel_scan(handle->priv[i],
-						 MOAL_IOCTL_WAIT);
+			woal_cancel_scan(priv, MOAL_IOCTL_WAIT);
 #endif
 
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 2, 0)
 			if (IS_STA_CFG80211(handle->params.cfg80211_wext) &&
-			    handle->priv[i]->sched_scanning &&
-			    handle->priv[i]->wdev) {
-				woal_stop_bg_scan(handle->priv[i],
-						  MOAL_IOCTL_WAIT);
-				handle->priv[i]->bg_scan_start = MFALSE;
-				handle->priv[i]->bg_scan_reported = MFALSE;
+			    priv->sched_scanning && priv->wdev) {
+				woal_stop_bg_scan(priv, MOAL_IOCTL_WAIT);
+				priv->bg_scan_start = MFALSE;
+				priv->bg_scan_reported = MFALSE;
 				cfg80211_sched_scan_stopped(
-					handle->priv[i]->wdev->wiphy
+					priv->wdev->wiphy
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
 					,
-					handle->priv[i]->bg_scan_reqid
+					priv->bg_scan_reqid
 #endif
 				);
-				handle->priv[i]->sched_scanning = MFALSE;
+				priv->sched_scanning = MFALSE;
 			}
 #endif
 		}

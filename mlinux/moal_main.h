@@ -1874,6 +1874,8 @@ typedef struct _moal_priv_linkstats {
 struct _moal_private {
 	/** Handle structure */
 	moal_handle *phandle;
+	/** Closed permanently before this interface is unregistered. */
+	BOOLEAN rtt_admission_closed;
 	/* shadow APF state for CTS */
 	struct woal_apf_ctx *apf;
 	/** Tx timeout count */
@@ -3315,6 +3317,30 @@ struct _moal_handle {
 	/** Bitmap for re-association on/off */
 	t_u8 reassoc_on;
 #endif /* REASSOCIATION */
+	/** Lock order: quiesce_mutex -> rtt_mutex -> rtt_result_lock.
+	 * Firmware result callbacks take only rtt_result_lock. */
+	struct mutex rtt_mutex;
+	/** Serializes drains while rtt_mutex is released for cancel_work_sync. */
+	struct mutex rtt_quiesce_mutex;
+	BOOLEAN rtt_initialized;
+	BOOLEAN rtt_terminating;
+	BOOLEAN rtt_quiescing;
+	enum { RTT_OWNER_IDLE, RTT_OWNER_VENDOR, RTT_OWNER_PMSR } rtt_owner;
+	/** Configurations stay immutable until the owning worker finishes. */
+	enum {
+		RTT_TARGET_PENDING,
+		RTT_TARGET_ACTIVE,
+		RTT_TARGET_DONE,
+		RTT_TARGET_CANCELLED
+	} rtt_target_state[MAX_RTT_CONFIG_NUM];
+	int rtt_current_index;
+	BOOLEAN rtt_work_done;
+	/** PMSR reporting is deferred so firmware events never take rtt_mutex. */
+	struct work_struct rtt_pmsr_work;
+	wifi_rtt_result rtt_pmsr_result;
+	t_u8 rtt_pmsr_peer[MLAN_MAC_ADDR_LENGTH];
+	t_u32 rtt_pmsr_center_freq;
+	BOOLEAN rtt_pmsr_result_ready;
 	/** RTT capability */
 	wifi_rtt_capabilities rtt_capa;
 	/** RTT capability v3 (11az) */

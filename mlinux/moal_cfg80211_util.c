@@ -7134,14 +7134,17 @@ static int woal_ftm_session_ctrl(moal_private *priv, t_u8 *peer_mac,
 	if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 
-	if (action_in == FTM_SESSION_CTRL_ACTION_START) {
-		/* Set FTM session in progress flag on successful START */
-		priv->phandle->ftm_session_in_progress = MTRUE;
-	} else {
-		priv->phandle->ftm_session_in_progress = MFALSE;
-	}
-
 done:
+	/* A synchronous result may precede the START ioctl response. */
+	if (action_in == FTM_SESSION_CTRL_ACTION_START) {
+		unsigned long flags;
+		spin_lock_irqsave(&priv->phandle->rtt_result_lock, flags);
+		WRITE_ONCE(priv->phandle->ftm_session_in_progress,
+			   !ret && !priv->phandle->ftm_result_wait_q_woken);
+		spin_unlock_irqrestore(&priv->phandle->rtt_result_lock, flags);
+	} else if (!ret) {
+		WRITE_ONCE(priv->phandle->ftm_session_in_progress, MFALSE);
+	}
 	if (status != MLAN_STATUS_PENDING)
 		kfree(req);
 
@@ -7216,11 +7219,9 @@ static int woal_parse_rtt_range_request(moal_handle *handle, const void *data,
 	rtt_config_num = (t_u8)nla_get_u8(tb[ATTR_RTT_TARGET_NUM]);
 
 	/* Validate target count */
-	if ((rtt_config_num == 0) || ((handle->rtt_params.rtt_config_num +
-				       rtt_config_num) > MAX_RTT_CONFIG_NUM)) {
-		PRINTM(MERROR, "%s: invalid num=%d  num in handle=%d  MAX=%d\n",
-		       __func__, rtt_config_num,
-		       handle->rtt_params.rtt_config_num, MAX_RTT_CONFIG_NUM);
+	if (!rtt_config_num || rtt_config_num > MAX_RTT_CONFIG_NUM) {
+		PRINTM(MERROR, "%s: invalid num=%d MAX=%d\n", __func__,
+		       rtt_config_num, MAX_RTT_CONFIG_NUM);
 		LEAVE();
 		return -EINVAL;
 	}
@@ -7269,151 +7270,197 @@ static int woal_parse_rtt_range_request(moal_handle *handle, const void *data,
  *
  *  @param work A pointer to work_struct
  */
+/* Called with rtt_mutex held; configurations remain immutable while owned. */
+static wifi_rtt_config *woal_rtt_config_at(moal_handle *handle, int index)
+{
+	if (handle->rtt_version == 3)
+		return &handle->rtt_params_v3.rtt_config_v3[index].rtt_config;
+	return &handle->rtt_params.rtt_config[index];
+}
+
+/* Caller holds rtt_result_lock; never release a live worker's ownership. */
+static void woal_rtt_release(moal_handle *handle)
+{
+	handle->rtt_owner = RTT_OWNER_IDLE;
+	handle->rtt_priv = NULL;
+	handle->rtt_version = 0;
+	handle->rtt_current_index = -1;
+	handle->rtt_params.rtt_config_num = 0;
+	handle->rtt_params_v3.rtt_config_num = 0;
+}
+
+static int woal_rtt_queue_request(moal_private *priv, int version,
+				 const void *params)
+{
+	moal_handle *handle = priv->phandle;
+	unsigned long flags;
+	int ret = 0;
+
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	if (handle->rtt_terminating || handle->rtt_quiescing ||
+	    priv->rtt_admission_closed || handle->surprise_removed ||
+	    handle->fw_reseting || handle->driver_status || !handle->evt_workqueue) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (handle->rtt_owner != RTT_OWNER_IDLE) {
+		ret = -EBUSY;
+		goto out;
+	}
+	if (version == 3) {
+		handle->rtt_params_v3 =
+			*(const wifi_rtt_config_params_v3_t *)params;
+		handle->rtt_total_ap_count = handle->rtt_params_v3.rtt_config_num;
+	} else {
+		handle->rtt_params = *(const wifi_rtt_config_params_t *)params;
+		handle->rtt_total_ap_count = handle->rtt_params.rtt_config_num;
+	}
+	handle->rtt_owner = RTT_OWNER_VENDOR;
+	handle->rtt_priv = priv;
+	handle->rtt_version = version;
+	handle->rtt_current_index = -1;
+	handle->rtt_work_done = MFALSE;
+	handle->rtt_range_cancel = MFALSE;
+	handle->ftm_result_wait_q_woken = MFALSE;
+	handle->rtt_completed_ap_count = 0;
+	handle->rtt_result_buf[0] = 0;
+	handle->rtt_result_buf_len = sizeof(t_u8);
+	memset(handle->rtt_target_state, 0, sizeof(handle->rtt_target_state));
+	if (!queue_work(handle->evt_workqueue, &handle->rtt_work)) {
+		handle->rtt_work_done = MTRUE;
+		woal_rtt_release(handle);
+		ret = -EBUSY;
+	}
+out:
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
+	return ret;
+}
+
 void woal_rtt_work_handler(struct work_struct *work)
 {
-	moal_handle *handle =
-		// Coverity violation raised for kernel's API
-		// coverity[cert_arr39_c_violation:SUPPRESS]
-		container_of(work, moal_handle, rtt_work);
-	moal_private *priv = handle->rtt_priv;
-	int ret = 0;
-	int i;
-	long wait_rv;
+	moal_handle *handle = container_of(work, moal_handle, rtt_work);
+	moal_private *priv;
+	wifi_rtt_config *cfg;
+	t_u8 *result;
+	t_u8 empty_result = 1;
+	t_u32 result_len;
 	unsigned long flags;
-	t_u8 rtt_config_num;
-	wifi_rtt_config *cfg = NULL;
-	wifi_rtt_config_v3 *cfg_v3 = NULL;
+	int i, count, version, ret;
+	BOOLEAN active;
 
-	ENTER();
+	result = kzalloc(sizeof(handle->rtt_result_buf), GFP_KERNEL);
+	mutex_lock(&handle->rtt_mutex);
+	priv = handle->rtt_priv;
+	version = handle->rtt_version;
+	count = handle->rtt_total_ap_count;
+	if (!result || !priv || handle->rtt_terminating)
+		goto finish;
+	mutex_unlock(&handle->rtt_mutex);
 
-	if (!priv) {
-		PRINTM(MERROR, "RTT work: rtt_priv is NULL\n");
-		LEAVE();
-		return;
-	}
-
-	if (handle->rtt_version == 3) {
-		rtt_config_num = handle->rtt_params_v3.rtt_config_num;
-	} else {
-		rtt_config_num = handle->rtt_params.rtt_config_num;
-	}
-	PRINTM(MCMND,
-	       "RTT work: starting sequential ranging for %d APs(rtt_version: %d)\n",
-	       rtt_config_num, handle->rtt_version);
-
-	spin_lock_irqsave(&handle->rtt_result_lock, flags);
-	handle->rtt_total_ap_count = rtt_config_num;
-	handle->rtt_completed_ap_count = 0;
-	handle->rtt_result_buf[0] = 0; /* complete=0, set to 1 when all done */
-	handle->rtt_result_buf_len = sizeof(t_u8);
-	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
-
-	for (i = 0; i < rtt_config_num; i++) {
-		if (handle->rtt_version == 3) {
-			cfg_v3 = &handle->rtt_params_v3.rtt_config_v3[i];
-			cfg = &(handle->rtt_params_v3.rtt_config_v3[i]
-					.rtt_config);
-		} else {
-			cfg = &handle->rtt_params.rtt_config[i];
-		}
-
-		if (handle->rtt_range_cancel == MTRUE) {
-			PRINTM(MERROR, "handle->rtt_range_cancel is set. "
-				       "SKIP processing RTT config");
+	for (i = 0; i < count; i++) {
+		mutex_lock(&handle->rtt_mutex);
+		spin_lock_irqsave(&handle->rtt_result_lock, flags);
+		if (handle->rtt_terminating || handle->rtt_quiescing ||
+		    handle->surprise_removed || handle->rtt_range_cancel) {
+			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+			mutex_unlock(&handle->rtt_mutex);
 			break;
 		}
-
-		PRINTM(MCMND, "RTT: starting AP %d/%d " MACSTR "\n", i + 1,
-		       rtt_config_num, MAC2STR(cfg->addr));
-
-		/* Step 1: Configure FTM session */
-		if ((handle->rtt_version == 3) &&
-		    (cfg_v3->rtt_config.type == RTT_TYPE_2_SIDED_11AZ_NTB)) {
-			// 11az NTB ranging
-			ret = woal_ftm_session_cfg_ntb_ranging(priv, cfg_v3);
-			if (ret) {
-				PRINTM(MERROR,
-				       "11az FTM session config failed for target %d\n",
-				       i);
-				spin_lock_irqsave(&handle->rtt_result_lock,
-						  flags);
-				handle->rtt_total_ap_count--;
-				spin_unlock_irqrestore(&handle->rtt_result_lock,
-						       flags);
-				continue;
-			}
-		} else if (((handle->rtt_version == 3) &&
-			    (cfg_v3->rtt_config.type ==
-			     RTT_TYPE_2_SIDED_11MC)) ||
-			   (handle->rtt_version == 1)) {
-			ret = woal_ftm_session_cfg(priv, cfg);
-			if (ret) {
-				PRINTM(MERROR,
-				       "11mc FTM session config failed for target %d, rtt_version: %d\n",
-				       i, handle->rtt_version);
-				spin_lock_irqsave(&handle->rtt_result_lock,
-						  flags);
-				handle->rtt_total_ap_count--;
-				spin_unlock_irqrestore(&handle->rtt_result_lock,
-						       flags);
-				continue;
-			}
-		} else {
-			PRINTM(MERROR,
-			       "Unsupported RTT type. rtt_version: %d, type: %d",
-			       handle->rtt_version, cfg->type);
-			spin_lock_irqsave(&handle->rtt_result_lock, flags);
-			handle->rtt_total_ap_count--;
-			// spinlock is conditionally released and reacquired
-			// within a controlled flow
-			// coverity[double_unlock:SUPPRESS]
+		if (handle->rtt_target_state[i] != RTT_TARGET_PENDING) {
 			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+			mutex_unlock(&handle->rtt_mutex);
 			continue;
 		}
-
-		/* Step 2: Start FTM session */
-		ret = woal_ftm_session_ctrl(priv, cfg->addr,
-					    cfg->channel.center_freq,
-					    FTM_SESSION_CTRL_ACTION_START);
-		if (ret) {
-			PRINTM(MERROR,
-			       "FTM session start failed for target %d\n", i);
-			spin_lock_irqsave(&handle->rtt_result_lock, flags);
-			handle->rtt_total_ap_count--;
-			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
-			continue;
-		}
-
-		/*
-		 * Step 3: Wait for FTM_COMPLETE or FTM_FAIL for this AP.
-		 * woal_rtt_ap_result_received() sets
-		 * ftm_result_wait_q_woken=MTRUE and calls
-		 * wake_up_interruptible(&handle->ftm_result_wait_q).
-		 */
+		cfg = woal_rtt_config_at(handle, i);
+		handle->rtt_current_index = i;
+		handle->rtt_target_state[i] = RTT_TARGET_ACTIVE;
+		/* Publish before START: a result may arrive during its ioctl. */
 		handle->ftm_result_wait_q_woken = MFALSE;
-		// coverity error raised for kernel's API
-		// coverity[check_return:SUPPRESS]
-		wait_rv = wait_event_interruptible_timeout(
-			handle->ftm_result_wait_q,
-			handle->ftm_result_wait_q_woken == MTRUE,
-			msecs_to_jiffies(FTM_SESSION_TIMEOUT_MS));
-		if (wait_rv == 0) {
-			PRINTM(MMSG, "ftm_result_wait_q Timeout occurred\n");
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+
+		if (version == 3 && cfg->type == RTT_TYPE_2_SIDED_11AZ_NTB)
+			ret = woal_ftm_session_cfg_ntb_ranging(
+				priv, &handle->rtt_params_v3.rtt_config_v3[i]);
+		else if (version == 1 || cfg->type == RTT_TYPE_2_SIDED_11MC)
+			ret = woal_ftm_session_cfg(priv, cfg);
+		else
+			ret = -EOPNOTSUPP;
+		if (!ret)
+			ret = woal_ftm_session_ctrl(priv, cfg->addr,
+						    cfg->channel.center_freq,
+						    FTM_SESSION_CTRL_ACTION_START);
+		if (ret) {
 			spin_lock_irqsave(&handle->rtt_result_lock, flags);
-			handle->rtt_total_ap_count--;
+			handle->rtt_target_state[i] = RTT_TARGET_DONE;
+			handle->rtt_current_index = -1;
+			WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
 			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
-		} else if (wait_rv < 0) {
-			PRINTM(MERROR,
-			       "ftm_result_wait_q interrupted by signal\n");
-			spin_lock_irqsave(&handle->rtt_result_lock, flags);
-			handle->rtt_total_ap_count--;
-			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+			mutex_unlock(&handle->rtt_mutex);
+			continue;
 		}
+		mutex_unlock(&handle->rtt_mutex);
+
+		wait_event_interruptible_timeout(
+			handle->ftm_result_wait_q,
+			READ_ONCE(handle->ftm_result_wait_q_woken) ||
+				READ_ONCE(handle->rtt_terminating),
+			msecs_to_jiffies(FTM_SESSION_TIMEOUT_MS));
+
+		mutex_lock(&handle->rtt_mutex);
+		spin_lock_irqsave(&handle->rtt_result_lock, flags);
+		active = handle->rtt_target_state[i] == RTT_TARGET_ACTIVE;
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		/* Timeout/signal: confirm STOP before starting a different peer. */
+		if (active && !handle->rtt_terminating && !handle->rtt_quiescing &&
+		    !handle->surprise_removed) {
+			ret = woal_ftm_session_ctrl(priv, cfg->addr,
+						    cfg->channel.center_freq,
+						    FTM_SESSION_CTRL_ACTION_STOP);
+			if (ret) {
+				/* Retain busy until a matching terminal event or reset. */
+				mutex_unlock(&handle->rtt_mutex);
+				break;
+			}
+		}
+		spin_lock_irqsave(&handle->rtt_result_lock, flags);
+		if (handle->rtt_target_state[i] == RTT_TARGET_ACTIVE)
+			handle->rtt_target_state[i] = RTT_TARGET_DONE;
+		handle->rtt_current_index = -1;
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		mutex_unlock(&handle->rtt_mutex);
 	}
 
-	PRINTM(MCMND, "RTT work: done\n");
-
-	LEAVE();
+	mutex_lock(&handle->rtt_mutex);
+finish:
+	/* The worker alone emits completion, including all-failed/cancelled runs. */
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	result_len = handle->rtt_result_buf_len;
+	if (result && result_len && result_len <= sizeof(handle->rtt_result_buf)) {
+		memcpy(result, handle->rtt_result_buf, result_len);
+		result[0] = 1;
+	} else {
+		result_len = result ? 0 : sizeof(empty_result);
+	}
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	if (result_len && priv && !handle->rtt_terminating &&
+	    !handle->rtt_quiescing && !handle->surprise_removed) {
+		if (version == 3)
+			woal_cfg80211_event_rtt_result_v3(
+				priv, result ? result : &empty_result, result_len);
+		else
+			woal_cfg80211_event_rtt_result(
+				priv, result ? result : &empty_result, result_len);
+	}
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	handle->rtt_work_done = MTRUE;
+	if (!handle->ftm_session_in_progress || handle->rtt_terminating ||
+	    handle->rtt_quiescing)
+		woal_rtt_release(handle);
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
+	kfree(result);
 }
 
 /**
@@ -7434,51 +7481,17 @@ static int woal_cfg80211_subcmd_rtt_range_request(struct wiphy *wiphy,
 						  struct wireless_dev *wdev,
 						  const void *data, int len)
 {
-	struct net_device *dev = wdev->netdev;
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
-	moal_handle *handle = priv->phandle;
+	moal_private *priv = woal_get_netdev_priv(wdev->netdev);
 	wifi_rtt_config_params_t rtt_params;
-	int ret = 0;
+	int ret;
 
-	ENTER();
-
-	/* Parse vendor command data to get RTT configs */
-	ret = woal_parse_rtt_range_request(handle, data, len, &rtt_params);
-	if (ret || rtt_params.rtt_config_num == 0) {
-		PRINTM(MERROR, "Failed to parse RTT range request\n");
-		goto done;
-	}
-
-	PRINTM(MCMND, "RTT range request: %d targets\n",
-	       rtt_params.rtt_config_num);
+	ret = woal_parse_rtt_range_request(priv->phandle, data, len, &rtt_params);
+	if (ret)
+		return ret;
+	if (!rtt_params.rtt_config_num)
+		return -EINVAL;
 	woal_dump_rtt_params(&rtt_params);
-
-	handle->rtt_priv = priv;
-	handle->rtt_version = 1;
-
-	memset(&handle->rtt_params, 0, sizeof(wifi_rtt_config_params_t));
-	moal_memcpy_ext(handle, &handle->rtt_params, &rtt_params,
-			rtt_params.rtt_config_num * sizeof(wifi_rtt_config),
-			sizeof(wifi_rtt_config_params_t));
-	if (handle->rtt_params.rtt_config_num != rtt_params.rtt_config_num) {
-		PRINTM(MERROR,
-		       "Incorrect rtt_config_num: handle->rtt_params.rtt_config_num: %d, "
-		       "rtt_params->rtt_config_num: %d",
-		       handle->rtt_params.rtt_config_num,
-		       rtt_params.rtt_config_num);
-		goto done;
-	}
-
-	/*
-	 * Queue the ranging work and return immediately.
-	 * woal_rtt_work_handler() runs in evt_workqueue context and
-	 * performs the sequential FTM session start/wait for each AP.
-	 */
-	queue_work(handle->evt_workqueue, &handle->rtt_work);
-
-done:
-	LEAVE();
-	return ret;
+	return woal_rtt_queue_request(priv, 1, &rtt_params);
 }
 
 /**
@@ -7495,148 +7508,82 @@ static int woal_cfg80211_subcmd_rtt_range_cancel(struct wiphy *wiphy,
 						 struct wireless_dev *wdev,
 						 const void *data, int len)
 {
-	struct net_device *dev = wdev->netdev;
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
+	moal_private *priv = woal_get_netdev_priv(wdev->netdev);
 	moal_handle *handle = priv->phandle;
-	t_u8 rtt_config_num = handle->rtt_params.rtt_config_num;
 	struct nlattr *tb[ATTR_RTT_MAX + 1];
-	t_u32 target_num = 0;
-	t_u8 addr[MAX_RTT_CONFIG_NUM][MLAN_MAC_ADDR_LENGTH] = {0x00};
-	int i = 0, j = 0;
-	mlan_status ret = MLAN_STATUS_SUCCESS;
-	int err = 0;
-	int stopped_count = 0;
+	t_u8 addr[MAX_RTT_CONFIG_NUM][MLAN_MAC_ADDR_LENGTH];
+	unsigned long flags, selected = 0;
+	wifi_rtt_config *cfg;
+	int i, j, count, peer_index, target_num, err;
+	BOOLEAN wake = MFALSE;
 
-	ENTER();
 	err = nla_parse(tb, ATTR_RTT_MAX, data, len, NULL
 #if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
-			,
-			NULL
+			, NULL
 #endif
 	);
-	if (err) {
-		PRINTM(MERROR, "%s: nla_parse fail\n", __func__);
-		goto done;
-	}
-
-	if (!tb[ATTR_RTT_TARGET_NUM] || !tb[ATTR_RTT_TARGET_ADDR]) {
-		PRINTM(MERROR,
-		       "%s: null attr: tb[ATTR_RTT_TARGET_NUM]=%p tb[ATTR_RTT_TARGET_ADDR]=%p\n",
-		       __func__, tb[ATTR_RTT_TARGET_NUM],
-		       tb[ATTR_RTT_TARGET_ADDR]);
-		err = -EINVAL;
-		goto done;
-	}
-
+	if (err)
+		return err;
+	if (!tb[ATTR_RTT_TARGET_NUM] || !tb[ATTR_RTT_TARGET_ADDR])
+		return -EINVAL;
 	target_num = nla_get_u8(tb[ATTR_RTT_TARGET_NUM]);
+	if (!target_num || target_num > MAX_RTT_CONFIG_NUM ||
+	    nla_len(tb[ATTR_RTT_TARGET_ADDR]) != target_num * (int)sizeof(addr[0]))
+		return -EINVAL;
+	memcpy(addr, nla_data(tb[ATTR_RTT_TARGET_ADDR]),
+	       target_num * sizeof(addr[0]));
 
-	if ((target_num <= 0 || target_num > MAX_RTT_CONFIG_NUM) ||
-	    (nla_len(tb[ATTR_RTT_TARGET_ADDR]) !=
-	     sizeof(t_u8) * MLAN_MAC_ADDR_LENGTH * target_num)) {
-		PRINTM(MERROR, "%s: Check if %d in [1-%d] or %d*%u=%d\n",
-		       __func__, target_num, MAX_RTT_CONFIG_NUM, target_num,
-		       (t_u32)(sizeof(t_u8) * MLAN_MAC_ADDR_LENGTH),
-		       nla_len(tb[ATTR_RTT_TARGET_ADDR]));
-		err = -EINVAL;
-		goto done;
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	if (handle->rtt_owner != RTT_OWNER_VENDOR || handle->rtt_priv != priv ||
+	    handle->rtt_work_done || handle->rtt_terminating) {
+		err = -ENOENT;
+		goto out;
 	}
-
-	PRINTM(MMSG, "RTT range cancel: %d targets\n", target_num);
-	woal_dump_rtt_params(&(handle->rtt_params));
-
-	moal_memcpy_ext(handle, addr, nla_data(tb[ATTR_RTT_TARGET_ADDR]),
-			nla_len(tb[ATTR_RTT_TARGET_ADDR]), sizeof(addr));
-
-	/* Cancel rtt_work */
-	handle->rtt_range_cancel = MTRUE;
-	handle->ftm_result_wait_q_woken = MTRUE;
-	wake_up_interruptible(&handle->ftm_result_wait_q);
-	cancel_work_sync(&handle->rtt_work);
-
-	for (i = 0; i < target_num; i++)
-		PRINTM(MCMND, "cancel[%d].addr=" MACSTR "\n", i,
-		       MAC2STR(addr[i]));
-
-	/* For each target to cancel, find it in rtt_params, stop FTM session,
-	 * then remove from rtt_params */
+	count = handle->rtt_total_ap_count;
+	/* Validate the whole selection before changing any peer or firmware. */
 	for (i = 0; i < target_num; i++) {
-		for (j = 0; j < handle->rtt_params.rtt_config_num; j++) {
-			if (!memcmp(addr[i],
-				    handle->rtt_params.rtt_config[j].addr,
-				    sizeof(addr[0]))) {
-				wifi_rtt_config *cfg =
-					&handle->rtt_params.rtt_config[j];
-
-				/* Stop FTM session using ftm_session_ctrl
-				 * command */
-				PRINTM(MCMND,
-				       "Stopping FTM session for target " MACSTR
-				       " on freq %d\n",
-				       MAC2STR(cfg->addr),
-				       cfg->channel.center_freq);
-
-				ret = woal_ftm_session_ctrl(
-					priv, cfg->addr,
-					cfg->channel.center_freq,
-					FTM_SESSION_CTRL_ACTION_STOP);
-				if (ret) {
-					PRINTM(MERROR,
-					       "FTM session stop failed for target " MACSTR
-					       ", ret=%d, continuing...\n",
-					       MAC2STR(cfg->addr), ret);
-					/* Continue to try stopping other
-					 * targets */
-				} else {
-					PRINTM(MCMND,
-					       "FTM session stopped successfully for target " MACSTR
-					       "\n",
-					       MAC2STR(cfg->addr));
-					stopped_count++;
-				}
-
-				/* Remove from rtt_params array */
-				memset(&(handle->rtt_params.rtt_config[j]),
-				       0x00,
-				       sizeof(handle->rtt_params.rtt_config[0]));
-				if ((j + 1) <
-				    handle->rtt_params.rtt_config_num) {
-					memmove(&(handle->rtt_params
-							  .rtt_config[j]),
-						&(handle->rtt_params
-							  .rtt_config[j + 1]),
-						sizeof(handle->rtt_params
-							       .rtt_config[0]) *
-							(handle->rtt_params
-								 .rtt_config_num -
-							 (j + 1)));
-					memset(&(handle->rtt_params.rtt_config
-							 [handle->rtt_params
-								  .rtt_config_num -
-							  1]),
-					       0x00,
-					       sizeof(handle->rtt_params
-							      .rtt_config[0]));
-				}
-				handle->rtt_params.rtt_config_num--;
-				break; /* Found match, move to next cancel
-					  target */
-			}
+		for (j = 0; j < count; j++) {
+			cfg = woal_rtt_config_at(handle, j);
+			if (!memcmp(addr[i], cfg->addr, sizeof(addr[0])) &&
+			    (handle->rtt_target_state[j] == RTT_TARGET_PENDING ||
+			     handle->rtt_target_state[j] == RTT_TARGET_ACTIVE))
+				break;
+		}
+		if (j == count) {
+			err = -ENOENT;
+			goto out;
+		}
+		selected |= BIT(j);
+	}
+	peer_index = handle->rtt_current_index;
+	if (peer_index >= 0 && (selected & BIT(peer_index)) &&
+	    handle->rtt_target_state[peer_index] == RTT_TARGET_ACTIVE) {
+		cfg = woal_rtt_config_at(handle, peer_index);
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		err = woal_ftm_session_ctrl(priv, cfg->addr,
+					     cfg->channel.center_freq,
+					     FTM_SESSION_CTRL_ACTION_STOP);
+		spin_lock_irqsave(&handle->rtt_result_lock, flags);
+		if (err)
+			goto out;
+	}
+	for (j = 0; j < count; j++) {
+		if (!(selected & BIT(j)) ||
+		    handle->rtt_target_state[j] == RTT_TARGET_DONE)
+			continue;
+		handle->rtt_target_state[j] = RTT_TARGET_CANCELLED;
+		if (j == peer_index) {
+			handle->ftm_result_wait_q_woken = MTRUE;
+			wake = MTRUE;
 		}
 	}
-
-	if (handle->rtt_params.rtt_config_num >= rtt_config_num) {
-		PRINTM(MERROR, "%s: No matched mac addr in rtt_config\n",
-		       __func__);
-		goto done;
-	}
-
-	PRINTM(MCMND, "RTT range cancel complete: stopped %d/%d targets\n",
-	       stopped_count, target_num);
-	woal_dump_rtt_params(&(handle->rtt_params));
-
-done:
-	handle->rtt_range_cancel = MFALSE;
-	LEAVE();
+	err = 0;
+out:
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
+	if (wake)
+		wake_up_interruptible(&handle->ftm_result_wait_q);
 	return err;
 }
 
@@ -7707,161 +7654,82 @@ done:
 void woal_rtt_ap_result_received(moal_private *priv, t_u8 *data, int len)
 {
 	moal_handle *handle = priv->phandle;
+	wifi_rtt_result_v3 result;
+	wifi_rtt_result_element elem;
+	wifi_rtt_config *cfg;
 	unsigned long flags;
-	t_u8 *src;
-	t_u32 src_len;
-	t_u8 all_done = 0;
-	t_u8 *local_buf = NULL;
-	t_u32 local_len = 0;
-	t_u32 buf_size = (t_u32)sizeof(handle->rtt_result_buf);
-	wifi_rtt_result_v3 *result_v3;
-	wifi_rtt_result *result_v1;
-	wifi_rtt_result_element *elem_hdr;
+	t_u32 size, payload;
+	int peer_index;
 	t_u8 *dst;
-	t_u32 copy_size;
 
-	ENTER();
+	/* MLAN delivers [complete][element header][v3 result] for both APIs. */
+	if (len < (int)(sizeof(t_u8) + sizeof(elem) + sizeof(result)))
+		return;
+	memcpy(&elem, data + sizeof(t_u8), sizeof(elem));
+	if (elem.len < sizeof(result) ||
+	    elem.len > len - sizeof(t_u8) - sizeof(elem))
+		return;
+	memcpy(&result, data + sizeof(t_u8) + sizeof(elem), sizeof(result));
 
-	local_buf = kzalloc(buf_size, GFP_KERNEL);
-	if (!local_buf) {
-		PRINTM(MERROR, "RTT: failed to allocate local_buf\n");
-		goto wake;
-	}
-
-	if (len <= (int)sizeof(t_u8) ||
-	    (len < (int)sizeof(wifi_rtt_result_v3))) {
-		PRINTM(MERROR, "RTT: per-AP event buffer too short (%d)\n",
-		       len);
-		goto wake;
-	}
-
-	src = data + sizeof(t_u8);
-	src_len = (t_u32)len - (t_u32)sizeof(t_u8);
-
-	/* Append this AP's rtt_result_element to the accumulation buffer. */
 	spin_lock_irqsave(&handle->rtt_result_lock, flags);
-
-	if (src_len <= ((t_u32)sizeof(handle->rtt_result_buf) -
-			(t_u32)sizeof(t_u8) - handle->rtt_result_buf_len)) {
-		if (handle->rtt_version == 3) {
-			moal_memcpy_ext(handle,
-					handle->rtt_result_buf +
-						handle->rtt_result_buf_len,
-					src, src_len,
-					sizeof(handle->rtt_result_buf) -
-						handle->rtt_result_buf_len);
-			handle->rtt_result_buf_len += src_len;
-			PRINTM(MCMND,
-			       "RTT(v%d): appended %u bytes, total buf_len=%u\n",
-			       handle->rtt_version, src_len,
-			       handle->rtt_result_buf_len);
-		} else if (handle->rtt_version == 1) {
-			/* src already points past the leading t_u8 complete
-			 * byte. It contains: [wifi_rtt_result_element
-			 * hdr][wifi_rtt_result_v3 body] For v1, re-wrap as
-			 * element hdr + wifi_rtt_result only.
-			 */
-			result_v3 =
-				(wifi_rtt_result_v3
-					 *)(src +
-					    sizeof(wifi_rtt_result_element));
-			result_v1 = &(result_v3->rtt_result_v2.rtt_result);
-			dst = handle->rtt_result_buf +
-			      handle->rtt_result_buf_len;
-			copy_size = sizeof(wifi_rtt_result_element) +
-				    sizeof(wifi_rtt_result);
-			elem_hdr = (wifi_rtt_result_element *)dst;
-			elem_hdr->id = 0;
-			elem_hdr->len = sizeof(wifi_rtt_result);
-
-			moal_memcpy_ext(
-				handle, dst + sizeof(wifi_rtt_result_element),
-				result_v1, sizeof(wifi_rtt_result),
-				sizeof(handle->rtt_result_buf) -
-					handle->rtt_result_buf_len -
-					sizeof(wifi_rtt_result_element));
-			handle->rtt_result_buf_len += copy_size;
-			PRINTM(MCMND,
-			       "RTT(v%d): appended %u bytes, total buf_len=%u\n",
-			       handle->rtt_version, copy_size,
-			       handle->rtt_result_buf_len);
-		} else {
-			PRINTM(MERROR,
-			       "RTT: incorrect rtt_version : %d, dropping AP result\n",
-			       handle->rtt_version);
+	if (handle->rtt_terminating || handle->rtt_quiescing ||
+	    handle->rtt_priv != priv)
+		goto out;
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+	if (handle->rtt_owner == RTT_OWNER_PMSR) {
+		if (memcmp(result.rtt_result_v2.rtt_result.addr,
+			   handle->rtt_pmsr_peer, ETH_ALEN) ||
+		    handle->rtt_pmsr_result_ready)
+			goto out;
+		WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
+		if (!priv->pmsr_request) {
+			/* A matching late terminal event resolves a failed abort. */
+			woal_rtt_release(handle);
+			goto out;
 		}
-	} else {
-		PRINTM(MERROR,
-		       "RTT: result buffer overflow, dropping AP result\n");
+		handle->rtt_pmsr_result = result.rtt_result_v2.rtt_result;
+		handle->rtt_pmsr_result_ready = MTRUE;
+		queue_work(handle->evt_workqueue, &handle->rtt_pmsr_work);
+		goto out;
 	}
-
+#endif
+	peer_index = handle->rtt_current_index;
+	if (handle->rtt_owner != RTT_OWNER_VENDOR || peer_index < 0 ||
+	    peer_index >= handle->rtt_total_ap_count ||
+	    handle->rtt_target_state[peer_index] != RTT_TARGET_ACTIVE)
+		goto out;
+	cfg = woal_rtt_config_at(handle, peer_index);
+	if (memcmp(result.rtt_result_v2.rtt_result.addr, cfg->addr, ETH_ALEN))
+		goto out;
+	WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
+	handle->rtt_target_state[peer_index] = RTT_TARGET_DONE;
+	if (handle->rtt_work_done) {
+		/* STOP failed after timeout; firmware has now confirmed completion. */
+		woal_rtt_release(handle);
+		goto out;
+	}
+	payload = handle->rtt_version == 3 ? sizeof(result) :
+						 sizeof(result.rtt_result_v2.rtt_result);
+	size = sizeof(elem) + payload;
+	if (handle->rtt_result_buf_len <= sizeof(handle->rtt_result_buf) &&
+	    size <= sizeof(handle->rtt_result_buf) - handle->rtt_result_buf_len) {
+		dst = handle->rtt_result_buf + handle->rtt_result_buf_len;
+		elem.id = 0;
+		elem.len = payload;
+		memcpy(dst, &elem, sizeof(elem));
+		memcpy(dst + sizeof(elem),
+		       handle->rtt_version == 3 ? (void *)&result :
+						 (void *)&result.rtt_result_v2.rtt_result,
+		       payload);
+		handle->rtt_result_buf_len += size;
+	}
 	handle->rtt_completed_ap_count++;
-	PRINTM(MCMND, "RTT: AP result received %d/%d\n",
-	       handle->rtt_completed_ap_count, handle->rtt_total_ap_count);
-
-	if (handle->rtt_total_ap_count > 0 &&
-	    handle->rtt_completed_ap_count >= handle->rtt_total_ap_count) {
-		PRINTM(MCMND,
-		       "RTT: all %d APs done, sending consolidated host "
-		       "event buf_len=%u\n",
-		       handle->rtt_total_ap_count, handle->rtt_result_buf_len);
-
-		/* Mark the consolidated buffer as complete */
-		handle->rtt_result_buf[0] = 1;
-
-		/* Snapshot the buffer before resetting state */
-		local_len = handle->rtt_result_buf_len;
-		moal_memcpy_ext(handle, local_buf, handle->rtt_result_buf,
-				local_len, buf_size);
-
-		/* Reset state atomically so no other thread can re-enter
-		 * the all_done path for this ranging session.
-		 */
-		handle->rtt_params.rtt_config_num = 0;
-		handle->rtt_total_ap_count = 0;
-		handle->rtt_completed_ap_count = 0;
-		handle->rtt_result_buf_len = 0;
-		handle->ftm_session_in_progress = MFALSE;
-		all_done = 1;
-	}
-
-	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
-
-	/* Send ONE vendor event with all AP results, outside the spinlock
-	 * since cfg80211_vendor_event() uses GFP_KERNEL and may sleep.
-	 */
-	if (all_done) {
-		if (local_len > buf_size) {
-			PRINTM(MERROR, "Incorrect RTT Result len: %d",
-			       local_len);
-			goto wake;
-		}
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
-#ifdef STA_CFG80211
-		if (handle->rtt_version == 3) {
-			/* local_len is checked as <= buf_size above */
-			// coverity[integer_overflow:SUPPRESS]
-			woal_cfg80211_event_rtt_result_v3(priv, local_buf,
-							  local_len);
-		} else {
-			/* local_len is checked as <= buf_size above */
-			// coverity[integer_overflow:SUPPRESS]
-			woal_cfg80211_event_rtt_result(priv, local_buf,
-						       local_len);
-		}
-#endif
-#endif
-	}
-
-wake:
-	/* Signal the range-request loop to start the next AP */
 	handle->ftm_result_wait_q_woken = MTRUE;
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
 	wake_up_interruptible(&handle->ftm_result_wait_q);
-
-	if (local_buf)
-		kfree(local_buf);
-
-	LEAVE();
+	return;
+out:
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
 }
 
 /**
@@ -8039,65 +7907,163 @@ static int woal_cfg80211_subcmd_rtt_range_request_v3(struct wiphy *wiphy,
 						     struct wireless_dev *wdev,
 						     const void *data, int len)
 {
-	struct net_device *dev = wdev->netdev;
-	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
-	moal_handle *handle = priv->phandle;
-	wifi_rtt_config_params_v3_t *rtt_params_v3 = NULL;
-	int ret = 0;
+	moal_private *priv = woal_get_netdev_priv(wdev->netdev);
+	wifi_rtt_config_params_v3_t *params;
+	int ret;
 
-	ENTER();
-
-	rtt_params_v3 =
-		kzalloc(sizeof(wifi_rtt_config_params_v3_t), GFP_ATOMIC);
-	if (!rtt_params_v3) {
-		PRINTM(MERROR,
-		       "Failed to allocate memory for rtt_params_v3 of size: %d",
-		       (int)sizeof(wifi_rtt_config_params_v3_t));
-		ret = -ENOMEM;
-		goto done;
+	params = kzalloc(sizeof(*params), GFP_KERNEL);
+	if (!params)
+		return -ENOMEM;
+	ret = woal_parse_rtt_range_request_v3(priv->phandle, data, len, params);
+	if (!ret && !params->rtt_config_num)
+		ret = -EINVAL;
+	if (!ret) {
+		woal_dump_rtt_params_v3(params);
+		ret = woal_rtt_queue_request(priv, 3, params);
 	}
-
-	ret = woal_parse_rtt_range_request_v3(handle, data, len, rtt_params_v3);
-	if (ret || rtt_params_v3->rtt_config_num == 0) {
-		PRINTM(MERROR, "Failed to parse RTT v3 range request\n");
-		ret = -EFAULT;
-		goto done;
-	}
-
-	PRINTM(MCMND, "RTT v3 range request: %d targets\n",
-	       rtt_params_v3->rtt_config_num);
-	woal_dump_rtt_params_v3(rtt_params_v3);
-
-	handle->rtt_version = 3;
-	handle->rtt_priv = priv;
-
-	memset(&handle->rtt_params_v3, 0, sizeof(wifi_rtt_config_params_v3_t));
-	moal_memcpy_ext(handle, &handle->rtt_params_v3, rtt_params_v3,
-			rtt_params_v3->rtt_config_num *
-				sizeof(wifi_rtt_config_v3),
-			sizeof(wifi_rtt_config_params_v3_t));
-	if (handle->rtt_params_v3.rtt_config_num !=
-	    rtt_params_v3->rtt_config_num) {
-		PRINTM(MERROR,
-		       "Incorrect rtt_config_num: handle->rtt_params_v3.rtt_config_num: %d, "
-		       "rtt_params_v3->rtt_config_num: %d",
-		       handle->rtt_params_v3.rtt_config_num,
-		       rtt_params_v3->rtt_config_num);
-		goto done;
-	}
-
-	/*
-	 * Queue ranging work. woal_rtt_work_handler() will call
-	 * woal_ftm_session_cfg() for 11mc or woal_ftm_session_cfg_ntb_ranging()
-	 * for 11az targets based on rtt_type.
-	 */
-	queue_work(handle->evt_workqueue, &handle->rtt_work);
-
-done:
-	if (rtt_params_v3)
-		kfree(rtt_params_v3);
-	LEAVE();
+	kfree(params);
 	return ret;
+}
+
+void woal_rtt_pmsr_work_handler(struct work_struct *work)
+{
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+	moal_handle *handle = container_of(work, moal_handle, rtt_pmsr_work);
+	moal_private *priv;
+	struct cfg80211_pmsr_request *request;
+	struct cfg80211_pmsr_result result = {};
+	wifi_rtt_result saved;
+	unsigned long flags;
+
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	priv = handle->rtt_priv;
+	if (handle->rtt_owner != RTT_OWNER_PMSR || !priv ||
+	    !handle->rtt_pmsr_result_ready || handle->rtt_terminating ||
+	    handle->rtt_quiescing ||
+	    !priv->pmsr_request) {
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		mutex_unlock(&handle->rtt_mutex);
+		return;
+	}
+	request = priv->pmsr_request;
+	saved = handle->rtt_pmsr_result;
+	handle->rtt_pmsr_result_ready = MFALSE;
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+
+	memcpy(result.addr, saved.addr, ETH_ALEN);
+	result.type = NL80211_PMSR_TYPE_FTM;
+	result.status = saved.status == RTT_STATUS_SUCCESS ?
+				NL80211_PMSR_STATUS_SUCCESS :
+				NL80211_PMSR_STATUS_FAILURE;
+	result.ftm.rtt_avg = saved.rtt;
+	result.ftm.dist_avg = (s64)saved.distance_mm * 256;
+	result.ftm.num_ftmr_attempts = saved.burst_num;
+	result.ftm.num_ftmr_successes = saved.success_number;
+	result.ftm.rtt_avg_valid = result.ftm.dist_avg_valid = 1;
+	result.ftm.num_ftmr_attempts_valid = 1;
+	result.ftm.num_ftmr_successes_valid = 1;
+	/* The mutex excludes abort; do not dereference request after complete. */
+	cfg80211_pmsr_report(priv->wdev, request, &result, GFP_KERNEL);
+	cfg80211_pmsr_complete(priv->wdev, request, GFP_KERNEL);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	priv->pmsr_request = NULL;
+	woal_rtt_release(handle);
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
+#endif
+}
+
+/* Close admission before draining workers, without holding their mutex. */
+void woal_rtt_quiesce(moal_handle *handle, moal_private *owner)
+{
+	unsigned long flags;
+	moal_private *priv;
+	t_u8 peer[ETH_ALEN];
+	t_u32 freq = 0;
+	int ret = 0;
+	BOOLEAN stop = MFALSE;
+
+	if (!handle->rtt_initialized)
+		return;
+	mutex_lock(&handle->rtt_quiesce_mutex);
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	/* Fence the departing interface even when another/no session owns RTT. */
+	if (owner)
+		owner->rtt_admission_closed = MTRUE;
+	else
+		handle->rtt_terminating = MTRUE;
+	priv = handle->rtt_priv;
+	if (owner && priv != owner) {
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		mutex_unlock(&handle->rtt_mutex);
+		mutex_unlock(&handle->rtt_quiesce_mutex);
+		return;
+	}
+	if (owner && handle->ftm_session_in_progress &&
+	    !handle->surprise_removed) {
+		if (handle->rtt_owner == RTT_OWNER_VENDOR &&
+		    handle->rtt_current_index >= 0) {
+			wifi_rtt_config *cfg = woal_rtt_config_at(
+				handle, handle->rtt_current_index);
+			memcpy(peer, cfg->addr, ETH_ALEN);
+			freq = cfg->channel.center_freq;
+			stop = MTRUE;
+		} else if (handle->rtt_owner == RTT_OWNER_PMSR) {
+			memcpy(peer, handle->rtt_pmsr_peer, ETH_ALEN);
+			freq = handle->rtt_pmsr_center_freq;
+			stop = MTRUE;
+		}
+	}
+	handle->rtt_quiescing = MTRUE;
+	handle->rtt_range_cancel = MTRUE;
+	handle->ftm_result_wait_q_woken = MTRUE;
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+	if (priv)
+		priv->pmsr_request = NULL;
+#endif
+	handle->rtt_pmsr_result_ready = MFALSE;
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	if (stop)
+		ret = woal_ftm_session_ctrl(priv, peer, freq,
+					     FTM_SESSION_CTRL_ACTION_STOP);
+	mutex_unlock(&handle->rtt_mutex);
+	wake_up_interruptible(&handle->ftm_result_wait_q);
+	cancel_work_sync(&handle->rtt_work);
+	cancel_work_sync(&handle->rtt_pmsr_work);
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
+	handle->rtt_work_done = MTRUE;
+	woal_rtt_release(handle);
+	handle->rtt_quiescing = MFALSE;
+	/* Failed STOP blocks every interface until an explicit successful reset. */
+	if (ret)
+		handle->rtt_terminating = MTRUE;
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
+	mutex_unlock(&handle->rtt_quiesce_mutex);
+}
+
+void woal_rtt_reopen(moal_handle *handle)
+{
+	unsigned long flags;
+
+	if (!handle->rtt_initialized)
+		return;
+	mutex_lock(&handle->rtt_quiesce_mutex);
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	if (handle->rtt_owner == RTT_OWNER_IDLE) {
+		handle->rtt_terminating = MFALSE;
+		handle->rtt_range_cancel = MFALSE;
+		handle->ftm_result_wait_q_woken = MFALSE;
+		WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
+	}
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
+	mutex_unlock(&handle->rtt_quiesce_mutex);
 }
 
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
@@ -8441,9 +8407,31 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 			     struct cfg80211_pmsr_request *request)
 {
 	moal_private *priv = woal_get_netdev_priv(wdev->netdev);
+	moal_handle *handle = priv->phandle;
+	unsigned long flags;
 	int i, ret = 0;
 
 	ENTER();
+	if (request->n_peers != 1)
+		return -EINVAL;
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	if (handle->rtt_terminating || handle->rtt_quiescing ||
+	    priv->rtt_admission_closed || handle->surprise_removed ||
+	    handle->fw_reseting || handle->driver_status)
+		ret = -ENODEV;
+	else if (handle->rtt_owner != RTT_OWNER_IDLE)
+		ret = -EBUSY;
+	if (ret) {
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		mutex_unlock(&handle->rtt_mutex);
+		return ret;
+	}
+	handle->rtt_owner = RTT_OWNER_PMSR;
+	handle->rtt_pmsr_result_ready = MFALSE;
+	memcpy(handle->rtt_pmsr_peer, request->peers[0].addr, ETH_ALEN);
+	handle->rtt_pmsr_center_freq =
+		request->peers[0].chandef.chan->center_freq;
 	priv->pmsr_request = request;
 	/* Set rtt_version=1 so woal_rtt_ap_result_received() handles
 	 * the result correctly (not dropped as "incorrect rtt_version"). */
@@ -8455,10 +8443,11 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 	priv->phandle->rtt_result_buf[0] = 0;
 	priv->phandle->rtt_result_buf_len = sizeof(t_u8);
 	priv->phandle->rtt_completed_ap_count = 0;
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
 
 	for (i = 0; i < request->n_peers; i++) {
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 		struct cfg80211_pmsr_request_peer *peer = &request->peers[i];
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
 
 		if (peer->ftm.non_trigger_based || peer->ftm.trigger_based) {
 			PRINTM(MCMND, "start_pmsr: peer %d using 11az %s\n", i,
@@ -8485,7 +8474,9 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 				priv, peer->addr,
 				peer->chandef.chan->center_freq,
 				FTM_SESSION_CTRL_ACTION_START);
-		} else {
+		} else
+#endif
+		{
 			PRINTM(MCMND, "start_pmsr: peer %d using 11mc\n", i);
 			ret = woal_ftm_session_cfg_pmsr(priv, peer);
 			if (ret) {
@@ -8499,7 +8490,6 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 				peer->chandef.chan->center_freq,
 				FTM_SESSION_CTRL_ACTION_START);
 		}
-#endif /* CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) */
 		if (ret) {
 			PRINTM(MERROR,
 			       "start_pmsr: session_ctrl failed peer %d\n", i);
@@ -8507,12 +8497,18 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 		}
 	}
 done:
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
 	if (ret) {
-		priv->phandle->rtt_version = 0;
-		priv->pmsr_request = NULL; /* clear only on failure */
+		priv->pmsr_request = NULL;
+		handle->rtt_pmsr_result_ready = MFALSE;
+		woal_rtt_release(handle);
+		WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
+	} else {
+		WRITE_ONCE(handle->ftm_session_in_progress,
+			   !handle->rtt_pmsr_result_ready);
 	}
-	/* On success: pmsr_request stays set until result arrives in
-	 * moal_shim.c */
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
 	LEAVE();
 	return ret;
 }
@@ -8527,18 +8523,39 @@ void woal_cfg80211_abort_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 			      struct cfg80211_pmsr_request *request)
 {
 	moal_private *priv = woal_get_netdev_priv(wdev->netdev);
-	int i;
+	moal_handle *handle = priv->phandle;
+	struct cfg80211_pmsr_request_peer *peer;
+	unsigned long flags;
+	int ret = 0;
+	BOOLEAN active;
 
-	ENTER();
-	for (i = 0; i < request->n_peers; i++) {
-		struct cfg80211_pmsr_request_peer *peer = &request->peers[i];
-		woal_ftm_session_ctrl_pmsr(priv, peer->addr,
-					   peer->chandef.chan->center_freq,
-					   FTM_SESSION_CTRL_ACTION_STOP);
+	mutex_lock(&handle->rtt_mutex);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	if (handle->rtt_owner != RTT_OWNER_PMSR || handle->rtt_priv != priv ||
+	    priv->pmsr_request != request) {
+		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+		mutex_unlock(&handle->rtt_mutex);
+		return;
 	}
+	active = handle->ftm_session_in_progress;
 	priv->pmsr_request = NULL;
-	LEAVE();
+	handle->rtt_pmsr_result_ready = MFALSE;
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	peer = &request->peers[0];
+	if (active)
+		ret = woal_ftm_session_ctrl_pmsr(priv, peer->addr,
+					peer->chandef.chan->center_freq,
+					FTM_SESSION_CTRL_ACTION_STOP);
+	spin_lock_irqsave(&handle->rtt_result_lock, flags);
+	if (!ret) {
+		WRITE_ONCE(handle->ftm_session_in_progress, MFALSE);
+		woal_rtt_release(handle);
+	}
+	/* Failed STOP stays busy until a matching firmware result or reset. */
+	spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+	mutex_unlock(&handle->rtt_mutex);
 }
+
 
 #endif /* KERNEL_VERSION(4, 20, 0) */
 

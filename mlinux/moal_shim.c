@@ -6218,57 +6218,6 @@ mlan_status moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 						    pmevent->event_len);
 #endif
 #endif
-
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
-#if defined(STA_CFG80211) || defined(UAP_CFG80211)
-		if (priv && priv->pmsr_request) {
-			struct cfg80211_pmsr_result result = {};
-			t_u8 *pos = pmevent->event_buf;
-			wifi_rtt_result_element *elem;
-			wifi_rtt_result *rtt_res;
-
-			/* Skip complete flag */
-			pos += sizeof(t_u8);
-			elem = (wifi_rtt_result_element *)pos;
-			rtt_res = (wifi_rtt_result *)(elem->data);
-
-			/* On FTM_FAIL: report failure to wpa_supplicant.
-			 * User can retry pr_pasn_start — same as mlanwls
-			 * behavior. */
-			moal_memcpy_ext(priv->phandle, result.addr,
-					rtt_res->addr, /* use peer MAC from FW
-							  result */
-					ETH_ALEN, sizeof(result.addr));
-			result.type = NL80211_PMSR_TYPE_FTM;
-			result.status =
-				(rtt_res->status == RTT_STATUS_SUCCESS) ?
-					NL80211_PMSR_STATUS_SUCCESS :
-					NL80211_PMSR_STATUS_FAILURE;
-			result.ftm.rtt_avg = rtt_res->rtt;
-			/* dist_avg in units of 1/256 mm (cfg80211 PMSR
-			 * fixed-point). distance_mm from FW is in mm, multiply
-			 * by 256. */
-			result.ftm.dist_avg = (s64)rtt_res->distance_mm * 256;
-			result.ftm.num_ftmr_attempts = rtt_res->burst_num;
-			result.ftm.num_ftmr_successes = rtt_res->success_number;
-			result.ftm.rtt_avg_valid = result.ftm.dist_avg_valid =
-				1;
-			result.ftm.num_ftmr_attempts_valid =
-				result.ftm.num_ftmr_successes_valid = 1;
-			PRINTM(MMSG,
-			       "PMSR result: rtt=%lld dist_mm=%d status=%d\n",
-			       rtt_res->rtt, rtt_res->distance_mm,
-			       rtt_res->status);
-			cfg80211_pmsr_report(priv->wdev, priv->pmsr_request,
-					     &result, GFP_KERNEL);
-			cfg80211_pmsr_complete(priv->wdev, priv->pmsr_request,
-					       GFP_KERNEL);
-			priv->pmsr_request = NULL;
-			priv->phandle->rtt_version = 0;
-		}
-#endif /* STA_CFG80211 || UAP_CFG80211 */
-#endif /* KERNEL_VERSION(4, 20, 0) */
-
 		break;
 	case MLAN_EVENT_ID_DRV_ADDBA_TIMEOUT:
 		evtbuf = (addba_timeout_event *)(pmevent->event_buf);
