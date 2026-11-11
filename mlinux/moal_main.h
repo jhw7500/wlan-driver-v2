@@ -199,13 +199,23 @@
 #define IMX_ANDROID_14 0
 #define IMX_ANDROID_12_BACKPORT 0
 
-/** moal_strncpy - kernel version compatible strncpy wrapper
- *  strncpy() was removed from the kernel in v7.2. Since all call sites in this
- *  driver copy into NUL-terminated char buffers and ignore the return value,
- *  strscpy() is a safe drop-in replacement on kernels >= 7.2.
+/** moal_strncpy - preserve counted-copy and padding semantics of strncpy
+ *  Callers may copy non-NUL substrings and append their own terminator.
+ *  A full-width copy must therefore retain every byte in count.
  */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
-#define moal_strncpy(dst, src, size) strscpy(dst, src, size)
+static inline char *moal_strncpy(char *dst, const char *src, size_t count)
+{
+	size_t length;
+
+	if (!count)
+		return dst;
+	length = strnlen(src, count);
+	memcpy(dst, src, length);
+	if (length < count)
+		memset(dst + length, 0, count - length);
+	return dst;
+}
 #else
 #define moal_strncpy(dst, src, size) strncpy(dst, src, size)
 #endif
@@ -3320,6 +3330,8 @@ struct _moal_handle {
 	/** Lock order: quiesce_mutex -> rtt_mutex -> rtt_result_lock.
 	 * Firmware result callbacks take only rtt_result_lock. */
 	struct mutex rtt_mutex;
+	/** Firmware RTT bit; no independent 11az/NTB capability is exposed. */
+	BOOLEAN rtt_fw_supported;
 	/** Serializes drains while rtt_mutex is released for cancel_work_sync. */
 	struct mutex rtt_quiesce_mutex;
 	BOOLEAN rtt_initialized;
@@ -3341,10 +3353,6 @@ struct _moal_handle {
 	t_u8 rtt_pmsr_peer[MLAN_MAC_ADDR_LENGTH];
 	t_u32 rtt_pmsr_center_freq;
 	BOOLEAN rtt_pmsr_result_ready;
-	/** RTT capability */
-	wifi_rtt_capabilities rtt_capa;
-	/** RTT capability v3 (11az) */
-	wifi_rtt_capabilities_v3 rtt_capa_v3;
 	/** RTT config */
 	wifi_rtt_config_params_t rtt_params;
 	/** RTT v3 config */

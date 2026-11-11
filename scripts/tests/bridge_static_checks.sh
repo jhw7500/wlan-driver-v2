@@ -460,7 +460,7 @@ check_pending_handle_invalidation_contract() {
     END { exit !(invalidate && remove && invalidate < remove) }
   ' || return 1
   printf '%s\n' "$post_reset" | awk '
-    /if \(!handle->wifi_hal_flag\)/ { destructive=NR }
+    /if \(!handle->wifi_hal_flag( \|\| woal_rtt_wiphy_changed\(handle\))?\)/ { destructive=NR }
     /moal_bridge_pending_invalidate_handle\(handle\)/ { invalidate=NR }
     /woal_remove_interface\(handle, intf_num\)/ { remove=NR }
     END { exit !(destructive && invalidate && remove &&

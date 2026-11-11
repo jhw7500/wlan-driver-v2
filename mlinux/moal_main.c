@@ -3086,25 +3086,7 @@ mlan_status woal_init_sw(moal_handle *handle)
 	handle->rtt_priv = NULL;
 
 	/* RTT Cabability */
-	handle->rtt_capa.rtt_one_sided_supported = MTRUE;
-	handle->rtt_capa.rtt_ftm_supported = MTRUE;
-	handle->rtt_capa.lci_support = MTRUE;
-	handle->rtt_capa.lcr_support = MTRUE;
-	handle->rtt_capa.preamble_support =
-		PREAMBLE_LEGACY | PREAMBLE_HT | PREAMBLE_VHT;
-	handle->rtt_capa.bw_support =
-		BW_20_SUPPORT | BW_40_SUPPORT | BW_80_SUPPORT;
-	handle->rtt_capa.responder_supported = MTRUE;
-	handle->rtt_capa.mc_version = 60;
-	/* RTT Capability v3 (11az) */
-	moal_memcpy_ext(handle, &handle->rtt_capa_v3.rtt_capab,
-			&handle->rtt_capa, sizeof(wifi_rtt_capabilities),
-			sizeof(handle->rtt_capa_v3.rtt_capab));
-	handle->rtt_capa_v3.az_preamble_support = PREAMBLE_HE;
-	handle->rtt_capa_v3.az_bw_support =
-		BW_20_SUPPORT | BW_40_SUPPORT | BW_80_SUPPORT;
-	handle->rtt_capa_v3.ntb_initiator_supported = MTRUE;
-	handle->rtt_capa_v3.ntb_responder_supported = MTRUE;
+	WRITE_ONCE(handle->rtt_fw_supported, MFALSE);
 	handle->is_edmac_enabled = MFALSE;
 	handle->driver_init = MFALSE;
 
@@ -16954,6 +16936,21 @@ static void woal_pre_reset(moal_handle *handle)
  *
  *  @return        NULL;
  */
+/* Registered wiphy capabilities are immutable; use the existing rebuild path
+ * if a firmware reload changes RTT availability, including with an Android HAL.
+ */
+static int woal_rtt_wiphy_changed(moal_handle *handle)
+{
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+	return handle->wiphy &&
+	       (!!handle->wiphy->pmsr_capa !=
+		!!READ_ONCE(handle->rtt_fw_supported));
+#endif
+#endif
+	return 0;
+}
+
 static int woal_post_reset(moal_handle *handle)
 {
 	mlan_ioctl_req *req = NULL;
@@ -17048,7 +17045,7 @@ static int woal_post_reset(moal_handle *handle)
 		PRINTM(MERROR, "%s: get_fw_info failed\n", __func__);
 	woal_get_version(handle, str_buf, sizeof(str_buf) - 1);
 	PRINTM(MMSG, "wlan: version = %s\n", str_buf);
-	if (!handle->wifi_hal_flag) {
+	if (!handle->wifi_hal_flag || woal_rtt_wiphy_changed(handle)) {
 		/* This variant recreates netdev identity while the bridge notifier is
 		 * suspended.  Invalidate the old target name before any unregister. */
 		moal_bridge_pending_invalidate_handle(handle);

@@ -951,8 +951,8 @@ static int woal_cfg80211_subcmd_get_supp_feature_set(struct wiphy *wiphy,
 	}
 	if (fw_info.fw_bands & BAND_A)
 		supp_feature_set |= WLAN_FEATURE_INFRA_5G;
-	// Device to AP RTT is default enabled for Android
-	supp_feature_set |= WLAN_FEATURE_D2AP_RTT;
+	if (fw_info.rtt_support)
+		supp_feature_set |= WLAN_FEATURE_D2AP_RTT;
 	priv->phandle->wifi_hal_flag = MTRUE;
 
 	reply_len = sizeof(supp_feature_set);
@@ -6585,6 +6585,22 @@ static int woal_cfg80211_subcmd_set_dfs_offload(struct wiphy *wiphy,
  *
  * @return      0: success  -1: fail
  */
+/* The FW exposes a generic RTT bit, not 11az/NTB or optional role bits.
+ * Build a local reply so a concurrent FW-info refresh cannot mix fields.
+ */
+static void woal_rtt_get_capabilities(moal_handle *handle,
+				    wifi_rtt_capabilities_v3 *capa)
+{
+	memset(capa, 0, sizeof(*capa));
+	if (!READ_ONCE(handle->rtt_fw_supported))
+		return;
+	capa->rtt_capab.rtt_ftm_supported = MTRUE;
+	capa->rtt_capab.preamble_support =
+		PREAMBLE_LEGACY | PREAMBLE_HT | PREAMBLE_VHT;
+	capa->rtt_capab.bw_support =
+		BW_20_SUPPORT | BW_40_SUPPORT | BW_80_SUPPORT;
+}
+
 static int woal_cfg80211_subcmd_rtt_get_capa(struct wiphy *wiphy,
 					     struct wireless_dev *wdev,
 					     const void *data, int len)
@@ -6592,11 +6608,13 @@ static int woal_cfg80211_subcmd_rtt_get_capa(struct wiphy *wiphy,
 	struct net_device *dev = wdev->netdev;
 	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
 	moal_handle *handle = priv->phandle;
+	wifi_rtt_capabilities_v3 capa;
 	struct sk_buff *skb = NULL;
 	int err = 0;
 
 	ENTER();
 	PRINTM(MCMND, "CfgVendor: cfg80211_subcmd_rtt_get_capa\n");
+	woal_rtt_get_capabilities(handle, &capa);
 
 	// Casting is done to read the value
 	// coverity[misra_c_2012_rule_11_8_violation:SUPPRESS]
@@ -6604,16 +6622,16 @@ static int woal_cfg80211_subcmd_rtt_get_capa(struct wiphy *wiphy,
 
 	/* Alloc the SKB for vendor_event */
 	skb = cfg80211_vendor_cmd_alloc_reply_skb(
-		wiphy, nla_total_size(sizeof(handle->rtt_capa)) +
+		wiphy, nla_total_size(sizeof(capa.rtt_capab)) +
 			       VENDOR_REPLY_OVERHEAD);
 	if (unlikely(!skb)) {
 		PRINTM(MERROR, "skb alloc failed in %s\n", __func__);
+		err = -ENOMEM;
 		goto done;
 	}
 
 	/* Put the attribute to the skb */
-	nla_put(skb, ATTR_RTT_CAPA, sizeof(handle->rtt_capa),
-		&(handle->rtt_capa));
+	nla_put(skb, ATTR_RTT_CAPA, sizeof(capa.rtt_capab), &capa.rtt_capab);
 
 	PRINTM(MCMND, "NL80211_CMD_VENDOR=0x%x\n", NL80211_CMD_VENDOR);
 	PRINTM(MCMND, "NL80211_ATTR_WIPHY=0x%x\n", NL80211_ATTR_WIPHY);
@@ -6653,25 +6671,25 @@ static int woal_cfg80211_subcmd_rtt_get_capa_v3(struct wiphy *wiphy,
 	struct net_device *dev = wdev->netdev;
 	moal_private *priv = (moal_private *)woal_get_netdev_priv(dev);
 	moal_handle *handle = priv->phandle;
+	wifi_rtt_capabilities_v3 capa;
 	struct sk_buff *skb = NULL;
 	int err = 0;
 
 	ENTER();
-	PRINTM(MCMND, "Get RTT v3 capability, device support: %s\n",
-	       handle->rtt_capa_v3.az_preamble_support ? "11az" : "11mc");
+	woal_rtt_get_capabilities(handle, &capa);
 
 	/* Alloc the SKB for vendor_event */
 	skb = cfg80211_vendor_cmd_alloc_reply_skb(
-		wiphy, nla_total_size(sizeof(handle->rtt_capa_v3)) +
+		wiphy, nla_total_size(sizeof(capa)) +
 			       VENDOR_REPLY_OVERHEAD);
 	if (unlikely(!skb)) {
 		PRINTM(MERROR, "skb alloc failed in %s\n", __func__);
+		err = -ENOMEM;
 		goto done;
 	}
 
 	/* Put the attribute to the skb */
-	nla_put(skb, ATTR_RTT_CAPA_V3, sizeof(handle->rtt_capa_v3),
-		&(handle->rtt_capa_v3));
+	nla_put(skb, ATTR_RTT_CAPA_V3, sizeof(capa), &capa);
 
 	err = cfg80211_vendor_cmd_reply(skb);
 	if (unlikely(err))
@@ -7294,6 +7312,8 @@ static int woal_rtt_queue_request(moal_private *priv, int version,
 {
 	moal_handle *handle = priv->phandle;
 	unsigned long flags;
+	const wifi_rtt_config *cfg;
+	unsigned int count, i;
 	int ret = 0;
 
 	mutex_lock(&handle->rtt_mutex);
@@ -7307,6 +7327,41 @@ static int woal_rtt_queue_request(moal_private *priv, int version,
 	if (handle->rtt_owner != RTT_OWNER_IDLE) {
 		ret = -EBUSY;
 		goto out;
+	}
+	if (!READ_ONCE(handle->rtt_fw_supported)) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (version != 1 && version != 3) {
+		ret = -EINVAL;
+		goto out;
+	}
+	count = version == 3 ?
+			((const wifi_rtt_config_params_v3_t *)params)->rtt_config_num :
+			((const wifi_rtt_config_params_t *)params)->rtt_config_num;
+	if (!count || count > MAX_RTT_CONFIG_NUM) {
+		ret = -EINVAL;
+		goto out;
+	}
+	/* Validate every target before publishing any ownership or configuration. */
+	for (i = 0; i < count; i++) {
+		cfg = version == 3 ?
+			      &((const wifi_rtt_config_params_v3_t *)params)
+				       ->rtt_config_v3[i].rtt_config :
+			      &((const wifi_rtt_config_params_t *)params)->rtt_config[i];
+		if (cfg->type != RTT_TYPE_2_SIDED_11MC ||
+		    (cfg->preamble != WIFI_RTT_PREAMBLE_LEGACY &&
+		     cfg->preamble != WIFI_RTT_PREAMBLE_HT &&
+		     cfg->preamble != WIFI_RTT_PREAMBLE_VHT) ||
+		    (cfg->bw != WIFI_RTT_BW_20 && cfg->bw != WIFI_RTT_BW_40 &&
+		     cfg->bw != WIFI_RTT_BW_80) ||
+		    (cfg->preamble == WIFI_RTT_PREAMBLE_LEGACY &&
+		     cfg->bw != WIFI_RTT_BW_20) ||
+		    (cfg->preamble == WIFI_RTT_PREAMBLE_HT && cfg->bw == WIFI_RTT_BW_80) ||
+		    cfg->LCI_request || cfg->LCR_request) {
+			ret = -EOPNOTSUPP;
+			goto out;
+		}
 	}
 	if (version == 3) {
 		handle->rtt_params_v3 =
@@ -7363,7 +7418,8 @@ void woal_rtt_work_handler(struct work_struct *work)
 		mutex_lock(&handle->rtt_mutex);
 		spin_lock_irqsave(&handle->rtt_result_lock, flags);
 		if (handle->rtt_terminating || handle->rtt_quiescing ||
-		    handle->surprise_removed || handle->rtt_range_cancel) {
+		    handle->surprise_removed || handle->rtt_range_cancel ||
+		    !READ_ONCE(handle->rtt_fw_supported)) {
 			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
 			mutex_unlock(&handle->rtt_mutex);
 			break;
@@ -8423,6 +8479,15 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 		ret = -ENODEV;
 	else if (handle->rtt_owner != RTT_OWNER_IDLE)
 		ret = -EBUSY;
+	else if (!READ_ONCE(handle->rtt_fw_supported) ||
+		 request->peers[0].ftm.request_lci ||
+		 request->peers[0].ftm.request_civicloc)
+		ret = -EOPNOTSUPP;
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+	else if (request->peers[0].ftm.non_trigger_based ||
+		 request->peers[0].ftm.trigger_based)
+		ret = -EOPNOTSUPP;
+#endif
 	if (ret) {
 		spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
 		mutex_unlock(&handle->rtt_mutex);

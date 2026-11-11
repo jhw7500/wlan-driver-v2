@@ -11857,26 +11857,18 @@ mlan_status woal_register_sta_cfg80211(struct net_device *dev, t_u8 bss_type)
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
 static const struct cfg80211_pmsr_capabilities nxp_pmsr_capa = {
 	.max_peers = 1,
-	.report_ap_tsf = 1,
+	.report_ap_tsf = 0,
 	.randomize_mac_addr = 0,
 	.ftm =
 		{
 			.supported = 1,
 			.asap = 1,
 			.non_asap = 1,
-			.request_lci = 1,
-			.request_civicloc = 1,
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-			.trigger_based = 1,
-			.non_trigger_based = 1,
-#endif
+			.request_lci = 0,
+			.request_civicloc = 0,
 			.preambles = BIT(NL80211_PREAMBLE_LEGACY) |
 				     BIT(NL80211_PREAMBLE_HT) |
-				     BIT(NL80211_PREAMBLE_VHT)
-#if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-				     | BIT(NL80211_PREAMBLE_HE)
-#endif
-				,
+				     BIT(NL80211_PREAMBLE_VHT),
 			.bandwidths = BIT(NL80211_CHAN_WIDTH_20_NOHT) |
 				      BIT(NL80211_CHAN_WIDTH_20) |
 				      BIT(NL80211_CHAN_WIDTH_40) |
@@ -12045,10 +12037,9 @@ static mlan_status woal_cfg80211_init_wiphy(moal_private *priv,
 	wiphy->available_antennas_rx = radio->param.ant_cfg.rx_antenna;
 #endif /* CFG80211_VERSION_CODE */
 
-	/* Set PMSR capabilities and FTM responder ext feature */
+	/* Set PMSR capabilities only when the firmware reports RTT support. */
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
-	wiphy->pmsr_capa = &nxp_pmsr_capa;
-	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_ENABLE_FTM_RESPONDER);
+	wiphy->pmsr_capa = fw_info->rtt_support ? &nxp_pmsr_capa : NULL;
 #endif /* KERNEL_VERSION(4, 20, 0) */
 
 	/* Set retry limit count to wiphy */

@@ -2425,6 +2425,11 @@ mlan_status woal_request_get_fw_info(moal_private *priv, t_u8 wait_option,
 	else
 		PRINTM(MERROR, "get fw info failed! status=%d", status);
 done:
+	/* Reuse the normal FW-info path; querying it from RTT admission would
+	 * also overwrite the interface MAC. Failed refreshes fail closed.
+	 */
+	WRITE_ONCE(priv->phandle->rtt_fw_supported,
+		   status == MLAN_STATUS_SUCCESS && info->param.fw_info.rtt_support);
 	if (status != MLAN_STATUS_PENDING)
 		kfree(req);
 	LEAVE();
@@ -8411,6 +8416,11 @@ mlan_status woal_rtt_responder_cfg(moal_private *priv, t_u8 wait_option,
 	mlan_ds_misc_cfg *misc = NULL;
 
 	ENTER();
+	/* The generic RTT bit does not qualify responder/LCI/LCR support.
+	 * Keep disable available for cleanup.
+	 */
+	if (rtt_rsp_cfg->action != RTT_SET_RESPONDER_DISABLE)
+		return MLAN_STATUS_FAILURE;
 
 	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_misc_cfg));
 	if (req == NULL) {
