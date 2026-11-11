@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /** @file moal_main.h
  *
  * @brief This file contains wlan driver specific defines etc.
@@ -24,7 +24,7 @@
 /********************************************************
  * Change log:
  * 10/21/2008: initial version
- * ******************************************************
+ ********************************************************
  */
 
 #ifndef _MOAL_MAIN_H
@@ -199,6 +199,17 @@
 #define IMX_ANDROID_14 0
 #define IMX_ANDROID_12_BACKPORT 0
 
+/** moal_strncpy - kernel version compatible strncpy wrapper
+ *  strncpy() was removed from the kernel in v7.2. Since all call sites in this
+ *  driver copy into NUL-terminated char buffers and ignore the return value,
+ *  strscpy() is a safe drop-in replacement on kernels >= 7.2.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#define moal_strncpy(dst, src, size) strscpy(dst, src, size)
+#else
+#define moal_strncpy(dst, src, size) strncpy(dst, src, size)
+#endif
+
 #ifdef ANDROID_SDK_VERSION
 #if CFG80211_VERSION_CODE >= KERNEL_VERSION(5, 15, 52)
 #undef IMX_ANDROID_13
@@ -318,6 +329,7 @@ typedef t_u8 BOOLEAN;
 #define V16 "16"
 #define V17 "17"
 #define V18 "18"
+#define V19 "19"
 
 /** Chip Magic Value */
 #define CHIP_MAGIC_VALUE 0x24
@@ -385,6 +397,10 @@ typedef t_u8 BOOLEAN;
 /** FW cap info Ext bit 14: 6G Support */
 #ifndef FW_CAPINFO_EXT_6G
 #define FW_CAPINFO_EXT_6G MBIT(14)
+#endif
+/** FW cap info bit 25: 15.4 radio is not available (IW611) */
+#ifndef FW_CAPINFO_EXT_NO_15_4
+#define FW_CAPINFO_EXT_NO_15_4 MBIT(26)
 #endif
 
 /** Driver version */
@@ -1553,6 +1569,10 @@ struct rf_test_mode_data {
 	/* OTP CAL data */
 	mfg_cmd_otp_cal_data_rd_wr_t mfg_otp_cal_data_rd_wr;
 	mfg_CmdDebugTemperature_Cfg_t mfg_debug_temp;
+#if defined(SD9177)
+	/* RX BSSID Filter address */
+	mfg_cmd_rf_rx_bssid_cfg_t mfg_rx_bssid_addr;
+#endif
 	/*Generic CMD*/
 	mfg_Cmd_InternalTest_t mfg_InternalTest_t;
 };
@@ -2045,6 +2065,8 @@ struct _moal_private {
 	t_u8 cfg_bssid[ETH_ALEN];
 	/** Disconnect request from CFG80211 */
 	bool cfg_disconnect;
+	/** Keep connect */
+	bool keep_connect;
 	/** connect request from CFG80211 */
 	bool cfg_connect;
 	/** lock for cfg connect */
@@ -2289,6 +2311,13 @@ struct _moal_private {
 #endif
 
 	t_u32 band_ctrl;
+#if defined(STA_CFG80211) || defined(UAP_CFG80211)
+#if CFG80211_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+	/** Active cfg80211 PMSR request pointer.
+	 * Set by woal_cfg80211_start_pmsr(), cleared after pmsr_complete(). */
+	struct cfg80211_pmsr_request *pmsr_request;
+#endif
+#endif
 };
 
 #ifdef SDIO
@@ -2693,6 +2722,7 @@ enum {
 	SNIFF_BW_40MHZ_ABOVE = 1,
 	SNIFF_BW_40MHZ_BELOW = 3,
 	SNIFF_BW_80MHZ = 4,
+	SNIFF_BW_160MHZ = 5,
 };
 
 /** Monitor Band Channel Config */
@@ -2740,6 +2770,7 @@ typedef struct _moal_if_ops {
 	void (*dump_fw_info)(moal_handle *handle);
 	int (*dump_reg_info)(moal_handle *handle, t_u8 *buf);
 	mlan_status (*card_reset)(moal_handle *handle);
+	void (*cancel_reset_work)(moal_handle *handle);
 	void (*reg_dbg)(moal_handle *handle);
 	t_u8 (*is_second_mac)(moal_handle *handle);
 } moal_if_ops;
@@ -2762,6 +2793,8 @@ enum ext_mod_params {
 #endif
 #endif
 	EXT_START_11AI_SCAN,
+	EXT_SDIO_PD,
+	EXT_PARTIAL_IO,
 #if defined(USB)
 	EXT_SKIP_FWDNLD,
 #endif
@@ -2966,6 +2999,8 @@ typedef struct _moal_mod_para {
 
 	t_u16 amsdu_rx_size;
 
+	/** probe_req_rand_sn setting */
+	int probe_req_rand_sn;
 } moal_mod_para;
 
 void woal_tp_acnt_timer_func(void *context);
@@ -3115,6 +3150,9 @@ typedef MLAN_PACK_START struct {
 } MLAN_PACK_END wlan_agcs_info;
 #endif /* UAP_SUPPORT */
 
+/** OOB independent reset mode value in indrstcfg low byte */
+#define IR_MODE_OOB 0x1
+
 /** Handle data structure for MOAL */
 struct _moal_handle {
 	/** MLAN adapter structure */
@@ -3232,6 +3270,13 @@ struct _moal_handle {
 	/** wakeup notify flag */
 	bool wake_by_wifi;
 #endif /* IMX_SUPPORT */
+	/** GPIO descriptor for OOB independent reset.
+	 *  Populated at probe time from DT node: compatible =
+	 * "nxp,wlan-ind-rst" property: wlan-reset-gpios. NULL if DT node is
+	 * absent or GPIO acquisition fails -- inband reset is used in that
+	 * case.
+	 */
+	void *ind_rst_gpiod;
 	/** Card pointer */
 	t_void *card;
 	/** Rx pending in MLAN */
@@ -3272,8 +3317,39 @@ struct _moal_handle {
 #endif /* REASSOCIATION */
 	/** RTT capability */
 	wifi_rtt_capabilities rtt_capa;
+	/** RTT capability v3 (11az) */
+	wifi_rtt_capabilities_v3 rtt_capa_v3;
 	/** RTT config */
 	wifi_rtt_config_params_t rtt_params;
+	/** RTT v3 config */
+	wifi_rtt_config_params_v3_t rtt_params_v3;
+	/** RTT API version in use (1=v1, 3=v3) */
+	int rtt_version;
+	/** FTM session in progress flag */
+	BOOLEAN ftm_session_in_progress;
+	/** Private pointer for RTT work — needed by work handler */
+	moal_private *rtt_priv;
+	/** Work struct for async sequential RTT ranging */
+	struct work_struct rtt_work;
+	/** Total number of APs expecting FTM events (successfully started).*/
+	t_u8 rtt_total_ap_count;
+	/** Number of APs completed so far (success or fail) */
+	t_u8 rtt_completed_ap_count;
+	/** Accumulated result buffer: [complete(u8)] + N x [rtt_result_element]
+	 *  Sized for v3 results so both v1 and v3 callers can use it safely. */
+	t_u8 rtt_result_buf[sizeof(t_u8) +
+			    MAX_RTT_CONFIG_NUM *
+				    (sizeof(wifi_rtt_result_element) +
+				     sizeof(wifi_rtt_result_v3))];
+	/** Current write offset into rtt_result_buf */
+	t_u32 rtt_result_buf_len;
+	/** Spinlock protecting rtt_result_buf and rtt_completed_ap_count */
+	spinlock_t rtt_result_lock;
+	/** Wait queue for per-AP FTM session completion */
+	wait_queue_head_t ftm_result_wait_q;
+	/** Woken flag for ftm_ap_wait_q */
+	BOOLEAN ftm_result_wait_q_woken;
+	BOOLEAN rtt_range_cancel;
 	/** Driver workqueue */
 	struct workqueue_struct *workqueue;
 	/** main work */
@@ -3664,6 +3740,8 @@ struct _moal_handle {
 	void *secure;
 #endif
 
+	t_u8 partial_io_enable;
+
 #ifdef DUMP_TO_PROC
 #if defined(PCIE)
 	/** Serializes SSU dump producer, proc reader, and teardown ownership */
@@ -3674,6 +3752,9 @@ struct _moal_handle {
 	t_u8 *ssu_dump_buf;
 #endif
 #endif
+#if defined(LINUX_THERMAL_SUPPORT) && !defined(ANDROID_SDK_VERSION)
+	void *thermal_priv;
+#endif /* LINUX_THERMAL_SUPPORT && !ANDROID_SDK_VERSION */
 };
 
 /**
@@ -3975,6 +4056,15 @@ static inline void woal_print(t_u32 level, char *fmt, ...)
 #define DBG_DUMP_BUF_LEN 64
 #define MAX_DUMP_PER_LINE 16
 
+#define MPRTINK(buf)                                                           \
+	{                                                                      \
+		if (drvdbg & MEMERG) {                                         \
+			printk(KERN_EMERG "%s\n", buf);                        \
+		} else {                                                       \
+			printk(KERN_DEBUG "%s\n", buf);                        \
+		}                                                              \
+	}
+
 static inline void hexdump(t_u32 level, char *prompt, const t_u8 *buf, int len)
 {
 	int i;
@@ -3982,21 +4072,21 @@ static inline void hexdump(t_u32 level, char *prompt, const t_u8 *buf, int len)
 	char *ptr = dbgdumpbuf;
 
 	if (drvdbg & level)
-		printk(KERN_DEBUG "%s:\n", prompt);
+		MPRTINK(prompt)
 	for (i = 1; i <= len; i++) {
 		ptr += snprintf(ptr, 4, "%02x ", *buf);
 		buf++;
 		if (i % MAX_DUMP_PER_LINE == 0) {
 			*ptr = 0;
 			if (drvdbg & level)
-				printk(KERN_DEBUG "%s\n", dbgdumpbuf);
+				MPRTINK(dbgdumpbuf)
 			ptr = dbgdumpbuf;
 		}
 	}
 	if (len % MAX_DUMP_PER_LINE) {
 		*ptr = 0;
 		if (drvdbg & level)
-			printk(KERN_DEBUG "%s\n", dbgdumpbuf);
+			MPRTINK(dbgdumpbuf)
 	}
 }
 
@@ -4938,7 +5028,8 @@ mlan_status woal_set_hotspotcfg(moal_private *priv, t_u8 wait_option,
 				t_u32 hotspotcfg);
 
 #if defined(STA_CFG80211)
-mlan_status woal_multi_ap_cfg(moal_private *priv, t_u8 wait_option, t_u8 flag);
+mlan_status woal_multi_ap_cfg(moal_private *priv, t_u8 wait_option, t_u8 flag,
+			      t_u16 peer_aid);
 struct dhcp_discover_info *woal_get_dhcp_discover_info(moal_private *priv,
 						       t_u32 transaction_id);
 void woal_flush_dhcp_discover_queue(moal_private *priv);
@@ -4995,10 +5086,6 @@ void woal_channel_info_to_bandcfg(moal_private *priv,
 				  Band_Config_t *bandcfg);
 void woal_bandcfg_to_channel_info(moal_private *priv, Band_Config_t *bandcfg,
 				  t_u8 channel, wifi_channel_info *ch_info);
-mlan_status woal_config_rtt(moal_private *priv, t_u8 wait_option,
-			    wifi_rtt_config_params_t *rtt_params);
-mlan_status woal_cancel_rtt(moal_private *priv, t_u8 wait_option,
-			    t_u32 addr_num, t_u8 addr[][MLAN_MAC_ADDR_LENGTH]);
 mlan_status woal_rtt_responder_cfg(moal_private *priv, t_u8 wait_option,
 				   mlan_rtt_responder *rtt_rsp_cfg);
 #ifdef UAP_SUPPORT
@@ -5036,7 +5123,11 @@ void woal_unregist_oob_wakeup_irq(moal_handle *handle);
 void woal_disable_oob_wakeup_irq(moal_handle *handle);
 void woal_enable_oob_wakeup_irq(moal_handle *handle);
 irqreturn_t woal_oob_wakeup_irq_handler(int irq, void *priv);
+void woal_pull_pdn(void);
 #endif /* IMX_SUPPORT */
+void woal_regist_ind_rst_gpio(moal_handle *handle);
+void woal_unregist_ind_rst_gpio(moal_handle *handle);
+void woal_toggle_ind_rst_gpio(moal_handle *handle);
 
 t_bool woal_secure_add(t_void *datain, t_s32 add, t_void *dataout,
 		       data_type type);
@@ -5111,4 +5202,10 @@ extern agcs_state moal_agcs_get_state(moal_private *priv);
 extern mlan_status check_device_name_info(char *device_name, t_u16 *card_type);
 extern mlan_status woal_get_c_vidpid(char **c_vidpid);
 #endif
+#if defined(LINUX_THERMAL_SUPPORT) && !defined(ANDROID_SDK_VERSION)
+#include "moal_thermal.h"
+#endif /* LINUX_THERMAL_SUPPORT && !ANDROID_SDK_VERSION */
+#ifdef PCIE
+t_void moal_dma_wmb(t_void *pmoal);
+#endif /* PCIE */
 #endif /* _MOAL_MAIN_H */

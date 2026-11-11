@@ -5832,8 +5832,7 @@ static int get_netlink_num(int i)
 	}
 
 	if (fp) {
-		while (!feof(fp)) {
-			fgets(str, sizeof(str), fp);
+		while (fgets(str, sizeof(str), fp)) {
 			if (strncmp(str, srch, strlen(srch)) == 0) {
 				netlink_num = atoi(str + strlen(srch) + 1);
 				break;
@@ -19863,7 +19862,8 @@ static int process_cwmode(int argc, char *argv[])
 	pos = buffer;
 	memcpy((char *)pos, CMD_NXP, strlen(CMD_NXP));
 	pos += (strlen(CMD_NXP));
-	strncpy((char *)pos, argv[2], BUFFER_LENGTH);
+	/* The buffer is zeroed; copy only the registered command name. */
+	memcpy((char *)pos, argv[2], strlen(argv[2]));
 	pos += (strlen(argv[2]));
 	action = pos;
 	pos++;
@@ -23795,7 +23795,7 @@ static void send_dot11_packet(char *ifName, char *file_name)
 	t_u8 *sendbuf = NULL;
 	t_u8 *buff = NULL;
 	char *args[100], *pos, mac_addr[20];
-	struct ether_header *eh = (struct ether_header *)sendbuf;
+	struct ether_header *eh = NULL;
 	int data_len = 0, tx_len = 0;
 	dot11_txcontrol *txc;
 	struct sockaddr_ll socket_address;
@@ -23825,6 +23825,7 @@ static void send_dot11_packet(char *ifName, char *file_name)
 
 	/* Construct the Ethernet header */
 	memset(sendbuf, 0, BUF_SIZ);
+	eh = (struct ether_header *)sendbuf;
 	txc = (dot11_txcontrol *)(sendbuf + sizeof(struct ether_header));
 	config_file = fopen(file_name, "r");
 	if (config_file == NULL) {

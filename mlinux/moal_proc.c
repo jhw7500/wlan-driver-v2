@@ -24,7 +24,7 @@
 /********************************************************
  * Change log:
  * 10/21/2008: initial version
- * ******************************************************
+ ********************************************************
  */
 
 #include "moal_main.h"
@@ -42,7 +42,7 @@
 
 /********************************************************
  * Local Variables
- * ******************************************************
+ ********************************************************
  */
 #ifdef CONFIG_PROC_FS
 #define STATUS_PROC "wifi_status"
@@ -363,13 +363,13 @@ static char *szModes[] = {
 
 /********************************************************
  * Global Variables
- * ******************************************************
+ ********************************************************
  */
 int wifi_status;
 
 /********************************************************
  * Local Functions
- * ******************************************************
+ ********************************************************
  */
 /**
  *  @brief Proc read function for info
@@ -1045,6 +1045,20 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 #endif /* SD */
 	if (woal_config_cmd_match(databuf, count, "debug_dump")) {
 		PRINTM(MERROR, "Recevie debug_dump command\n");
+#ifdef DUMP_TO_PROC
+		/* Check if firmware dump already exists */
+		if (handle->fw_dump_buf && handle->fw_dump_len > 0) {
+			PRINTM(MERROR,
+			       "====================================================\n"
+			       "Firmware dump already exists!\n"
+			       "      Size: %ld bytes\n"
+			       "      Read the existing dump first.\n"
+			       "====================================================\n",
+			       (long)handle->fw_dump_len);
+			ret = -EEXIST;
+			goto done;
+		}
+#endif
 #ifdef USB
 		if (!IS_USB(handle->card_type))
 #endif
@@ -1229,6 +1243,12 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		     strlen("set_debug_temperature=")) &&
 	    count > strlen("set_debug_temperature="))
 		cmd = MFG_CMD_SET_DEBUG_TEMPERATURE;
+#if defined(SD9177)
+	if (!strncmp(databuf, "rf_rx_bssid_filter_addr=",
+		     strlen("rf_rx_bssid_filter_addr=")) &&
+	    count > strlen("rf_rx_bssid_filter_addr="))
+		cmd = MFG_CMD_RF_RX_BSSID_FILTER;
+#endif
 	if (!strncmp(databuf, "generic_cmd=", strlen("generic_cmd=")) &&
 	    count > strlen("generic_cmd="))
 		cmd = MFG_CMD_CONFIG_GENERIC_CMD;
@@ -1249,7 +1269,6 @@ static ssize_t woal_config_write(struct file *f, const char __user *buf,
 		    MLAN_STATUS_SUCCESS)
 			PRINTM(MERROR, "Could not set Antenna Diversity!!\n");
 	}
-
 done:
 	if (card_sem_held)
 		MOAL_REL_SEMAPHORE(&AddRemoveCardSem);
@@ -1502,6 +1521,18 @@ static int woal_config_read(struct seq_file *sfp, void *data)
 			handle->rf_data->mfg_debug_temp.rfu_temperature[0][1],
 			handle->rf_data->mfg_debug_temp.rfu_temperature[1][0],
 			handle->rf_data->mfg_debug_temp.rfu_temperature[1][1]);
+
+#if defined(SD9177)
+		seq_puts(sfp, "\n");
+		seq_puts(sfp, "rf_rx_bssid_filter_addr=");
+		seq_printf(sfp, " %02x:%02x:%02x:%02x:%02x:%02x\n",
+			   handle->rf_data->mfg_rx_bssid_addr.bssid[0],
+			   handle->rf_data->mfg_rx_bssid_addr.bssid[1],
+			   handle->rf_data->mfg_rx_bssid_addr.bssid[2],
+			   handle->rf_data->mfg_rx_bssid_addr.bssid[3],
+			   handle->rf_data->mfg_rx_bssid_addr.bssid[4],
+			   handle->rf_data->mfg_rx_bssid_addr.bssid[5]);
+#endif
 
 		seq_puts(sfp, "\n");
 
@@ -1864,7 +1895,7 @@ static const struct file_operations wifi_status_proc_fops = {
 
 /********************************************************
  * Global Functions
- * ******************************************************
+ ********************************************************
  */
 /**
  *  @brief Convert string to number
@@ -2014,7 +2045,7 @@ void woal_proc_init(moal_handle *handle)
 		goto done;
 	}
 
-	strncpy(config_proc_dir, "config", sizeof(config_proc_dir));
+	moal_strncpy(config_proc_dir, "config", sizeof(config_proc_dir));
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
 	r = proc_create_data(config_proc_dir, 0644, handle->proc_wlan,
 			     &config_proc_fops, handle);
@@ -2029,7 +2060,7 @@ void woal_proc_init(moal_handle *handle)
 		PRINTM(MERROR, "Fail to create proc config\n");
 
 #ifdef DUMP_TO_PROC
-	strncpy(drv_dump_dir, "drv_dump", sizeof(drv_dump_dir));
+	moal_strncpy(drv_dump_dir, "drv_dump", sizeof(drv_dump_dir));
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
 	r = proc_create_data(drv_dump_dir, 0644, handle->proc_wlan,
 			     &drv_dump_fops, handle);
@@ -2043,7 +2074,7 @@ void woal_proc_init(moal_handle *handle)
 	if (!r)
 		PRINTM(MERROR, "Failed to create proc drv dump\n");
 
-	strncpy(fw_dump_dir, "fw_dump", sizeof(fw_dump_dir));
+	moal_strncpy(fw_dump_dir, "fw_dump", sizeof(fw_dump_dir));
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
 	r = proc_create_data(fw_dump_dir, 0644, handle->proc_wlan,
 			     &fw_dump_fops, handle);
@@ -2058,7 +2089,7 @@ void woal_proc_init(moal_handle *handle)
 		PRINTM(MERROR, "Failed to create proc fw dump\n");
 
 #if defined(PCIE)
-	strncpy(ssu_dump_dir, "ssu_dump", sizeof(ssu_dump_dir));
+	moal_strncpy(ssu_dump_dir, "ssu_dump", sizeof(ssu_dump_dir));
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
 	r = proc_create_data(ssu_dump_dir, 0644, handle->proc_wlan,
 			     &ssu_dump_fops, handle);
@@ -2145,15 +2176,15 @@ void woal_proc_exit(moal_handle *handle)
 		remove_proc_entry(MGMT_LOG_PROC, handle->proc_wlan);
 		mgmt_log_ring_free(&handle->mgmt_log);
 
-		strncpy(config_proc_dir, "config", sizeof(config_proc_dir));
+		moal_strncpy(config_proc_dir, "config", sizeof(config_proc_dir));
 		remove_proc_entry(config_proc_dir, handle->proc_wlan);
 #ifdef DUMP_TO_PROC
-		strncpy(drv_dump_dir, "drv_dump", sizeof(drv_dump_dir));
+		moal_strncpy(drv_dump_dir, "drv_dump", sizeof(drv_dump_dir));
 		remove_proc_entry(drv_dump_dir, handle->proc_wlan);
-		strncpy(fw_dump_dir, "fw_dump", sizeof(fw_dump_dir));
+		moal_strncpy(fw_dump_dir, "fw_dump", sizeof(fw_dump_dir));
 		remove_proc_entry(fw_dump_dir, handle->proc_wlan);
 #if defined(PCIE)
-		strncpy(ssu_dump_dir, "ssu_dump", sizeof(ssu_dump_dir));
+		moal_strncpy(ssu_dump_dir, "ssu_dump", sizeof(ssu_dump_dir));
 		remove_proc_entry(ssu_dump_dir, handle->proc_wlan);
 #endif
 #endif
@@ -2270,7 +2301,7 @@ void woal_create_proc_entry(moal_private *priv)
 		atomic_inc(&(priv->phandle->proc_wlan->count));
 #endif /* < 3.10.0 */
 #endif /* < 2.6.26 */
-		strncpy(priv->proc_entry_name, dev->name, IFNAMSIZ - 1);
+		moal_strncpy(priv->proc_entry_name, dev->name, IFNAMSIZ - 1);
 		if (priv->proc_entry) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 26)
 			r = proc_create_data("info", 0, priv->proc_entry,
