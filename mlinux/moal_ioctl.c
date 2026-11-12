@@ -1934,12 +1934,14 @@ done:
  *  @param priv                 A pointer to moal_private structure
  *  @param action               Action set or get
  *  @param power_cfg            A pinter to mlan_power_cfg_t structure
+ *  @param wait_option          Wait option
  *
  *  @return                     MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING --
  * success, otherwise fail
  */
-mlan_status woal_set_get_tx_power(moal_private *priv, t_u32 action,
-				  mlan_power_cfg_t *power_cfg)
+mlan_status woal_set_get_tx_power_wait(moal_private *priv, t_u32 action,
+				       mlan_power_cfg_t *power_cfg,
+				       t_u8 wait_option)
 {
 	mlan_ds_power_cfg *pcfg = NULL;
 	mlan_ioctl_req *req = NULL;
@@ -1961,7 +1963,7 @@ mlan_status woal_set_get_tx_power(moal_private *priv, t_u32 action,
 				power_cfg, sizeof(mlan_power_cfg_t),
 				sizeof(mlan_power_cfg_t));
 
-	ret = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	ret = woal_request_ioctl(priv, req, wait_option);
 	if (ret != MLAN_STATUS_SUCCESS)
 		goto done;
 
@@ -1976,6 +1978,23 @@ done:
 		kfree(req);
 	LEAVE();
 	return ret;
+}
+
+/**
+ *  @brief Set/Get TX power, waiting for firmware without a timeout
+ *
+ *  @param priv                 A pointer to moal_private structure
+ *  @param action               Action set or get
+ *  @param power_cfg            A pinter to mlan_power_cfg_t structure
+ *
+ *  @return                     MLAN_STATUS_SUCCESS/MLAN_STATUS_PENDING --
+ * success, otherwise fail
+ */
+mlan_status woal_set_get_tx_power(moal_private *priv, t_u32 action,
+				  mlan_power_cfg_t *power_cfg)
+{
+	return woal_set_get_tx_power_wait(priv, action, power_cfg,
+					  MOAL_IOCTL_WAIT);
 }
 
 /**

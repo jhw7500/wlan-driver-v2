@@ -4734,6 +4734,8 @@ mlan_status woal_set_get_frag(moal_private *priv, t_u32 action,
 /** Set/Get TX power */
 mlan_status woal_set_get_tx_power(moal_private *priv, t_u32 action,
 				  mlan_power_cfg_t *pwr);
+mlan_status woal_set_get_tx_power_wait(moal_private *priv, t_u32 action,
+				       mlan_power_cfg_t *pwr, t_u8 wait_option);
 /** Set/Get power IEEE management */
 mlan_status woal_set_get_power_mgmt(moal_private *priv, t_u32 action,
 				    int *disabled, int type, t_u8 wait_option);

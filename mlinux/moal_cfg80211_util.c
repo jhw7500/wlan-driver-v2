@@ -6947,8 +6947,11 @@ static int woal_ftm_session_cfg(moal_private *priv, wifi_rtt_config *rtt_cfg)
 	       cfg->is_ASAP, cfg->per_burst_FTM, cfg->channel_spacing,
 	       cfg->burst_period, cfg->lci_request, cfg->civic_request,
 	       MAC2STR(cfg->peer_mac));
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	/* Callers hold rtt_mutex, which hang recovery must be able to take. */
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 
 done:
@@ -7049,8 +7052,10 @@ static int woal_ftm_session_cfg_ntb_ranging(moal_private *priv,
 	       cfg->az_measurements_per_burst, cfg->az_burst_spacing_ms,
 	       cfg->az_burst_duration_ms);
 
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 
 done:
@@ -7148,17 +7153,21 @@ static int woal_ftm_session_ctrl(moal_private *priv, t_u8 *peer_mac,
 	       ctrl->action, ctrl->channel, ctrl->chanBand,
 	       MAC2STR(ctrl->peer_mac));
 
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 
 done:
-	/* A synchronous result may precede the START ioctl response. */
+	/* A synchronous result may precede the START ioctl response; a
+	 * timed-out START may still have started ranging in firmware. */
 	if (action_in == FTM_SESSION_CTRL_ACTION_START) {
 		unsigned long flags;
 		spin_lock_irqsave(&priv->phandle->rtt_result_lock, flags);
 		WRITE_ONCE(priv->phandle->ftm_session_in_progress,
-			   !ret && !priv->phandle->ftm_result_wait_q_woken);
+			   (!ret || ret == -ETIMEDOUT) &&
+				   !priv->phandle->ftm_result_wait_q_woken);
 		spin_unlock_irqrestore(&priv->phandle->rtt_result_lock, flags);
 	} else if (!ret) {
 		WRITE_ONCE(priv->phandle->ftm_session_in_progress, MFALSE);
@@ -7443,10 +7452,22 @@ void woal_rtt_work_handler(struct work_struct *work)
 			ret = woal_ftm_session_cfg(priv, cfg);
 		else
 			ret = -EOPNOTSUPP;
-		if (!ret)
+		if (!ret) {
 			ret = woal_ftm_session_ctrl(priv, cfg->addr,
 						    cfg->channel.center_freq,
 						    FTM_SESSION_CTRL_ACTION_START);
+			/* A timed-out START stays busy unless STOP is confirmed. */
+			if (ret == -ETIMEDOUT &&
+			    READ_ONCE(handle->ftm_session_in_progress) &&
+			    woal_ftm_session_ctrl(priv, cfg->addr,
+						  cfg->channel.center_freq,
+						  FTM_SESSION_CTRL_ACTION_STOP)) {
+				/* Retain busy until a matching terminal event
+				 * or reset. */
+				mutex_unlock(&handle->rtt_mutex);
+				break;
+			}
+		}
 		if (ret) {
 			spin_lock_irqsave(&handle->rtt_result_lock, flags);
 			handle->rtt_target_state[i] = RTT_TARGET_DONE;
@@ -8274,8 +8295,10 @@ int woal_ftm_session_cfg_pmsr(moal_private *priv,
 	       (int)cfg->is_ASAP);
 	PRINTM(MCMND, "FTM 11mc peer=" MACSTR "\n", MAC2STR(cfg->peer_mac));
 
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 done:
 	if (status != MLAN_STATUS_PENDING)
@@ -8336,8 +8359,10 @@ int woal_ftm_az_session_cfg_pmsr(moal_private *priv,
 	       (az_cfg->protocol_type == 2) ? "TB" : "NTB",
 	       (int)az_cfg->i2r_lmr_feedback);
 
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 done:
 	if (status != MLAN_STATUS_PENDING)
@@ -8389,8 +8414,10 @@ int woal_ftm_session_ctrl_pmsr(moal_private *priv, const t_u8 *peer_mac,
 	PRINTM(MCMND, "FTM session ctrl peer=" MACSTR "\n",
 	       MAC2STR(ctrl->peer_mac));
 
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 done:
 	if (status != MLAN_STATUS_PENDING)
@@ -8442,8 +8469,10 @@ int woal_ftm_az_session_ctrl_pmsr(moal_private *priv, const t_u8 *peer_mac,
 	PRINTM(MCMND, "FTM 11az session ctrl peer=" MACSTR "\n",
 	       MAC2STR(ctrl->peer_mac));
 
-	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
-	if (status != MLAN_STATUS_SUCCESS)
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT_TIMEOUT);
+	if (status == MLAN_STATUS_PENDING)
+		ret = -ETIMEDOUT;
+	else if (status != MLAN_STATUS_SUCCESS)
 		ret = -EFAULT;
 done:
 	if (status != MLAN_STATUS_PENDING)
@@ -8467,6 +8496,7 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 	moal_handle *handle = priv->phandle;
 	unsigned long flags;
 	int i, ret = 0;
+	BOOLEAN active;
 
 	ENTER();
 	if (request->n_peers != 1)
@@ -8555,6 +8585,27 @@ int woal_cfg80211_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
 				priv, peer->addr,
 				peer->chandef.chan->center_freq,
 				FTM_SESSION_CTRL_ACTION_START);
+		}
+		if (ret == -ETIMEDOUT) {
+			/* A timed-out START may have started ranging: as in
+			 * abort, stay busy unless STOP is confirmed. */
+			spin_lock_irqsave(&handle->rtt_result_lock, flags);
+			active = !handle->rtt_pmsr_result_ready;
+			WRITE_ONCE(handle->ftm_session_in_progress, active);
+			priv->pmsr_request = NULL;
+			handle->rtt_pmsr_result_ready = MFALSE;
+			spin_unlock_irqrestore(&handle->rtt_result_lock, flags);
+			if (active &&
+			    woal_ftm_session_ctrl_pmsr(
+				    priv, peer->addr,
+				    peer->chandef.chan->center_freq,
+				    FTM_SESSION_CTRL_ACTION_STOP)) {
+				/* Failed STOP stays busy until a matching
+				 * firmware result or reset. */
+				mutex_unlock(&handle->rtt_mutex);
+				LEAVE();
+				return ret;
+			}
 		}
 		if (ret) {
 			PRINTM(MERROR,

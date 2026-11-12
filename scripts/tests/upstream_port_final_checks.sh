@@ -18,7 +18,7 @@ selected = sys.argv[2]
 
 def function(path, name):
     source = (root / path).read_text()
-    match = re.search(r"(?m)^(?:static )?(?:int|void|mlan_status)\s*" + name + r"\([^;]*?\)\s*\{", source)
+    match = re.search(r"(?m)^(?:static )?(?:int|void|t_void|mlan_status|wifi_rtt_config\s*\*)\s*" + name + r"\([^;]*?\)\s*\{", source)
     if not match:
         raise RuntimeError("production function not found: " + name)
     masked = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
@@ -284,8 +284,535 @@ int main(void) {
 }
 '''
 
+# rtt-recovery: hang/reset clean-up must not wait forever behind rtt_mutex.
+def masked(text):
+    return re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m.group()), text, flags=re.S)
+
+def ordered(path, name, *tokens):
+    body, index = masked(function(path, name)), 0
+    for token in tokens:
+        index = body.find(token, index)
+        if index < 0: raise RuntimeError("%s: %r missing or out of order" % (name, token))
+        index += len(token)
+
+def optional(path, name):
+    try: return function(path, name)
+    except RuntimeError: return ""
+
+# The recovery threads below model these production sequences; fail on drift.
+ordered("mlinux/moal_main.c", "woal_hang_work_queue", "down(&AddRemoveCardSem);",
+        "woal_clean_up(handle);", "MOAL_REL_SEMAPHORE(&AddRemoveCardSem);")
+ordered("mlinux/moal_sdio_mmc.c", "__woal_do_sdiommc_flr", "down(&AddRemoveCardSem);",
+        "handle->surprise_removed = MTRUE;", "woal_reset_intf(priv, MOAL_IOCTL_WAIT, MTRUE);",
+        "woal_clean_up(handle);", "mlan_shutdown_fw(handle->pmlan_adapter);",
+        "MOAL_REL_SEMAPHORE(&AddRemoveCardSem);")
+ordered("mlinux/moal_main.c", "woal_main_work_queue", "if (handle->surprise_removed == MTRUE) {",
+        "return;", "mlan_main_process(handle->pmlan_adapter);")
+ordered("mlan/mlan_shim.c", "mlan_ioctl", "if (pioctl_req == MNULL) {", "pmadapter->pending_clean = MTRUE;")
+ordered("mlan/mlan_shim.c", "mlan_main_process", "if (pmadapter->pending_clean) {",
+        "wlan_cancel_all_pending_cmd(pmadapter, MFALSE);", "wlan_free_txrx(pmadapter);")
+ordered("mlan/mlan_shim.c", "mlan_shutdown_fw", "wlan_cancel_all_pending_cmd(pmadapter, MTRUE);")
+dbg_dump = masked((root / "mlinux/moal_shim.c").read_text())
+dbg_dump = dbg_dump[dbg_dump.index("case MLAN_EVENT_ID_DRV_DBG_DUMP:"):]
+dbg_dump = dbg_dump[:dbg_dump.index("break;")]
+if not 0 <= dbg_dump.find("driver_status = MTRUE;") < dbg_dump.find("woal_process_hang("):
+    raise RuntimeError("DRV_DBG_DUMP no longer publishes driver_status before hang work")
+# #if/#else branches open braces twice, so cut at the column-0 closing brace.
+clean_up = (root / "mlinux/moal_main.c").read_text()
+clean_up = clean_up[clean_up.index("\nvoid woal_clean_up(moal_handle *handle)\n{"):]
+clean_up = masked(clean_up[:clean_up.index("\n}\n") + 3])
+blocking = [t for t in ("mutex_lock", "woal_request_ioctl", "MOAL_IOCTL_WAIT", "wait_event", "down(") if t in clean_up]
+if blocking or clean_up.count("mlan_ioctl(") != 1:
+    raise RuntimeError("woal_clean_up gained unmodelled blocking or MLAN calls: %s" % blocking)
+clean_steps = (("woal_rtt_quiesce(handle, NULL);", "woal_rtt_quiesce(handle, NULL);"),
+               ("woal_stop_queue(priv->netdev);", "model_stop_queues(handle);"),
+               ("mlan_ioctl(handle->pmlan_adapter, NULL);", "model_pending_clean(handle);"))
+clean_found = sorted((m.start(), step) for token, step in clean_steps
+                     for m in re.finditer(re.escape(token), clean_up))
+for _, step in clean_steps:
+    if sum(1 for _, found in clean_found if found == step) != 1:
+        raise RuntimeError("woal_clean_up recovery sequence changed: " + step)
+clean_model = ("/* Generated from the woal_clean_up() call order. */\n"
+               "static void model_clean_up(moal_handle *handle)\n{\n" +
+               "".join("\t%s\n" % step for _, step in clean_found) + "}\n")
+rtt_header = (root / "mlinux/moal_main.h").read_text()
+rtt_fields_start = rtt_header.index("\tstruct mutex rtt_mutex;")
+rtt_fields = rtt_header[rtt_fields_start:rtt_header.index("\t/** Driver workqueue */", rtt_fields_start)]
+rtt_recovery = r'''#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <stddef.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#include "mlan_ioctl.h"
+#define CFG80211_VERSION_CODE LINUX_VERSION_CODE
+#define STA_CFG80211 1
+#ifndef ETH_ALEN
+#define ETH_ALEN 6
+#endif
+#define MOAL_IOCTL_WAIT 1
+#define MOAL_IOCTL_WAIT_TIMEOUT 2
+#define GFP_KERNEL 0
+#define READ_ONCE(x) __atomic_load_n(&(x), __ATOMIC_SEQ_CST)
+#define WRITE_ONCE(x, v) __atomic_store_n(&(x), (v), __ATOMIC_SEQ_CST)
+#define container_of(p, t, m) ((t *)((char *)(p) - offsetof(t, m)))
+#define moal_memcpy_ext(h, d, s, n, cap) ((void)(h), assert((n) <= (cap)), memcpy(d, s, n))
+#define woal_get_wiphy_priv(w) ((w)->handle)
+#define woal_get_netdev_priv(n) ((n)->priv)
+typedef unsigned char BOOLEAN;
+typedef pthread_mutex_t spinlock_t;
+typedef int wait_queue_head_t;
+struct mutex { pthread_mutex_t native; };
+struct work_struct { int unused; };
+typedef struct _moal_private moal_private;
+struct net_device { moal_private *priv; };
+struct wiphy { struct _moal_handle *handle; };
+struct wireless_dev { struct net_device *netdev; struct wiphy *wiphy; };
+struct ieee80211_channel { unsigned int center_freq; };
+struct cfg80211_pmsr_request_peer {
+    t_u8 addr[ETH_ALEN];
+    struct { struct ieee80211_channel *chan; } chandef;
+    struct { int request_lci, request_civicloc, non_trigger_based, trigger_based; } ftm;
+};
+struct cfg80211_pmsr_request { int n_peers; struct cfg80211_pmsr_request_peer peers[1]; };
+struct _moal_handle {
+''' + rtt_fields + r'''    moal_private *priv[2];
+    int priv_num;
+    void *pmlan_adapter;
+    int surprise_removed, driver_status, fw_reseting;
+};
+typedef struct _moal_handle moal_handle;
+struct _moal_private {
+    moal_handle *phandle;
+    t_u8 bss_index;
+    BOOLEAN rtt_admission_closed;
+    struct net_device *netdev;
+    struct wireless_dev *wdev;
+    struct cfg80211_pmsr_request *pmsr_request;
+};
+#define mutex_lock(m) assert(!pthread_mutex_lock(&(m)->native))
+#define mutex_unlock(m) assert(!pthread_mutex_unlock(&(m)->native))
+#define spin_lock_irqsave(l, f) do { (f) = 0; assert(!pthread_mutex_lock(l)); } while (0)
+#define spin_unlock_irqrestore(l, f) do { (void)(f); assert(!pthread_mutex_unlock(l)); } while (0)
+enum { CMD_POWER, CMD_CFG, CMD_START, CMD_STOP, CMD_OTHER, CMD_KINDS };
+struct host_wait { int condition; mlan_status status; } __attribute__((aligned(8)));
+static pthread_mutex_t fw_lock = PTHREAD_MUTEX_INITIALIZER, alloc_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t ftm_lock = PTHREAD_MUTEX_INITIALIZER, work_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fw_cond = PTHREAD_COND_INITIALIZER, ftm_cond = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t work_cond = PTHREAD_COND_INITIALIZER;
+static sem_t AddRemoveCardSem;
+static int fw_answers[CMD_KINDS], fw_seen[CMD_KINDS], pending_count, live_reqs, late_frees;
+static int fast_failures, worker_running, pending_clean, queues_stopped, txrx_frees, txrx_early;
+static mlan_ioctl_req *pending[16];
+static void *req_table[32];
+static void deadline_ms(struct timespec *t, long ms)
+{
+    assert(!clock_gettime(CLOCK_REALTIME, t));
+    t->tv_sec += ms / 1000;
+    t->tv_nsec += (ms % 1000) * 1000000L;
+    if (t->tv_nsec >= 1000000000L) { t->tv_sec++; t->tv_nsec -= 1000000000L; }
+}
+/* RTT result waits: FTM_SESSION_TIMEOUT_MS (10 s) scaled to 50 ms. */
+static long host_wait_done(int ok) { assert(!pthread_mutex_unlock(&ftm_lock)); return ok; }
+#define msecs_to_jiffies(ms) ((ms) / 200)
+#define wait_event_interruptible_timeout(q, condition, timeout) ({ \
+    struct timespec wait_deadline; \
+    (void)(q); \
+    deadline_ms(&wait_deadline, (timeout)); \
+    assert(!pthread_mutex_lock(&ftm_lock)); \
+    while (!(condition) && pthread_cond_timedwait(&ftm_cond, &ftm_lock, &wait_deadline) != ETIMEDOUT) {} \
+    host_wait_done(!!(condition)); })
+#define wake_up_interruptible(q) do { (void)(q); assert(!pthread_mutex_lock(&ftm_lock)); \
+    assert(!pthread_cond_broadcast(&ftm_cond)); assert(!pthread_mutex_unlock(&ftm_lock)); } while (0)
+/* ioctl buffers are tracked so a lost or doubly-freed request is visible. */
+static mlan_ioctl_req *woal_alloc_mlan_ioctl_req(int size)
+{
+    mlan_ioctl_req *req = calloc(1, sizeof(*req) + sizeof(struct host_wait) + size);
+    int i = 0;
+    assert(req);
+    req->reserved_1 = (t_ptr)(req + 1);
+    req->pbuf = (t_u8 *)(req + 1) + sizeof(struct host_wait);
+    req->buf_len = size;
+    assert(!pthread_mutex_lock(&alloc_lock));
+    while (req_table[i]) assert(++i < 32);
+    req_table[i] = req; live_reqs++;
+    assert(!pthread_mutex_unlock(&alloc_lock));
+    return req;
+}
+static void host_kfree(void *p)
+{
+    assert(!pthread_mutex_lock(&alloc_lock));
+    for (int i = 0; p && i < 32; i++)
+        if (req_table[i] == p) { req_table[i] = NULL; live_reqs--; }
+    assert(!pthread_mutex_unlock(&alloc_lock));
+    free(p);
+}
+#define kzalloc(n, g) calloc(1, (n))
+#define kfree(p) host_kfree(p)
+static int classify(mlan_ioctl_req *req)
+{
+    mlan_ds_misc_cfg *misc = (mlan_ds_misc_cfg *)req->pbuf;
+    if (req->req_id == MLAN_IOCTL_POWER_CFG) return CMD_POWER;
+    if (req->req_id != MLAN_IOCTL_MISC_CFG) return CMD_OTHER;
+    if (misc->sub_command == MLAN_OID_MISC_FTM_SESSION_CFG) return CMD_CFG;
+    if (misc->sub_command != MLAN_OID_MISC_FTM_SESSION_CTRL) return CMD_OTHER;
+    return misc->param.ftm_session_ctrl.action == FTM_SESSION_CTRL_ACTION_STOP ? CMD_STOP : CMD_START;
+}
+/* moal_ioctl_complete(): wake a live waiter, or free a request it abandoned. */
+static void host_complete(mlan_ioctl_req *req, mlan_status status)
+{
+    struct host_wait *wait = (struct host_wait *)req->reserved_1;
+    for (int i = 0; i < pending_count; i++)
+        if (pending[i] == req) { pending[i] = pending[--pending_count]; break; }
+    req->status_code = MLAN_ERROR_CMD_CANCEL;
+    if (wait) { wait->condition = 1; wait->status = status; assert(!pthread_cond_broadcast(&fw_cond)); }
+    else { late_frees++; kfree(req); }
+}
+/* Production fail-fast gate; a firmware that never answers leaves the
+ * request queued: WAIT sleeps without bound, WAIT_TIMEOUT for 200 ms. */
+static mlan_status woal_request_ioctl(moal_private *priv, mlan_ioctl_req *req, t_u8 wait_option)
+{
+    moal_handle *handle = priv->phandle;
+    struct host_wait *wait = (struct host_wait *)req->reserved_1;
+    t_u32 sub_command = *(t_u32 *)req->pbuf;
+    struct timespec deadline;
+    mlan_status status;
+    int kind = classify(req);
+    if (sub_command != MLAN_OID_GET_DEBUG_INFO && sub_command != MLAN_OID_MISC_WARM_RESET &&
+        (READ_ONCE(handle->surprise_removed) || READ_ONCE(handle->driver_status))) {
+        __atomic_add_fetch(&fast_failures, 1, __ATOMIC_SEQ_CST);
+        return MLAN_STATUS_FAILURE;
+    }
+    req->bss_index = priv->bss_index;
+    assert(!pthread_mutex_lock(&fw_lock));
+    fw_seen[kind]++;
+    if (fw_answers[kind]) {
+        if (kind == CMD_POWER) ((mlan_ds_power_cfg *)req->pbuf)->param.power_cfg.power_level = 17;
+        assert(!pthread_mutex_unlock(&fw_lock));
+        return MLAN_STATUS_SUCCESS;
+    }
+    assert(wait_option == MOAL_IOCTL_WAIT || wait_option == MOAL_IOCTL_WAIT_TIMEOUT);
+    assert(pending_count < 16);
+    pending[pending_count++] = req;
+    wait->condition = 0;
+    assert(!pthread_cond_broadcast(&fw_cond));
+    deadline_ms(&deadline, 200);
+    while (!wait->condition) {
+        if (wait_option == MOAL_IOCTL_WAIT) assert(!pthread_cond_wait(&fw_cond, &fw_lock));
+        else if (pthread_cond_timedwait(&fw_cond, &fw_lock, &deadline) == ETIMEDOUT) break;
+    }
+    if (wait->condition) status = wait->status;
+    else { req->reserved_1 = 0; status = MLAN_STATUS_PENDING; }
+    assert(!pthread_mutex_unlock(&fw_lock));
+    return status;
+}
+/* mlan_ioctl(adapter, NULL) only sets pending_clean (checked above). */
+mlan_status mlan_ioctl(t_void *padapter, pmlan_ioctl_req pioctl_req)
+{
+    assert(padapter && !pioctl_req);
+    pending_clean = 1;
+    return MLAN_STATUS_SUCCESS;
+}
+static void model_cancel_all(void)
+{
+    assert(!pthread_mutex_lock(&fw_lock));
+    while (pending_count) host_complete(pending[pending_count - 1], MLAN_STATUS_FAILURE);
+    assert(!pthread_mutex_unlock(&fw_lock));
+}
+/* woal_main_work_queue() is inert after surprise_removed; otherwise
+ * mlan_main_process() cancels every command and frees txrx. */
+static void model_main_work(moal_handle *handle)
+{
+    if (READ_ONCE(handle->surprise_removed) || !pending_clean) return;
+    model_cancel_all();
+    if (!queues_stopped) txrx_early = 1;
+    txrx_frees++;
+    pending_clean = 0;
+}
+static void model_stop_queues(moal_handle *handle) { (void)handle; queues_stopped = 1; }
+static void model_pending_clean(moal_handle *handle) { mlan_ioctl(handle->pmlan_adapter, NULL); model_main_work(handle); }
+static bool cancel_work_sync(struct work_struct *work)
+{
+    (void)work;
+    assert(!pthread_mutex_lock(&work_lock));
+    while (worker_running) assert(!pthread_cond_wait(&work_cond, &work_lock));
+    assert(!pthread_mutex_unlock(&work_lock));
+    return false;
+}
+static moal_private *woal_get_priv(moal_handle *handle, int role) { (void)role; return handle->priv[0]; }
+static int ieee80211_frequency_to_channel(unsigned int freq) { return freq == 2412 ? 1 : 36; }
+static t_u8 woal_freq_to_chanband(t_u32 freq) { (void)freq; return 0; }
+static t_u8 woal_freq_to_chanband_pmsr(t_u32 freq) { (void)freq; return 0; }
+static t_u16 woal_get_ftm_session_action(moal_private *p, t_u8 *mac) { (void)p; (void)mac; return FTM_SESSION_UNASSOCIATED; }
+static t_u16 woal_get_ftm_session_action_pmsr(moal_private *p, const t_u8 *mac) { (void)p; (void)mac; return FTM_SESSION_UNASSOCIATED; }
+static t_u8 get_channel_spacing_from_rtt_config(int preamble, int bw) { (void)preamble; (void)bw; return 0; }
+static int woal_ftm_session_cfg_ntb_ranging(moal_private *p, wifi_rtt_config_v3 *c) { (void)p; (void)c; return -EOPNOTSUPP; }
+static mlan_status woal_cfg80211_event_rtt_result(moal_private *p, t_u8 *d, int n) { (void)p; (void)d; (void)n; return MLAN_STATUS_SUCCESS; }
+static mlan_status woal_cfg80211_event_rtt_result_v3(moal_private *p, t_u8 *d, int n) { (void)p; (void)d; (void)n; return MLAN_STATUS_SUCCESS; }
+/* PMSR SESSION_CFG is answered; only START/STOP use the modelled firmware. */
+static int woal_ftm_session_cfg_pmsr(moal_private *p, struct cfg80211_pmsr_request_peer *peer) { (void)p; (void)peer; return 0; }
+static int woal_ftm_az_session_cfg_pmsr(moal_private *p, struct cfg80211_pmsr_request_peer *peer) { (void)p; (void)peer; return -EOPNOTSUPP; }
+static int woal_ftm_az_session_ctrl_pmsr(moal_private *p, const t_u8 *mac, t_u32 freq, t_u16 action) { (void)p; (void)mac; (void)freq; (void)action; return -EOPNOTSUPP; }
+'''
+rtt_recovery += "\n".join(function("mlinux/moal_cfg80211_util.c", n) for n in (
+    "woal_rtt_config_at", "woal_rtt_release", "woal_ftm_session_cfg", "woal_ftm_session_ctrl",
+    "woal_rtt_work_handler", "woal_rtt_quiesce", "woal_ftm_session_ctrl_pmsr", "woal_cfg80211_start_pmsr"))
+rtt_recovery += optional("mlinux/moal_ioctl.c", "woal_set_get_tx_power_wait")
+rtt_recovery += function("mlinux/moal_ioctl.c", "woal_set_get_tx_power")
+rtt_recovery += function("mlinux/moal_sta_cfg80211.c", "woal_cfg80211_get_tx_power")
+rtt_recovery += clean_model + r'''
+static moal_handle H;
+static moal_private P;
+static struct net_device N;
+static struct wireless_dev D;
+static struct wiphy W;
+static struct ieee80211_channel C = { 2412 };
+static struct cfg80211_pmsr_request R;
+static int adapter, power_ret, power_dbm, pmsr_ret;
+static const char *scenario;
+static int expect(int ok, const char *what)
+{
+    char text[192];
+    snprintf(text, sizeof(text), "rtt-recovery %s: %s", scenario, what);
+    check(ok, text);
+    return ok;
+}
+static void fixture(int power, int cfg, int start, int stop)
+{
+    P.phandle = &H; P.netdev = &N; P.wdev = &D; N.priv = &P; D.netdev = &N; D.wiphy = &W; W.handle = &H;
+    H.priv[0] = &P; H.priv_num = 1; H.pmlan_adapter = &adapter;
+    assert(!pthread_mutex_init(&H.rtt_result_lock, NULL));
+    assert(!pthread_mutex_init(&H.rtt_mutex.native, NULL));
+    assert(!pthread_mutex_init(&H.rtt_quiesce_mutex.native, NULL));
+    H.rtt_initialized = MTRUE; H.rtt_fw_supported = MTRUE; H.rtt_current_index = -1;
+    assert(!sem_init(&AddRemoveCardSem, 0, 1));
+    fw_answers[CMD_POWER] = power; fw_answers[CMD_CFG] = cfg;
+    fw_answers[CMD_START] = start; fw_answers[CMD_STOP] = stop;
+}
+static void seed_vendor(void)
+{
+    wifi_rtt_config *cfg = &H.rtt_params.rtt_config[0];
+    cfg->addr[0] = 2; cfg->addr[5] = 1; cfg->type = RTT_TYPE_2_SIDED_11MC;
+    cfg->preamble = WIFI_RTT_PREAMBLE_LEGACY; cfg->bw = WIFI_RTT_BW_20; cfg->channel.center_freq = 2412;
+    H.rtt_params.rtt_config_num = 1; H.rtt_total_ap_count = 1; H.rtt_owner = RTT_OWNER_VENDOR;
+    H.rtt_priv = &P; H.rtt_version = 1; H.rtt_target_state[0] = RTT_TARGET_PENDING;
+    H.rtt_result_buf_len = 1; worker_running = 1;
+}
+static void *power_thread(void *arg)
+{
+    (void)arg; power_dbm = 99;
+    power_ret = woal_cfg80211_get_tx_power(&W, &D, &power_dbm);
+    return NULL;
+}
+static void *worker_thread(void *arg)
+{
+    (void)arg;
+    woal_rtt_work_handler(&H.rtt_work);
+    assert(!pthread_mutex_lock(&work_lock));
+    worker_running = 0;
+    assert(!pthread_cond_broadcast(&work_cond) && !pthread_mutex_unlock(&work_lock));
+    return NULL;
+}
+static void *pmsr_thread(void *arg) { (void)arg; pmsr_ret = woal_cfg80211_start_pmsr(&W, &D, &R); return NULL; }
+/* woal_hang_work_queue(): down(AddRemoveCardSem) -> woal_clean_up() -> up. */
+static void *hang_thread(void *arg)
+{
+    (void)arg;
+    assert(!sem_wait(&AddRemoveCardSem));
+    model_clean_up(&H);
+    assert(!sem_post(&AddRemoveCardSem));
+    return NULL;
+}
+/* __woal_do_sdiommc_flr(prepare): surprise_removed precedes clean-up, then
+ * mlan_shutdown_fw() cancels every remaining command. */
+static void *reset_thread(void *arg)
+{
+    mlan_ioctl_req *req;
+    (void)arg;
+    assert(!sem_wait(&AddRemoveCardSem));
+    WRITE_ONCE(H.fw_reseting, 1);
+    WRITE_ONCE(H.surprise_removed, 1);
+    req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_bss)); /* woal_reset_intf() */
+    req->req_id = MLAN_IOCTL_BSS;
+    ((mlan_ds_bss *)req->pbuf)->sub_command = MLAN_OID_BSS_STOP;
+    if (woal_request_ioctl(&P, req, MOAL_IOCTL_WAIT) != MLAN_STATUS_PENDING) kfree(req);
+    model_clean_up(&H);
+    model_cancel_all();
+    assert(!sem_post(&AddRemoveCardSem));
+    return NULL;
+}
+static int started(pthread_t *thread, void *(*fn)(void *)) { return !pthread_create(thread, NULL, fn, NULL); }
+static int joined(pthread_t thread)
+{
+    struct timespec deadline;
+    deadline_ms(&deadline, 3000);
+    return !pthread_timedjoin_np(thread, NULL, &deadline);
+}
+static int waiting(void)
+{
+    struct timespec deadline;
+    int ok;
+    deadline_ms(&deadline, 1000);
+    assert(!pthread_mutex_lock(&fw_lock));
+    while (!pending_count && pthread_cond_timedwait(&fw_cond, &fw_lock, &deadline) != ETIMEDOUT) {}
+    ok = pending_count == 1;
+    assert(!pthread_mutex_unlock(&fw_lock));
+    return ok;
+}
+static int drained(void)
+{
+    int ok;
+    assert(!pthread_mutex_lock(&alloc_lock)); ok = !live_reqs; assert(!pthread_mutex_unlock(&alloc_lock));
+    assert(!pthread_mutex_lock(&fw_lock)); ok = ok && !pending_count; assert(!pthread_mutex_unlock(&fw_lock));
+    return ok;
+}
+/* One recovery under a 3 s watchdog: a stuck run is reported, never awaited. */
+static int recover(void *(*fn)(void *))
+{
+    pthread_t thread;
+    int value = -1;
+    if (!expect(started(&thread, fn) && joined(thread), "recovery completes within the 3 s watchdog"))
+        return 0;
+    assert(!sem_getvalue(&AddRemoveCardSem, &value));
+    return expect(value == 1, "recovery releases AddRemoveCardSem");
+}
+/* S0: an answering firmware completes both waiters and both recoveries. */
+static int positive_control(void)
+{
+    pthread_t thread;
+    fixture(1, 1, 1, 1);
+    if (!expect(started(&thread, power_thread) && joined(thread), "answered TX-power query returns"))
+        return failures;
+    expect(!power_ret && power_dbm == 17 && fw_seen[CMD_POWER] == 1, "answered TX-power query reports firmware power");
+    seed_vendor();
+    if (!expect(started(&thread, worker_thread) && joined(thread), "answered RTT worker finishes"))
+        return failures;
+    expect(fw_seen[CMD_CFG] == 1 && fw_seen[CMD_START] == 1 && fw_seen[CMD_STOP] == 1 &&
+           H.rtt_owner == RTT_OWNER_IDLE && !H.ftm_session_in_progress, "answered RTT session stops and releases");
+    WRITE_ONCE(H.driver_status, 1);
+    if (recover(hang_thread) && recover(reset_thread))
+        expect(fast_failures == 1 && txrx_frees == 1 && !txrx_early && drained(),
+               "idle recoveries leave no request and free txrx only after queues stop");
+    return failures;
+}
+/* S1-S4: the firmware never answers the waiter's ioctl; recover anyway. */
+static int stalled(int reset, int rtt)
+{
+    pthread_t waiter;
+    int stalled_kind = !rtt ? CMD_POWER : reset ? CMD_START : CMD_CFG;
+    fixture(0, stalled_kind == CMD_START, 0, 0);
+    if (rtt) seed_vendor();
+    if (!expect(started(&waiter, rtt ? worker_thread : power_thread) && waiting(),
+                "waiter blocks in an ioctl the firmware never answers"))
+        return failures;
+    if (!reset) WRITE_ONCE(H.driver_status, 1); /* MLAN_EVENT_ID_DRV_DBG_DUMP */
+    if (!recover(reset ? reset_thread : hang_thread) ||
+        !expect(joined(waiter), "stalled waiter returns"))
+        return failures;
+    if (rtt)
+        expect(!worker_running && H.rtt_owner == RTT_OWNER_IDLE && !H.ftm_session_in_progress,
+               "RTT worker drains and its session is released");
+    else
+        expect(power_ret && power_dbm == 99, "TX-power query fails without inventing a value");
+    expect(fw_seen[stalled_kind] == 1 && fast_failures >= reset &&
+           fw_seen[CMD_POWER] + fw_seen[CMD_CFG] + fw_seen[CMD_START] + fw_seen[CMD_STOP] + fw_seen[CMD_OTHER] ==
+           1 + (stalled_kind == CMD_START), "no command reaches firmware after the stalled one");
+    expect(drained(), "every stalled request is completed and freed");
+    expect(!txrx_early && txrx_frees == !reset, "txrx is freed only by the final hang-path clean");
+    return failures;
+}
+/* S5-S8: START may have started ranging; only a confirmed STOP clears busy. */
+static int start_timeout(int pmsr, int stop_answers)
+{
+    pthread_t thread;
+    fixture(1, 1, 0, stop_answers);
+    if (pmsr) {
+        R.n_peers = 1; R.peers[0].addr[0] = 2; R.peers[0].addr[5] = 3; R.peers[0].chandef.chan = &C;
+    } else {
+        seed_vendor();
+    }
+    if (!expect(started(&thread, pmsr ? pmsr_thread : worker_thread) && joined(thread),
+                "START that firmware never answers returns"))
+        return failures;
+    expect(fw_seen[CMD_START] == 1 && fw_seen[CMD_STOP] == 1, "timed-out START is followed by one STOP");
+    if (pmsr) expect(pmsr_ret == -ETIMEDOUT && !P.pmsr_request, "PMSR start reports the timeout and drops the request");
+    if (stop_answers)
+        expect(!H.ftm_session_in_progress && H.rtt_owner == RTT_OWNER_IDLE, "confirmed STOP clears and releases the session");
+    else
+        expect(H.ftm_session_in_progress && H.rtt_owner == (pmsr ? RTT_OWNER_PMSR : RTT_OWNER_VENDOR),
+               "unconfirmed STOP keeps the possibly-started session busy");
+    if (!expect(started(&thread, power_thread) && joined(thread), "TX-power query returns"))
+        return failures;
+    if (stop_answers)
+        expect(!power_ret && power_dbm == 17 && fw_seen[CMD_POWER] == 1, "TX power is queried after a confirmed STOP");
+    else
+        expect(power_ret == -EBUSY && power_dbm == 99 && !fw_seen[CMD_POWER],
+               "busy session returns -EBUSY and no POWER_CFG reaches firmware");
+    WRITE_ONCE(H.driver_status, 1);
+    if (recover(hang_thread))
+        expect(H.rtt_owner == RTT_OWNER_IDLE && !H.ftm_session_in_progress && drained() &&
+               late_frees == 2 - stop_answers, "recovery releases the session and frees timed-out requests late");
+    return failures;
+}
+static int s1(void) { return stalled(0, 0); }
+static int s2(void) { return stalled(0, 1); }
+static int s3(void) { return stalled(1, 0); }
+static int s4(void) { return stalled(1, 1); }
+static int s5(void) { return start_timeout(0, 0); }
+static int s6(void) { return start_timeout(0, 1); }
+static int s7(void) { return start_timeout(1, 0); }
+static int s8(void) { return start_timeout(1, 1); }
+static const struct { const char *name; int (*run)(void); } scenarios[] = {
+    {"S0 positive-control", positive_control},
+    {"S1 hang+get_tx_power", s1},
+    {"S2 hang+rtt-worker(SESSION_CFG)", s2},
+    {"S3 sdio-reset+get_tx_power", s3},
+    {"S4 sdio-reset+rtt-worker(START)", s4},
+    {"S5 vendor-START-timeout+STOP-unanswered", s5},
+    {"S6 vendor-START-timeout+STOP-confirmed", s6},
+    {"S7 pmsr-START-timeout+STOP-unanswered", s7},
+    {"S8 pmsr-START-timeout+STOP-confirmed", s8},
+};
+/* Scenarios run in parallel child processes, so a stuck one cannot stall
+ * the others; each child also dies by SIGALRM after 6 s at the latest. */
+int main(void)
+{
+    enum { COUNT = sizeof(scenarios) / sizeof(scenarios[0]) };
+    pid_t pid[COUNT];
+    int i, status, failed = 0;
+    fflush(NULL);
+    for (i = 0; i < COUNT; i++) {
+        pid[i] = fork();
+        assert(pid[i] >= 0);
+        if (!pid[i]) {
+            alarm(6);
+            scenario = scenarios[i].name;
+            status = scenarios[i].run();
+            fflush(NULL);
+            _exit(status ? 1 : 0);
+        }
+    }
+    for (i = 0; i < COUNT; i++) {
+        assert(waitpid(pid[i], &status, 0) == pid[i]);
+        if (WIFEXITED(status) && !WEXITSTATUS(status)) {
+            printf("rtt-recovery %s: PASS\n", scenarios[i].name);
+            continue;
+        }
+        failed++;
+        if (WIFSIGNALED(status))
+            printf("rtt-recovery %s: FAIL (signal %d)\n", scenarios[i].name, WTERMSIG(status));
+        else
+            printf("rtt-recovery %s: FAIL\n", scenarios[i].name);
+    }
+    printf("rtt-recovery scenarios=%d failures=%d\n", COUNT, failed);
+    return failed ? 1 : 0;
+}
+'''
+
 groups={"thermal":(thermal,[(5,4),(6,6),(6,12),(7,1)]),"dfs":(dfs,[(6,6)]),
-        "sensor":(sensor,[(6,6)]),"keep-connect":(keep,[(6,6)]),"gpio":(gpio,[(6,6),(7,1)])}
+        "sensor":(sensor,[(6,6)]),"keep-connect":(keep,[(6,6)]),"gpio":(gpio,[(6,6),(7,1)]),
+        "rtt-recovery":(rtt_recovery,[(6,6)])}
 if selected != "all" and selected not in groups: raise SystemExit("unknown review host group: "+selected)
 failed=0
 with tempfile.TemporaryDirectory(prefix="moal-review-host-") as scratch:
@@ -299,6 +826,7 @@ with tempfile.TemporaryDirectory(prefix="moal-review-host-") as scratch:
                    "-DLINUX_VERSION_CODE="+str((major<<16)|(minor<<8)),
                    "-DSTA_SUPPORT","-DUAP_SUPPORT","-DSD9098","-DPCIE9098","-I"+str(root/"mlan")]
             if name=="dfs": flags += ["-fsanitize=address,undefined","-fno-sanitize-recover=all","-fno-pie","-no-pie"]
+            if name=="rtt-recovery": flags += ["-pthread","-D_GNU_SOURCE","-DMLAN_64BIT"]
             subprocess.run(flags+[str(source),"-o",str(binary)],check=True)
             result=subprocess.run([str(binary)],capture_output=True,timeout=10)
             print("review-host %s kernel-branches %d.%d: %s"%(name,major,minor,result.stdout.decode().strip()),flush=True)
@@ -459,6 +987,7 @@ prelude = r'''#include <assert.h>
 #define GFP_KERNEL 0
 #define GFP_ATOMIC 0
 #define MOAL_IOCTL_WAIT 1
+#define MOAL_IOCTL_WAIT_TIMEOUT 2
 #define MOAL_NO_WAIT 0
 #define ETH_ALEN 6
 #define MIN(a,b) ((a)<(b)?(a):(b))
@@ -559,7 +1088,7 @@ static mlan_ioctl_req *woal_alloc_mlan_ioctl_req(size_t n) {
 }
 static int woal_request_ioctl(moal_private *p,mlan_ioctl_req *r,int w);
 static moal_private *woal_get_priv(moal_handle *h,int role) { (void)role;for(int i=0;i<h->priv_num;i++)if(h->priv[i])return h->priv[i];return NULL; }
-static int woal_set_get_tx_power(moal_private *p,int a,mlan_power_cfg_t *cfg) { (void)p;(void)a;power_queries++;cfg->power_level=17;return MLAN_STATUS_SUCCESS; }
+static int woal_set_get_tx_power_wait(moal_private *p,int a,mlan_power_cfg_t *cfg,int w) { (void)p;(void)a;assert(w==MOAL_IOCTL_WAIT_TIMEOUT);power_queries++;cfg->power_level=17;return MLAN_STATUS_SUCCESS; }
 struct device { int unused; };
 typedef struct { moal_handle *handle; } sdio_mmc_card;
 struct sdio_func { sdio_mmc_card *card; };

@@ -7709,7 +7709,9 @@ static int woal_cfg80211_get_tx_power(struct wiphy *wiphy,
 		return -EFAULT;
 	}
 
-	if (woal_set_get_tx_power(priv, MLAN_ACT_GET, &power_cfg) !=
+	/* Bounded: hang/reset clean-up must be able to take rtt_mutex. */
+	if (woal_set_get_tx_power_wait(priv, MLAN_ACT_GET, &power_cfg,
+				       MOAL_IOCTL_WAIT_TIMEOUT) !=
 	    MLAN_STATUS_SUCCESS) {
 		mutex_unlock(&handle->rtt_mutex);
 		LEAVE();
