@@ -1740,10 +1740,6 @@ t_u32 wlan_index_to_data_rate(pmlan_adapter pmadapter, t_u8 index,
 			stbc = 0;
 			he_dcm = 0;
 		}
-		/* map to gi 0:0.8us, 1:1.6us, 2:3.2us */
-		if (gi > 0)
-			gi = gi - 1;
-
 		rate = wlan_wmm_get_he_rate(bw, gi, nss, mcs_index);
 	} else
 
@@ -4492,6 +4488,10 @@ mlan_status wlan_get_cfpinfo(pmlan_adapter pmadapter,
 					break;
 				}
 			}
+			if (j == pmadapter->tx_power_table_bg_rows && cols) {
+				memset(pmadapter, dst, 0, cols);
+				dst[0] = chan;
+			}
 			dst += cols;
 		}
 		len += (c.rows_2g * cols);
@@ -4513,6 +4513,10 @@ mlan_status wlan_get_cfpinfo(pmlan_adapter pmadapter,
 						   cols, cols);
 					break;
 				}
+			}
+			if (j == pmadapter->tx_power_table_a_rows && cols) {
+				memset(pmadapter, dst, 0, cols);
+				dst[0] = chan;
 			}
 			dst += cols;
 		}

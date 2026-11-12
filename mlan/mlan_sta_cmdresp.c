@@ -1949,11 +1949,13 @@ static mlan_status wlan_ret_tdls_config(pmlan_private pmpriv,
 					sizeof(link_ptr->key_lifetime) +
 					sizeof(link_ptr->key_length);
 			}
-			final_data_rate = (t_u16)wlan_index_to_data_rate(
-				pmadapter, link_ptr->u.rate_info.tx_data_rate,
-				link_ptr->u.rate_info.tx_rate_htinfo, 0,
-				MFALSE);
-			link_ptr->u.final_data_rate = final_data_rate / 1000;
+			final_data_rate =
+				(t_u16)wlan_index_to_data_rate_500kbps(
+					pmadapter,
+					link_ptr->u.rate_info.tx_data_rate,
+					link_ptr->u.rate_info.tx_rate_htinfo,
+					0, MFALSE);
+			link_ptr->u.final_data_rate = final_data_rate / 2;
 
 			link_ptr =
 				(tdls_each_link_status *)(((t_u8 *)link_ptr) +

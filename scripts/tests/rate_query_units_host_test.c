@@ -70,6 +70,40 @@ static void test_raw_calculators(mlan_adapter *adapter)
 	EXPECT_U32(wlan_index_to_data_rate(adapter, 5, MLAN_RATE_FORMAT_LG, 0,
 					   MFALSE),
 		   6000, "raw legacy OFDM6 remains kbit/s");
+	/* HE GI codes: 0 and 1 are 0.8 us, 2 is 1.6 us, 3 is 3.2 us. */
+	EXPECT_U32(wlan_index_to_data_rate(adapter, 0,
+					   MLAN_RATE_FORMAT_HE | 0x08, 0,
+					   MFALSE),
+		   36034, "raw HE80 NSS1 MCS0 GI code 0 is 36.0 Mbps");
+	EXPECT_U32(wlan_index_to_data_rate(adapter, 0,
+					   MLAN_RATE_FORMAT_HE | 0x08 | 0x10, 0,
+					   MFALSE),
+		   36034, "raw HE80 NSS1 MCS0 GI code 1 is 36.0 Mbps");
+	EXPECT_U32(wlan_index_to_data_rate(adapter, 0,
+					   MLAN_RATE_FORMAT_HE | 0x08 | 0x80, 0,
+					   MFALSE),
+		   34027, "raw HE80 NSS1 MCS0 GI code 2 is 34.0 Mbps");
+	EXPECT_U32(wlan_index_to_data_rate(adapter, 0,
+					   MLAN_RATE_FORMAT_HE | 0x08 | 0x90, 0,
+					   MFALSE),
+		   30600, "raw HE80 NSS1 MCS0 GI code 3 is 30.6 Mbps");
+	EXPECT_U32(wlan_index_to_data_rate(adapter, 0,
+					   MLAN_RATE_FORMAT_HE | 0x08 | 0x90 |
+						   0x20,
+					   MBIT(0), MFALSE),
+		   36034, "raw HE80 GI code 3 with STBC and DCM is 0.8 us");
+	EXPECT_U32(wlan_index_to_data_rate_500kbps(adapter, 12,
+						   MLAN_RATE_FORMAT_LG, 0,
+						   MFALSE),
+		   108, "500-kbit/s legacy 54 Mbps fits radiotap Rate");
+	EXPECT_U32(wlan_index_to_data_rate_500kbps(adapter, 7,
+						   MLAN_RATE_FORMAT_HT | 0x10,
+						   0, MFALSE),
+		   144, "500-kbit/s HT20 MCS7 SGI");
+	EXPECT_U32(wlan_index_to_data_rate_500kbps(adapter, 0x1b,
+						   MLAN_RATE_FORMAT_HE | 0x08,
+						   0, MFALSE),
+		   2404, "500-kbit/s HE80 NSS2 MCS11 GI0.8");
 }
 
 static void test_get_data_rate(mlan_private *priv,
@@ -136,8 +170,8 @@ static void test_get_data_rate(mlan_private *priv,
 		  MLAN_RATE_FORMAT_HE | 0x08, 0);
 	EXPECT_U32(rate.param.data_rate.tx_data_rate, 2404,
 		   "GET_DATA_RATE HE80 NSS2 MCS11 GI0.8 quantizes ABI value");
-	EXPECT_U32(rate.param.data_rate.rx_data_rate, 2270,
-		   "GET_DATA_RATE HE80 NSS2 MCS11 extended GI quantizes ABI value");
+	EXPECT_U32(rate.param.data_rate.rx_data_rate, 2042,
+		   "GET_DATA_RATE HE80 NSS2 MCS11 GI3.2 quantizes ABI value");
 	EXPECT_U32(rate.param.data_rate.tx_nss, 1,
 		   "GET_DATA_RATE HE TX zero-based NSS metadata");
 	EXPECT_U32(rate.param.data_rate.rx_nss, 1,
@@ -187,6 +221,9 @@ static void test_rate_cfg_value(mlan_private *priv,
 	expect_rate_cfg(priv, resp, ioctl, 0x1b,
 			MLAN_RATE_FORMAT_HE | 0x08, 0, 2404,
 			"RATE_CFG value HE80 NSS2 MCS11 preserves u32 result");
+	expect_rate_cfg(priv, resp, ioctl, 0x1b,
+			MLAN_RATE_FORMAT_HE | 0x08 | 0x80, 0, 2270,
+			"RATE_CFG value HE80 NSS2 MCS11 GI1.6 uses 1.6 us");
 }
 
 int main(void)
