@@ -3595,6 +3595,17 @@ require((ROOT / "mlan/mlan_ioctl.h").read_bytes() ==
         (ROOT / "mlinux/mlan_ioctl.h").read_bytes(),
         "mirrored mlan_ioctl.h files are not byte-identical")
 
+for rx_rate_path in ("mlan/mlan_sta_rx.c", "mlan/mlan_uap_txrx.c"):
+    rx_rate_code = c_code(read(rx_rate_path))
+    require(
+        len(re.findall(r"rx_info\.data_rate\s*=\s*"
+                       r"wlan_index_to_data_rate_500kbps\s*\(",
+                       rx_rate_code)) == 1
+        and re.search(r"rx_info\.data_rate\s*=\s*wlan_index_to_data_rate\s*\(",
+                      rx_rate_code) is None,
+        f"{rx_rate_path} reports pkt_rxinfo.data_rate outside 500-kbit/s units",
+    )
+
 if failures:
     for failure in failures:
         print(f"FAIL: {failure}", file=sys.stderr)

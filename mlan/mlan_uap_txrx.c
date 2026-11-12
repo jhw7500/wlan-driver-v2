@@ -345,7 +345,7 @@ mlan_status wlan_ops_uap_process_rx_packet(t_void *adapter, pmlan_buffer pmbuf)
 
 	if (priv->rx_pkt_info) {
 		ext_rate_info = (t_u8)(prx_pd->rx_info >> 16);
-		pmbuf->u.rx_info.data_rate = wlan_index_to_data_rate(
+		pmbuf->u.rx_info.data_rate = wlan_index_to_data_rate_500kbps(
 			priv->adapter, prx_pd->rx_rate, prx_pd->rate_info,
 			ext_rate_info, ext_rate_info & MBIT(6));
 		pmbuf->u.rx_info.channel =

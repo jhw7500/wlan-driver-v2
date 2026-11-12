@@ -435,10 +435,9 @@ void wlan_rxpdinfo_to_radiotapinfo(pmlan_private priv, RxPD *prx_pd,
 	} else
 		rt_info_tmp.rate_info.rate_info =
 			(ldpc << 5) | (format << 3) | (bw << 1) | gi;
-	rt_info_tmp.rate_info.bitrate =
-		wlan_index_to_data_rate(priv->adapter, prx_pd->rx_rate,
-					prx_pd->rate_info, ext_rate_info,
-					ext_rate_info & MBIT(6));
+	rt_info_tmp.rate_info.bitrate = wlan_index_to_data_rate_500kbps(
+		priv->adapter, prx_pd->rx_rate, prx_pd->rate_info,
+		ext_rate_info, ext_rate_info & MBIT(6));
 
 	if (prx_pd->flags & RXPD_FLAG_EXTRA_HEADER)
 		memcpy_ext(priv->adapter, &rt_info_tmp.extra_info,
@@ -634,7 +633,7 @@ mon_process:
 
 	if (MFALSE || priv->rx_pkt_info) {
 		ext_rate_info = (t_u8)(prx_pd->rx_info >> 16);
-		pmbuf->u.rx_info.data_rate = wlan_index_to_data_rate(
+		pmbuf->u.rx_info.data_rate = wlan_index_to_data_rate_500kbps(
 			priv->adapter, prx_pd->rx_rate, prx_pd->rate_info,
 			ext_rate_info, ext_rate_info & MBIT(6));
 

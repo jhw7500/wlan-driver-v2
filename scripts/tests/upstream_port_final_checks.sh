@@ -810,9 +810,78 @@ int main(void)
 }
 '''
 
+rate_units = r'''
+/* The 500-kbit/s stub results match the production wrapper values pinned
+ * by scripts/tests/rate_query_units_host_test.c; the kbit/s results only
+ * need to differ from them so a call site using the raw converter fails. */
+static t_u32 converter_kbps, converter_abi;
+static t_u8 seen_index, seen_info;
+t_u32 wlan_index_to_data_rate(pmlan_adapter pmadapter, t_u8 index, t_u8 rate_info,
+                              t_u8 ext_rate_info, t_bool is_eht)
+{ seen_index=index; seen_info=rate_info; return converter_kbps; }
+t_u32 wlan_index_to_data_rate_500kbps(pmlan_adapter pmadapter, t_u8 index, t_u8 rate_info,
+                                      t_u8 ext_rate_info, t_bool is_eht)
+{ seen_index=index; seen_info=rate_info; return converter_abi; }
+sta_node *wlan_get_station_entry(mlan_private *priv,t_u8 *mac) { abort(); }
+sta_node *wlan_add_station_entry(mlan_private *priv,t_u8 *mac) { abort(); }
+t_void wlan_delete_station_entry(mlan_private *priv,t_u8 *mac) { abort(); }
+t_void wlan_delete_station_list(pmlan_private priv) { abort(); }
+t_u8 wlan_is_station_list_empty(mlan_private *priv) { abort(); }
+t_void wlan_hold_tdls_packets(pmlan_private priv,t_u8 *mac) { abort(); }
+t_void wlan_restore_tdls_packets(pmlan_private priv,t_u8 *mac,tdlsStatus_e status) { abort(); }
+void wlan_11n_cleanup_txbastream_tbl(mlan_private *priv,t_u8 *ra) { abort(); }
+void wlan_cleanup_reorder_tbl(mlan_private *priv,t_u8 *ta) { abort(); }
+static void wlan_set_tdls_powermode(pmlan_private pmpriv,t_u8 powermode) { abort(); }
+static t_void *host_memcpy_ext(t_void *h,t_void *d,const t_void *s,t_u32 n,t_u32 size)
+{ return memcpy(d,s,n<size?n:size); }
+#define memset(adapter,s,c,len) memset((s),(c),(len))
+'''
+rate_units += function("mlan/mlan_sta_rx.c","wlan_rxpdinfo_to_radiotapinfo")
+rate_units += function("mlan/mlan_sta_cmdresp.c","wlan_ret_tdls_config")
+rate_units += r'''
+#undef memset
+static mlan_adapter adapter;
+static mlan_private priv;
+static void radiotap(t_u8 rate,t_u8 info,t_u32 kbps,t_u32 abi,const char *name) {
+    RxPD pd; radiotap_info rt;
+    memset(&pd,0,sizeof(pd)); memset(&rt,0xa5,sizeof(rt));
+    pd.rx_rate=rate; pd.rate_info=info;
+    converter_kbps=kbps; converter_abi=abi; seen_index=seen_info=0xff;
+    wlan_rxpdinfo_to_radiotapinfo(&priv,&pd,&rt);
+    check(rt.rate_info.bitrate==abi,name);
+    check(seen_index==rate && seen_info==info,"radiotap forwards the RxPD rate fields");
+}
+static void tdls(t_u8 rate,t_u8 info,t_u32 kbps,t_u32 abi,t_u16 mbps,const char *name) {
+    static HostCmd_DS_COMMAND resp; mlan_ds_misc_cfg misc; mlan_ioctl_req req;
+    memset(&resp,0,sizeof(resp)); memset(&misc,0,sizeof(misc)); memset(&req,0,sizeof(req));
+    req.pbuf=(t_u8 *)&misc;
+    HostCmd_DS_TDLS_CONFIG *cfg=&resp.params.tdls_config_data;
+    tdls_all_config *all=(tdls_all_config *)cfg->tdls_info.tdls_data;
+    tdls_each_link_status *link=all->u.tdls_link_status_resp.link_stats;
+    cfg->tdls_info.tdls_action=wlan_cpu_to_le16(WLAN_TDLS_LINK_STATUS);
+    all->u.tdls_link_status_resp.active_links=1;
+    link->u.rate_info.tx_data_rate=rate; link->u.rate_info.tx_rate_htinfo=info;
+    resp.size=S_DS_GEN+sizeof(*cfg);
+    converter_kbps=kbps; converter_abi=abi; seen_index=seen_info=0xff;
+    check(wlan_ret_tdls_config(&priv,&resp,&req)==MLAN_STATUS_SUCCESS,"TDLS link status response accepted");
+    check(link->u.final_data_rate==mbps,name);
+    check(seen_index==rate && seen_info==info,"TDLS forwards the link rate fields");
+}
+int main(void) {
+    adapter.callbacks.moal_memcpy_ext=host_memcpy_ext; priv.adapter=&adapter;
+    radiotap(12,MLAN_RATE_FORMAT_LG,54000,108,"radiotap legacy 54 Mbps reports Rate 108");
+    radiotap(0x1b,MLAN_RATE_FORMAT_HE|0x08,1202100,2404,"radiotap HE80 NSS2 MCS11 bitrate uses 500-kbit/s units");
+    radiotap(MLAN_RATE_BITMAP_MCS0,MLAN_RATE_FORMAT_HT|0x10,13,13,"radiotap HT MCS32 SGI keeps ABI value 13");
+    tdls(7,MLAN_RATE_FORMAT_HT|0x10,72215,144,72,"TDLS HT20 MCS7 SGI reports 72 Mbps");
+    tdls(MLAN_RATE_BITMAP_MCS0,MLAN_RATE_FORMAT_HT|0x10,13,13,6,"TDLS HT MCS32 SGI reports 6 Mbps");
+    tdls(0x1b,MLAN_RATE_FORMAT_HE|0x08,1202100,2404,1202,"TDLS HE80 NSS2 MCS11 reports 1202 Mbps");
+    printf("rate-units checks=%d failures=%d\n",checks,failures); return failures?1:0;
+}
+'''
+
 groups={"thermal":(thermal,[(5,4),(6,6),(6,12),(7,1)]),"dfs":(dfs,[(6,6)]),
         "sensor":(sensor,[(6,6)]),"keep-connect":(keep,[(6,6)]),"gpio":(gpio,[(6,6),(7,1)]),
-        "rtt-recovery":(rtt_recovery,[(6,6)])}
+        "rtt-recovery":(rtt_recovery,[(6,6)]),"rate-units":(rate_units,[(6,6)])}
 if selected != "all" and selected not in groups: raise SystemExit("unknown review host group: "+selected)
 failed=0
 with tempfile.TemporaryDirectory(prefix="moal-review-host-") as scratch:
@@ -1781,6 +1850,8 @@ fi
 
 string_host_regressions
 review_host_regressions
+bash "$SCRIPT_DIR/rate_query_units_host_test.sh"
+bash "$SCRIPT_DIR/cfpinfo_power_table_host_test.sh"
 python3 "$SCRIPT_DIR/upstream_port_invariants.py"
 bash "$SCRIPT_DIR/mlanutl_compile_qa.sh"
 bash "$SCRIPT_DIR/antcfg_cli_qa.sh"
