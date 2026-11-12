@@ -2419,7 +2419,8 @@ static int woal_uap_skip_cac(struct net_device *dev, struct ifreq *req)
 #endif
 #endif
 	dfs_state_t dfs_state;
-	mlan_ds_11h_chan_dfs_state ch_dfs_state[4];
+	/* 160 MHz spans eight 20 MHz subchannels. */
+	mlan_ds_11h_chan_dfs_state ch_dfs_state[8];
 	t_u8 n_chan;
 	int i = 0;
 	ENTER();
@@ -2442,10 +2443,6 @@ static int woal_uap_skip_cac(struct net_device *dev, struct ifreq *req)
 	else
 		dfs_state = DFS_USABLE;
 	memset(&ch_dfs_state, 0, sizeof(ch_dfs_state));
-	// n_chan is clamped to ARRAY_SIZE(ch_dfs_state) immediately after
-	// coverity[cert_arr30_c_violation:SUPPRESS]
-	// coverity[overrun:SUPPRESS]
-	// coverity[cert_str31_c_violation:SUPPRESS]
 	n_chan = woal_uap_get_dfs_chan(param.channel, param.bw,
 				       &ch_dfs_state[0]);
 	// coverity[misra_c_2012_rule_6_1_violation:SUPPRESS]

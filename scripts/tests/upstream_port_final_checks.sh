@@ -4,6 +4,311 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
+# Execute production functions with host-only kernel boundaries.
+review_host_regressions() {
+python3 - "$ROOT" "${1:-all}" <<'PY_REVIEW'
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+root = Path(sys.argv[1])
+selected = sys.argv[2]
+
+def function(path, name):
+    source = (root / path).read_text()
+    match = re.search(r"(?m)^(?:static )?(?:int|void|mlan_status)\s*" + name + r"\([^;]*?\)\s*\{", source)
+    if not match:
+        raise RuntimeError("production function not found: " + name)
+    masked = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+                    lambda m: " " * len(m.group()), source, flags=re.S)
+    depth = 0
+    for end in range(source.index("{", match.start()), len(source)):
+        if masked[end] == "{": depth += 1
+        if masked[end] == "}":
+            depth -= 1
+            if not depth: return source[match.start():end + 1] + "\n"
+    raise RuntimeError("unterminated production function: " + name)
+
+common = r'''#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "mlan.h"
+#include "mlan_util.h"
+#include "mlan_join.h"
+#include "mlan_fw.h"
+#include "mlan_main.h"
+#undef ENTER
+#undef LEAVE
+#undef PRINTM
+#undef memset
+#undef memcpy
+#undef memcmp
+#define ENTER() ((void)0)
+#define LEAVE() ((void)0)
+#define PRINTM(...) ((void)0)
+#define KERNEL_VERSION(a,b,c) (((a)<<16)|((b)<<8)|(c))
+#define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define IS_ERR(p) ((uintptr_t)(p) >= (uintptr_t)-4095)
+#define IS_ERR_OR_NULL(p) (!(p) || IS_ERR(p))
+#define PTR_ERR(p) ((long)(p))
+#define ERR_PTR(e) ((void *)(intptr_t)(e))
+static int failures, checks;
+static void check(int ok,const char *name) {
+    checks++; if (!ok) { fprintf(stderr,"FAIL review-host: %s\n",name); failures++; }
+}
+'''
+
+thermal = r'''
+typedef struct { void *thermal_priv; } moal_handle;
+struct thermal_zone_device { void *devdata; bool active; };
+struct woal_thermal_priv { struct thermal_zone_device *tz_dev; moal_handle *handle; };
+static int live_zones,live_allocations,alloc_fail,register_fail,registrations;
+static struct thermal_zone_device zones[32];
+static int woal_thermal_zone_ops;
+static int woal_thermal_trips[2];
+#define WOAL_THERMAL_NUM_TRIPS 2
+#define GFP_KERNEL 0
+static void *kzalloc(size_t size,int flags) {
+    if (alloc_fail) return NULL;
+    void *p=calloc(1,size); if (p) live_allocations++; return p;
+}
+static void kfree(void *p) { if (p) { live_allocations--; free(p); } }
+static struct thermal_zone_device *register_zone(void *data) {
+    if (register_fail) return ERR_PTR(-EIO);
+    assert(registrations<32);
+    struct thermal_zone_device *tz=&zones[registrations++];
+    tz->active=true; tz->devdata=data; live_zones++; return tz;
+}
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,0,0)
+static struct thermal_zone_device *thermal_zone_device_register(const char *name,
+    int count,int mask,void *data,void *ops,void *params,int passive,int poll) { return register_zone(data); }
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
+static struct thermal_zone_device *thermal_zone_device_register_with_trips(const char *name,
+    void *trips,int count,int mask,void *data,void *ops,void *params,int passive,int poll) { return register_zone(data); }
+#else
+static struct thermal_zone_device *thermal_zone_device_register_with_trips(const char *name,
+    void *trips,int count,void *data,void *ops,void *params,int passive,int poll) { return register_zone(data); }
+#endif
+static void thermal_zone_device_unregister(struct thermal_zone_device *tz) {
+    assert(tz->active); tz->active=false; tz->devdata=NULL; live_zones--;
+}
+'''
+thermal += function("mlinux/moal_thermal.c","woal_thermal_register")
+thermal += function("mlinux/moal_thermal.c","woal_thermal_unregister")
+thermal += r'''
+int main(void) {
+    moal_handle h={0};
+    check(!woal_thermal_register(&h),"initial thermal registration succeeds");
+    void *owner=h.thermal_priv;
+    for (int bus=0;bus<2;bus++) for (int reset=0;reset<4;reset++) {
+        check(!woal_thermal_register(&h),"FLR reinitialization succeeds");
+        check(h.thermal_priv==owner && live_zones==1 && live_allocations==1,
+              "repeated PCIe/SDIO reinitialization keeps one thermal owner");
+    }
+    alloc_fail=1;
+    check(!woal_thermal_register(&h) && h.thermal_priv==owner,"existing zone survives allocation pressure");
+    alloc_fail=0; woal_thermal_unregister(&h);
+    check(!h.thermal_priv && !live_zones && !live_allocations,"removal leaves no zone or private allocation");
+    woal_thermal_unregister(&h);
+    check(!live_zones && !live_allocations,"repeated removal is harmless");
+    alloc_fail=1;
+    check(woal_thermal_register(&h)==-ENOMEM && !h.thermal_priv,"allocation failure publishes no owner");
+    alloc_fail=0; register_fail=1;
+    check(woal_thermal_register(&h)==-EIO && !h.thermal_priv && !live_allocations,"API failure unwinds allocation");
+    register_fail=0;
+    check(!woal_thermal_register(&h) && live_zones==1,"registration retries after failure");
+    woal_thermal_unregister(&h);
+    check(!live_zones && !live_allocations,"retried registration drains on removal");
+    printf("thermal checks=%d failures=%d\n",checks,failures); return failures?1:0;
+}
+'''
+
+dfs = r'''
+#define UAP_CFG80211 1
+#define CFG80211_VERSION_CODE KERNEL_VERSION(6,6,3)
+#define IS_UAP_CFG80211(v) ((v)!=0)
+typedef struct { struct { int cfg80211_wext; } params; } moal_handle;
+typedef struct { moal_handle *phandle; } moal_private;
+struct net_device { moal_private *priv; }; struct ifreq { void *ifr_data; };
+'''
+header=(root/"mlinux/moal_uap.h").read_text()
+dfs += header[header.index("typedef struct _skip_cac_para"):header.index("} skip_cac_para;")+len("} skip_cac_para;")]
+dfs += r'''
+static unsigned gets,sets,updates,bad;
+static t_u8 channels[8],expected[8]; static int user_copy_error;
+static void *netdev_priv(struct net_device *d) { return d->priv; }
+static int copy_from_user(void *dst,const void *src,size_t size) {
+    if (user_copy_error) return 1;
+    memcpy(dst,src,size); return 0;
+}
+static int woal_11h_chan_dfs_state(moal_private *p,int action,mlan_ds_11h_chan_dfs_state *s) {
+    if (action==MLAN_ACT_GET) { if (gets<8) channels[gets]=s->channel; gets++; s->dfs_state=DFS_USABLE; }
+    else { unsigned i=sets++; if (i>=8 || s->channel!=expected[i] || s->dfs_state!=DFS_AVAILABLE) bad++; }
+    return 0;
+}
+static void woal_update_channel_dfs_state(t_u8 channel,t_u8 state) {
+    unsigned i=updates++; if (i>=8 || channel!=expected[i] || state!=DFS_AVAILABLE) bad++;
+}
+'''
+dfs += function("mlinux/moal_uap.c","woal_uap_get_dfs_chan")
+dfs += function("mlinux/moal_uap.c","woal_uap_skip_cac")
+dfs += r'''
+int main(void) {
+    moal_handle h={.params={.cfg80211_wext=1}}; moal_private p={&h};
+    struct net_device dev={&p}; skip_cac_para param={0}; struct ifreq req={&param};
+    const t_u8 groups[2][8]={{36,40,44,48,52,56,60,64},{100,104,108,112,116,120,124,128}};
+    param.skip_cac=1; param.bw=CHAN_BW_160MHZ;
+    for (unsigned group=0;group<2;group++) for (unsigned primary=0;primary<8;primary++) {
+        memcpy(expected,groups[group],8); param.channel=groups[group][primary];
+        gets=sets=updates=bad=0; memset(channels,0,sizeof(channels));
+        check(!woal_uap_skip_cac(&dev,&req),"160 MHz skip-CAC caller succeeds");
+        check(gets==8 && sets==8 && updates==8 && !bad && !memcmp(channels,expected,8),
+              "both 160 MHz groups process all eight channel states");
+    }
+    req.ifr_data=NULL;
+    check(woal_uap_skip_cac(&dev,&req)==-EFAULT,"NULL user pointer rejected");
+    req.ifr_data=&param; user_copy_error=1;
+    check(woal_uap_skip_cac(&dev,&req)==-EFAULT,"user-copy failure rejected");
+    printf("dfs checks=%d failures=%d\n",checks,failures); return failures?1:0;
+}
+'''
+
+sensor = function("mlan/mlan_cmdevt.c","wlan_ret_get_sensor_temp")
+sensor += r'''
+int main(void) {
+    mlan_private priv={0}; HostCmd_DS_COMMAND resp={0};
+    mlan_ds_misc_cfg cfg; mlan_ioctl_req req={0}; req.pbuf=(t_u8 *)&cfg;
+    const t_s32 values[5]={42,-7,18,29,60};
+    resp.params.temp_sensor.cau_temperature=wlan_cpu_to_le32(values[0]);
+    for (int i=0;i<4;i++) resp.params.temp_sensor.rfu_temperature[i/2][i%2]=wlan_cpu_to_le32(values[i+1]);
+    for (unsigned count=1;count<=5;count++) {
+        memset(&cfg,0xa5,sizeof(cfg)); resp.size=S_DS_GEN+count*4;
+        check(wlan_ret_get_sensor_temp(&priv,&resp,&req)==MLAN_STATUS_SUCCESS,"CAU-only through full responses accepted");
+        check(cfg.param.sensor_temp.cau_temperature==values[0],"CAU converted");
+        for (unsigned i=0;i<4;i++) check(cfg.param.sensor_temp.rfu_temperature[i/2][i%2]==(i+1<count?values[i+1]:0),
+              "only declared RFU values copied and absent values cleared");
+    }
+    for (unsigned size=0;size<S_DS_GEN+20;size++) {
+        if (size>=S_DS_GEN+4 && (size-S_DS_GEN)%4==0) continue;
+        memset(&cfg,0xa5,sizeof(cfg)); mlan_ds_sensor_temp before=cfg.param.sensor_temp;
+        resp.size=size; req.status_code=0;
+        check(wlan_ret_get_sensor_temp(&priv,&resp,&req)==MLAN_STATUS_FAILURE,"short header, missing CAU or partial element rejected");
+        check(req.status_code==MLAN_ERROR_FW_CMDRESP && !memcmp(&before,&cfg.param.sensor_temp,sizeof(before)),
+              "malformed response reports error without partial publication");
+    }
+    resp.size=S_DS_GEN+4;
+    check(wlan_ret_get_sensor_temp(&priv,&resp,NULL)==MLAN_STATUS_SUCCESS,"valid ownerless response");
+    resp.size=S_DS_GEN+3;
+    check(wlan_ret_get_sensor_temp(&priv,&resp,NULL)==MLAN_STATUS_FAILURE,"malformed ownerless response rejected");
+    printf("sensor checks=%d failures=%d\n",checks,failures); return failures?1:0;
+}
+'''
+
+keep = r'''
+typedef struct { int keep_connect; unsigned bss_index; } moal_private;
+static mlan_status woal_atoi(int *out,char *s) { *out=(int)strtol(s,NULL,10); return MLAN_STATUS_SUCCESS; }
+static int woal_atox(char *s) { return (int)strtol(s,NULL,16); }
+'''
+keep += function("mlinux/moal_eth_ioctl.c","parse_arguments")
+keep += function("mlinux/moal_eth_ioctl.c","woal_priv_keep_connect")
+keep += r'''
+int main(void) {
+    moal_private p={.keep_connect=1};
+    const char *invalid[]={"","2","-1","0 1"};
+    for (unsigned i=0;i<ARRAY_SIZE(invalid);i++) {
+        char input[16]; strcpy(input,invalid[i]);
+        check(woal_priv_keep_connect(&p,(t_u8 *)input,strlen(input))==-EINVAL,"invalid KEEP_CONNECT arguments return EINVAL");
+        check(p.keep_connect==1,"invalid KEEP_CONNECT preserves previous state");
+    }
+    char off[]="0",on[]="1";
+    check(!woal_priv_keep_connect(&p,(t_u8 *)off,1) && !p.keep_connect,"valid disable succeeds");
+    check(!woal_priv_keep_connect(&p,(t_u8 *)on,1) && p.keep_connect,"valid enable succeeds");
+    printf("keep-connect checks=%d failures=%d\n",checks,failures); return failures?1:0;
+}
+'''
+
+gpio = r'''
+struct device_node { int unused; }; struct gpio_desc { int unused; };
+typedef struct { void *ind_rst_gpiod; } moal_handle;
+static struct device_node node; static struct gpio_desc descriptor;
+static int node_missing,invalid_gpio,descriptor_null,acquire_fail,direction_fail;
+static int owned,put_count,bad_puts,node_puts;
+#define GPIOD_OUT_HIGH 1
+static struct device_node *of_find_compatible_node(void *a,void *b,const char *name) { return node_missing?NULL:&node; }
+static void of_node_put(struct device_node *n) { node_puts++; }
+static void *of_fwnode_handle(struct device_node *n) { return n; }
+static struct gpio_desc *fwnode_gpiod_get_index(void *n,const char *name,int i,int flags,const char *label) {
+    if (acquire_fail) return ERR_PTR(-EBUSY);
+    owned++; return &descriptor;
+}
+static int of_get_named_gpio(struct device_node *n,const char *name,int i) { return invalid_gpio?-EINVAL:17; }
+static int gpio_is_valid(int n) { return n>=0; }
+static struct gpio_desc *gpio_to_desc(int n) { return descriptor_null?NULL:&descriptor; }
+static int gpio_request(int n,const char *name) { if (acquire_fail) return -EBUSY; owned++; return 0; }
+static int gpiod_direction_output(struct gpio_desc *d,int value) { return (!d || direction_fail)?-EIO:0; }
+static void gpiod_put(struct gpio_desc *d) { if (owned!=1 || d!=&descriptor) bad_puts++; else owned--; put_count++; }
+'''
+gpio += function("mlinux/moal_main.c","woal_regist_ind_rst_gpio")
+gpio += function("mlinux/moal_main.c","woal_unregist_ind_rst_gpio")
+gpio += r'''
+int main(void) {
+    moal_handle h={0}; direction_fail=1;
+    woal_regist_ind_rst_gpio(&h);
+    check(!h.ind_rst_gpiod && !owned,"direction failure keeps OOB disabled and releases ownership");
+    check(put_count==1 && !bad_puts && node_puts==1,"failed setup releases exactly its acquired descriptor");
+    direction_fail=0; put_count=node_puts=bad_puts=owned=0; h.ind_rst_gpiod=NULL;
+    acquire_fail=1; woal_regist_ind_rst_gpio(&h);
+    check(!h.ind_rst_gpiod && !owned && !put_count && node_puts==1,"acquisition failure retains in-band reset path");
+    acquire_fail=0; node_missing=1; node_puts=0; woal_regist_ind_rst_gpio(&h);
+    check(!h.ind_rst_gpiod && !owned && !node_puts,"missing DT node keeps OOB disabled");
+    node_missing=0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7,1,0)
+    invalid_gpio=1; woal_regist_ind_rst_gpio(&h);
+    check(!h.ind_rst_gpiod && !owned,"invalid legacy GPIO rejected"); invalid_gpio=0;
+    descriptor_null=1; woal_regist_ind_rst_gpio(&h);
+    check(!h.ind_rst_gpiod && !owned,"NULL legacy descriptor rejected"); descriptor_null=0;
+#endif
+    put_count=bad_puts=0; woal_regist_ind_rst_gpio(&h);
+    check(h.ind_rst_gpiod==&descriptor && owned==1,"successful setup publishes an owned output descriptor");
+    woal_unregist_ind_rst_gpio(&h);
+    check(!h.ind_rst_gpiod && !owned && put_count==1 && !bad_puts,"removal releases descriptor once");
+    woal_unregist_ind_rst_gpio(&h);
+    check(put_count==1 && !bad_puts,"repeated removal does not release again");
+    printf("gpio checks=%d failures=%d\n",checks,failures); return failures?1:0;
+}
+'''
+
+groups={"thermal":(thermal,[(5,4),(6,6),(6,12),(7,1)]),"dfs":(dfs,[(6,6)]),
+        "sensor":(sensor,[(6,6)]),"keep-connect":(keep,[(6,6)]),"gpio":(gpio,[(6,6),(7,1)])}
+if selected != "all" and selected not in groups: raise SystemExit("unknown review host group: "+selected)
+failed=0
+with tempfile.TemporaryDirectory(prefix="moal-review-host-") as scratch:
+    for name,(body,versions) in groups.items():
+        if selected not in ("all",name): continue
+        source=Path(scratch)/(name+".c"); binary=Path(scratch)/name; source.write_text(common+body)
+        for major,minor in versions:
+            flags=["cc","-std=gnu11","-O1","-g","-Wall","-Wextra","-Werror",
+                   "-Wno-unused-parameter","-Wno-unused-function","-Wno-unused-variable",
+                   "-Wno-unused-but-set-variable","-Wno-pointer-sign","-Wno-sign-compare",
+                   "-DLINUX_VERSION_CODE="+str((major<<16)|(minor<<8)),
+                   "-DSTA_SUPPORT","-DUAP_SUPPORT","-DSD9098","-DPCIE9098","-I"+str(root/"mlan")]
+            if name=="dfs": flags += ["-fsanitize=address,undefined","-fno-sanitize-recover=all","-fno-pie","-no-pie"]
+            subprocess.run(flags+[str(source),"-o",str(binary)],check=True)
+            result=subprocess.run([str(binary)],capture_output=True,timeout=10)
+            print("review-host %s kernel-branches %d.%d: %s"%(name,major,minor,result.stdout.decode().strip()),flush=True)
+            if result.returncode:
+                failed+=1; sys.stderr.buffer.write(result.stderr)
+if failed: raise SystemExit(1)
+print("review_host_regressions=PASS")
+PY_REVIEW
+}
+
 string_host_regressions() {
 python3 - "$ROOT" <<'PY_STRING'
 from pathlib import Path
@@ -930,6 +1235,11 @@ print("rtt_host_regressions=PASS")
 PY_RTT
 }
 
+if [[ "${1:-}" == "--review-host-only" ]]; then
+    review_host_regressions "${2:-all}"
+    exit
+fi
+
 if [[ "${1:-}" == "--string-host-only" ]]; then
     string_host_regressions
     exit
@@ -941,6 +1251,7 @@ if [[ "${1:-}" == "--rtt-host-only" ]]; then
 fi
 
 string_host_regressions
+review_host_regressions
 python3 "$SCRIPT_DIR/upstream_port_invariants.py"
 bash "$SCRIPT_DIR/mlanutl_compile_qa.sh"
 bash "$SCRIPT_DIR/antcfg_cli_qa.sh"

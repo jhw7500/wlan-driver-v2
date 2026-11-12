@@ -12616,8 +12616,20 @@ mlan_status wlan_ret_get_sensor_temp(pmlan_private pmpriv,
 	mlan_ds_misc_cfg *pcfg = MNULL;
 	const HostCmd_DS_SENSOR_TEMP *pSensorT = &resp->params.temp_sensor;
 	t_u8 i, j;
+	t_u16 rfu_count;
 
 	ENTER();
+
+	/* wlan_process_cmdresp() has converted size to host byte order. */
+	if (resp->size < S_DS_GEN + sizeof(pSensorT->cau_temperature) ||
+	    (resp->size - S_DS_GEN) % sizeof(t_s32)) {
+		if (pioctl_buf)
+			pioctl_buf->status_code = MLAN_ERROR_FW_CMDRESP;
+		LEAVE();
+		return MLAN_STATUS_FAILURE;
+	}
+	rfu_count = (resp->size - S_DS_GEN -
+		     sizeof(pSensorT->cau_temperature)) / sizeof(t_s32);
 
 	if (pioctl_buf) {
 		pcfg = (mlan_ds_misc_cfg *)pioctl_buf->pbuf;
@@ -12629,9 +12641,14 @@ mlan_status wlan_ret_get_sensor_temp(pmlan_private pmpriv,
 		// Copy only available RFU sensors based on response size
 		for (i = 0; i < MAX_RFUS; i++) {
 			for (j = 0; j < MAX_PATHS; j++) {
-				pcfg->param.sensor_temp.rfu_temperature[i][j] =
-					wlan_le32_to_cpu(
-						pSensorT->rfu_temperature[i][j]);
+				if (i * MAX_PATHS + j < rfu_count)
+					pcfg->param.sensor_temp
+						.rfu_temperature[i][j] =
+						wlan_le32_to_cpu(
+							pSensorT->rfu_temperature[i][j]);
+				else
+					pcfg->param.sensor_temp
+						.rfu_temperature[i][j] = 0;
 			}
 		}
 	}

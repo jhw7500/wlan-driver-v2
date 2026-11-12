@@ -182,6 +182,10 @@ int woal_thermal_register(moal_handle *handle)
 	int ret = 0;
 
 	ENTER();
+	/* Firmware reset reuses the handle; its zone lives until removal. */
+	if (handle->thermal_priv)
+		goto done;
+
 	tp = kzalloc(sizeof(*tp), GFP_KERNEL);
 	if (!tp) {
 		PRINTM(MERROR, "thermal: failed to alloc woal_thermal_priv\n");

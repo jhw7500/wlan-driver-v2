@@ -17057,7 +17057,7 @@ static int woal_priv_keep_connect(moal_private *priv, t_u8 *respbuf,
 	ENTER();
 	parse_arguments(respbuf, &keep_connect_en,
 			sizeof(keep_connect_en) / sizeof(int), &user_data_len);
-	if (!user_data_len) {
+	if (user_data_len != 1) {
 		PRINTM(MERROR, "Invalid parameter number\n");
 		ret = -EINVAL;
 		goto done;
@@ -17077,7 +17077,7 @@ static int woal_priv_keep_connect(moal_private *priv, t_u8 *respbuf,
 
 done:
 	LEAVE();
-	return 0;
+	return ret;
 }
 
 #if defined(PCIE)

@@ -15622,6 +15622,7 @@ void woal_regist_ind_rst_gpio(moal_handle *handle)
 {
 	struct device_node *node;
 	struct gpio_desc *gpiod;
+	int ret;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 0)
 	int gpio = -1;
 #endif
@@ -15658,16 +15659,28 @@ void woal_regist_ind_rst_gpio(moal_handle *handle)
 	}
 
 	gpiod = gpio_to_desc(gpio);
-	if (IS_ERR(gpiod)) {
+	if (IS_ERR_OR_NULL(gpiod)) {
 		PRINTM(MERROR, "OOB IND RST: gpio_to_desc failed for GPIO %d\n",
 		       gpio);
 		LEAVE();
 		return;
 	}
+	ret = gpio_request(gpio, "wlan-ind-rst");
+	if (ret) {
+		PRINTM(MERROR, "OOB IND RST: gpio_request failed: %d\n", ret);
+		LEAVE();
+		return;
+	}
 #endif
 
+	ret = gpiod_direction_output(gpiod, 1);
+	if (ret) {
+		PRINTM(MERROR, "OOB IND RST: output setup failed: %d\n", ret);
+		gpiod_put(gpiod);
+		LEAVE();
+		return;
+	}
 	handle->ind_rst_gpiod = gpiod;
-	gpiod_direction_output((struct gpio_desc *)handle->ind_rst_gpiod, 1);
 
 	PRINTM(MINFO, "OOB IND RST: GPIO acquired from DT\n");
 	LEAVE();
