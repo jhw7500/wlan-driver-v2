@@ -13,7 +13,8 @@ fail() {
 	exit 1
 }
 
-mkdir -p "$TMP/project/scripts" "$TMP/sdk" "$TMP/fake-bin"
+mkdir -p "$TMP/project/scripts" "$TMP/sdk" "$TMP/fake-bin" \
+	"$TMP/kernel/include/generated"
 cp "$ROOT/make_for_imx93.sh" "$TMP/project/make_for_imx93.sh"
 cat >"$TMP/project/scripts/obj_cache_swap.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -21,12 +22,34 @@ exit 0
 EOF
 chmod +x "$TMP/project/scripts/obj_cache_swap.sh"
 : >"$TMP/sdk/environment-setup-armv8a-poky-linux"
+: >"$TMP/kernel/Module.symvers"
+cat >"$TMP/kernel/include/generated/utsrelease.h" <<'EOF'
+#define UTS_RELEASE "6.6.3-test"
+EOF
 : >"$TMP/make.log"
 cat >"$TMP/fake-bin/make" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$MAKE_LOG"
 EOF
 chmod +x "$TMP/fake-bin/make"
+
+# Reject an unconfigured tree before any build command is attempted.
+if (
+	cd "$TMP/project"
+	MAKE_LOG="$TMP/make.log" \
+		PATH="$TMP/fake-bin:$PATH" \
+		SDK_LOC="$TMP/sdk" \
+		SDK_NAME=armv8a-poky-linux \
+		KERNELDIR="$TMP/missing-kernel" \
+		SKIP_STATIC_CHECK=1 \
+		bash ./make_for_imx93.sh
+) >"$TMP/unconfigured.log" 2>&1; then
+	fail 'unconfigured kernel tree was accepted'
+fi
+grep -Fq 'no Module.symvers' "$TMP/unconfigured.log" ||
+	fail 'unconfigured kernel tree did not explain the rejection'
+[[ ! -s "$TMP/make.log" ]] ||
+	fail 'unconfigured kernel tree reached a build command'
 
 (
 	cd "$TMP/project"

@@ -24,7 +24,7 @@
 /******************************************************
  * Change log:
  * 10/21/2008: initial version
- * ****************************************************
+ ******************************************************
  */
 
 #include "mlan.h"
@@ -40,17 +40,17 @@
 
 /********************************************************
  * Local Variables
- * ******************************************************
+ ********************************************************
  */
 
 /********************************************************
  * Global Variables
- * ******************************************************
+ ********************************************************
  */
 
 /********************************************************
  * Local Functions
- * ******************************************************
+ ********************************************************
  */
 
 /**
@@ -488,6 +488,11 @@ static mlan_status wlan_get_info_ioctl(pmlan_adapter pmadapter,
 			IS_FW_SUPPORT_RTT(pmadapter) ? 0x01 : 0x00;
 		pget_info->param.fw_info.he_6g_support =
 			IS_FW_SUPPORT_6G(pmadapter) ? 0x01 : 0x00;
+		pget_info->param.fw_info.bw160_support =
+			IS_FW_SUPPORT_BW160MHZ(pmadapter) ? 0x01 : 0x00;
+		pget_info->param.fw_info.no8080_support =
+			IS_FW_SUPPORT_NO_80MHz_PLUS_80MHz(pmadapter) ? 0x01 :
+								       0x00;
 		pget_info->param.fw_info.cmd_tx_data =
 			IS_FW_SUPPORT_CMD_TX_DATA(pmadapter) ? 0x01 : 0x00;
 		pget_info->param.fw_info.sec_rgpower =
@@ -1620,14 +1625,14 @@ static mlan_status wlan_power_ioctl_set_power(pmlan_adapter pmadapter,
 	Power_Group_t *pg = MNULL;
 	pmlan_callbacks pcb = &pmadapter->callbacks;
 	t_u8 *buf = MNULL;
-	t_s8 dbm = 0;
+	t_s32 dbm = 0;
 	mlan_private *pmpriv = pmadapter->priv[pioctl_req->bss_index];
 
 	ENTER();
 
 	power = (mlan_ds_power_cfg *)pioctl_req->pbuf;
 	if (!power->param.power_cfg.is_power_auto) {
-		dbm = (t_s8)power->param.power_cfg.power_level;
+		dbm = power->param.power_cfg.power_level;
 		/*min_power value does not change in fw, it keeps default
 		 * value(24 dBm), check  max_power limit only*/
 		if (dbm > pmpriv->max_tx_power_level) {
@@ -4896,12 +4901,13 @@ static mlan_status wlan_misc_cloud_keep_alive(pmlan_adapter pmadapter,
 
 	if (pioctl_req->action == MLAN_ACT_SET)
 		cmd_action = HostCmd_ACT_GEN_SET;
-	else if (pioctl_req->action == MLAN_ACT_GET)
+	else if (pioctl_req->action == MLAN_ACT_GET) {
 		cmd_action = HostCmd_ACT_GEN_GET;
-	else if (pioctl_req->action == MLAN_ACT_RESET)
+	} else if (pioctl_req->action == MLAN_ACT_RESET) {
 		cmd_action = HostCmd_ACT_GEN_RESET;
-	else
+	} else {
 		cmd_action = HostCmd_ACT_GEN_REMOVE;
+	}
 
 	/* Send request to firmware */
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_AUTO_TX, cmd_action,
@@ -4937,12 +4943,13 @@ static mlan_status wlan_misc_cloud_keep_alive_rx(pmlan_adapter pmadapter,
 
 	if (pioctl_req->action == MLAN_ACT_SET)
 		cmd_action = HostCmd_ACT_GEN_SET;
-	else if (pioctl_req->action == MLAN_ACT_GET)
+	else if (pioctl_req->action == MLAN_ACT_GET) {
 		cmd_action = HostCmd_ACT_GEN_GET;
-	else if (pioctl_req->action == MLAN_ACT_RESET)
+	} else if (pioctl_req->action == MLAN_ACT_RESET) {
 		cmd_action = HostCmd_ACT_GEN_RESET;
-	else
+	} else {
 		cmd_action = HostCmd_ACT_GEN_REMOVE;
+	}
 
 	/* Send request to firmware */
 	ret = wlan_prepare_cmd(pmpriv, HostCmd_CMD_AUTO_TX, cmd_action,
@@ -5245,12 +5252,6 @@ static mlan_status wlan_misc_cfg_ioctl(pmlan_adapter pmadapter,
 	case MLAN_OID_MISC_DMCS_CONFIG:
 		status = wlan_misc_dmcs_config(pmadapter, pioctl_req);
 		break;
-	case MLAN_OID_MISC_CONFIG_RTT:
-		status = wlan_config_rtt(pmadapter, pioctl_req);
-		break;
-	case MLAN_OID_MISC_CANCEL_RTT:
-		status = wlan_cancel_rtt(pmadapter, pioctl_req);
-		break;
 	case MLAN_OID_MISC_RTT_RESPONDER_CFG:
 		status = wlan_rtt_responder_cfg(pmadapter, pioctl_req);
 		break;
@@ -5337,6 +5338,9 @@ static mlan_status wlan_misc_cfg_ioctl(pmlan_adapter pmadapter,
 	case MLAN_OID_MISC_OTP_MAC_RD_WR:
 	case MLAN_OID_MISC_RF_TEST_DEBUG_TEMPERATURE:
 	case MLAN_OID_MISC_OTP_CAL_DATA_RD_WR:
+#if defined(SD9177)
+	case MLAN_OID_MISC_RF_TEST_RX_BSSID_FILTER:
+#endif
 	case MLAN_OID_MISC_GENERIC_CMD:
 		status = wlan_misc_ioctl_rf_test_cfg(pmadapter, pioctl_req);
 		break;
@@ -5382,6 +5386,19 @@ static mlan_status wlan_misc_cfg_ioctl(pmlan_adapter pmadapter,
 							   pioctl_req);
 		break;
 
+	case MLAN_OID_MISC_FTM_SESSION_CFG:
+		/* sub_id inside the payload selects initiator_tlv (11mc)
+		 * vs ntb_ranging_tlv (11az NTB) */
+		status = wlan_ftm_session_cfg(pmadapter, pioctl_req);
+		break;
+
+	case MLAN_OID_MISC_FTM_SESSION_CTRL:
+		status = wlan_ftm_session_ctrl(pmadapter, pioctl_req);
+		break;
+
+	case MLAN_OID_MISC_RANDOM_SN_CONFIG:
+		status = wlan_misc_ioctl_random_sn(pmadapter, pioctl_req);
+		break;
 	default:
 		if (pioctl_req)
 			pioctl_req->status_code = MLAN_ERROR_IOCTL_INVALID;
@@ -5670,7 +5687,7 @@ start_config:
 
 /********************************************************
  * Global Functions
- * ******************************************************
+ ********************************************************
  */
 
 /**

@@ -25,7 +25,7 @@
 /********************************************************
  * Change log:
  * 10/21/2008: initial version
- * ******************************************************
+ ********************************************************
  */
 
 #include "moal_main.h"
@@ -34,7 +34,7 @@ extern struct semaphore AddRemoveCardSem;
 
 /********************************************************
  * Local Variables
- * ******************************************************
+ ********************************************************
  */
 
 #if defined(USB9098) || defined(USB9097) || defined(USB8978) ||                \
@@ -183,12 +183,12 @@ static moal_if_ops usb_ops;
 
 /********************************************************
  * Global Variables
- * ******************************************************
+ ********************************************************
  */
 
 /********************************************************
  * Local Functions
- * ******************************************************
+ ********************************************************
  */
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 19)
@@ -511,7 +511,7 @@ rx_ret:
 
 /********************************************************
  * Global Functions
- * ******************************************************
+ ********************************************************
  */
 
 #if defined(USB9098) || defined(USB9097) || defined(USB8978) ||                \
@@ -1197,7 +1197,6 @@ static int woal_usb_probe(struct usb_interface *intf,
 	}
 error:
 	kfree(usb_cardp);
-	usb_cardp = NULL;
 	LEAVE();
 	return -ENXIO;
 }
@@ -1326,6 +1325,7 @@ static int woal_usb_suspend(struct usb_interface *intf, pm_message_t message)
 	mlan_ds_ps_info pm_info;
 	int i;
 	int ret = 0;
+	int hs_actived = 0;
 
 	ENTER();
 
@@ -1368,9 +1368,29 @@ static int woal_usb_suspend(struct usb_interface *intf, pm_message_t message)
 		goto done;
 	}
 
+	for (i = 0; i < handle->priv_num; i++) {
+		if (handle->priv[i]) {
+			netif_device_detach(handle->priv[i]->netdev);
+		}
+	}
+
 	woal_sched_timeout(200);
 	/* Enable Host Sleep */
-	woal_enable_hs(woal_get_priv(handle, MLAN_BSS_ROLE_ANY));
+	hs_actived = woal_enable_hs(woal_get_priv(handle, MLAN_BSS_ROLE_ANY));
+
+	if (hs_actived) {
+		PRINTM(MCMND, "%s: HS actived!", __FUNCTION__);
+	} else {
+		PRINTM(MMSG, "HS not actived, suspend fail!");
+		handle->suspend_fail = MTRUE;
+		for (i = 0; i < handle->priv_num; i++) {
+			if (handle->priv[i]) {
+				netif_device_attach(handle->priv[i]->netdev);
+			}
+		}
+		ret = -EBUSY;
+		goto done;
+	}
 
 	/* Indicate device suspended and close the serialized submit gate before
 	 * the usb_kill_urb() completion barriers.
@@ -1378,6 +1398,7 @@ static int woal_usb_suspend(struct usb_interface *intf, pm_message_t message)
 	 * 'is_suspended' flag is used in combination to distinguish
 	 * between a suspended state and a 'disconnect' one.
 	 */
+	handle->is_suspended = MTRUE;
 	woal_kill_urbs(handle);
 	for (i = 0; i < handle->priv_num; i++) {
 		if (handle->priv[i])
@@ -1429,10 +1450,11 @@ static int woal_usb_resume(struct usb_interface *intf)
 		goto done;
 	}
 
-	for (i = 0; i < handle->priv_num; i++)
-		if (handle->priv[i] &&
-		    handle->priv[i]->media_connected == MTRUE)
-			netif_carrier_on(handle->priv[i]->netdev);
+	for (i = 0; i < handle->priv_num; i++) {
+		if (handle->priv[i]) {
+			netif_device_attach(handle->priv[i]->netdev);
+		}
+	}
 
 	/* Disable Host Sleep */
 	if (handle->hs_activated)
@@ -2185,11 +2207,11 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 #ifdef USB8978
 	if (IS_USB8978(handle->card_type)) {
 		if (strap == CARD_TYPE_USB_UART)
-			strncpy(handle->card_info->fw_name,
+			moal_strncpy(handle->card_info->fw_name,
 				USBUART8978_DEFAULT_COMBO_FW_NAME,
 				FW_NAMW_MAX_LEN);
 		else if (strap != 0)
-			strncpy(handle->card_info->fw_name,
+			moal_strncpy(handle->card_info->fw_name,
 				USBUSB8978_DEFAULT_COMBO_FW_NAME,
 				FW_NAMW_MAX_LEN);
 	}
@@ -2200,10 +2222,10 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 		if (cardp->second_mac) {
 			ref_handle = (moal_handle *)handle->pref_mac;
 			if (ref_handle) {
-				strncpy(handle->card_info->fw_name,
+				moal_strncpy(handle->card_info->fw_name,
 					ref_handle->card_info->fw_name,
 					FW_NAMW_MAX_LEN);
-				strncpy(handle->card_info->fw_name_wlan,
+				moal_strncpy(handle->card_info->fw_name_wlan,
 					ref_handle->card_info->fw_name_wlan,
 					FW_NAMW_MAX_LEN);
 			}
@@ -2213,15 +2235,15 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 		case USB9098_Z1Z2:
 			if (strap != 0) {
 				if (strap == CARD_TYPE_USB_UART)
-					strncpy(handle->card_info->fw_name,
+					moal_strncpy(handle->card_info->fw_name,
 						USBUART9098_DEFAULT_COMBO_FW_NAME,
 						FW_NAMW_MAX_LEN);
 				else
-					strncpy(handle->card_info->fw_name,
+					moal_strncpy(handle->card_info->fw_name,
 						USBUSB9098_DEFAULT_COMBO_FW_NAME,
 						FW_NAMW_MAX_LEN);
 			}
-			strncpy(handle->card_info->fw_name_wlan,
+			moal_strncpy(handle->card_info->fw_name_wlan,
 				USB9098_DEFAULT_WLAN_FW_NAME, FW_NAMW_MAX_LEN);
 			break;
 		case USB9098_A0:
@@ -2229,15 +2251,15 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 		case USB9098_A2:
 			if (strap != 0) {
 				if (strap == CARD_TYPE_USB_UART)
-					strncpy(handle->card_info->fw_name,
+					moal_strncpy(handle->card_info->fw_name,
 						USBUART9098_COMBO_V1_FW_NAME,
 						FW_NAMW_MAX_LEN);
 				else
-					strncpy(handle->card_info->fw_name,
+					moal_strncpy(handle->card_info->fw_name,
 						USBUSB9098_COMBO_V1_FW_NAME,
 						FW_NAMW_MAX_LEN);
 			}
-			strncpy(handle->card_info->fw_name_wlan,
+			moal_strncpy(handle->card_info->fw_name_wlan,
 				USB9098_WLAN_V1_FW_NAME, FW_NAMW_MAX_LEN);
 			break;
 		}
@@ -2250,15 +2272,15 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 		case USB9097_B1:
 			if (strap != 0) {
 				if (strap == CARD_TYPE_USB_UART)
-					strncpy(handle->card_info->fw_name,
+					moal_strncpy(handle->card_info->fw_name,
 						USBUART9097_COMBO_V1_FW_NAME,
 						FW_NAMW_MAX_LEN);
 				else
-					strncpy(handle->card_info->fw_name,
+					moal_strncpy(handle->card_info->fw_name,
 						USBUSB9097_COMBO_V1_FW_NAME,
 						FW_NAMW_MAX_LEN);
 			}
-			strncpy(handle->card_info->fw_name_wlan,
+			moal_strncpy(handle->card_info->fw_name_wlan,
 				USB9097_WLAN_V1_FW_NAME, FW_NAMW_MAX_LEN);
 			break;
 		}
@@ -2269,10 +2291,10 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 		if (boot_mode == 0x03)
 			PRINTM(MMSG, "wlan: USB-IW624 in secure-boot mode\n");
 		if (strap == CARD_TYPE_USB_UART)
-			strncpy(handle->card_info->fw_name,
+			moal_strncpy(handle->card_info->fw_name,
 				USBUARTIW624_COMBO_FW_NAME, FW_NAMW_MAX_LEN);
 		else
-			strncpy(handle->card_info->fw_name,
+			moal_strncpy(handle->card_info->fw_name,
 				USBUSBIW624_COMBO_FW_NAME, FW_NAMW_MAX_LEN);
 	}
 #endif
@@ -2282,24 +2304,24 @@ static mlan_status woal_usb_get_fw_name(moal_handle *handle)
 			PRINTM(MMSG, "wlan: USB-IW610 in secure-boot mode\n");
 		if (strap == CARD_TYPE_USBIW610_UART) {
 			if (handle->params.dual_nb)
-				strncpy(handle->card_info->fw_name,
+				moal_strncpy(handle->card_info->fw_name,
 					USBUARTSPIIW610_COMBO_FW_NAME,
 					FW_NAMW_MAX_LEN);
 			else
-				strncpy(handle->card_info->fw_name,
+				moal_strncpy(handle->card_info->fw_name,
 					USBUARTIW610_COMBO_FW_NAME,
 					FW_NAMW_MAX_LEN);
 		} else if (strap == CARD_TYPE_USBIW610_USB) {
 			if (handle->params.dual_nb)
-				strncpy(handle->card_info->fw_name,
+				moal_strncpy(handle->card_info->fw_name,
 					USBUSBSPIIW610_COMBO_FW_NAME,
 					FW_NAMW_MAX_LEN);
 			else
-				strncpy(handle->card_info->fw_name,
+				moal_strncpy(handle->card_info->fw_name,
 					USBUSBIW610_COMBO_FW_NAME,
 					FW_NAMW_MAX_LEN);
 		}
-		strncpy(handle->card_info->fw_name_wlan,
+		moal_strncpy(handle->card_info->fw_name_wlan,
 			USBIW610_DEFAULT_WLAN_FW_NAME, FW_NAMW_MAX_LEN);
 		if (boot_mode != 0x03) {
 			/* remove extension .se */
@@ -2352,7 +2374,7 @@ static int parse_config_line(char *line, usb_config_entry_t *entry,
 			}
 
 			current_entry = &entry[*current_entry_idx];
-			strncpy(current_entry->device_name, strim(token),
+			moal_strncpy(current_entry->device_name, strim(token),
 				MAX_DEVICE_NAME - 1);
 			current_entry->device_name[MAX_DEVICE_NAME - 1] = '\0';
 

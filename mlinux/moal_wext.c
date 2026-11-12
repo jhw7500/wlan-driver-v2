@@ -24,7 +24,7 @@
 /************************************************************************
  * Change log:
  * 10/21/2008: initial version
- * **********************************************************************
+ ************************************************************************
  */
 
 #include "moal_main.h"
@@ -38,7 +38,7 @@
 
 /********************************************************
  * Local Variables
- * ******************************************************
+ ********************************************************
  */
 /**
  * iwpriv ioctl handlers
@@ -242,7 +242,7 @@ static const struct iw_priv_args woal_private_args[] = {
 
 /********************************************************
  * Local Functions
- * ******************************************************
+ ********************************************************
  */
 
 /**
@@ -353,7 +353,7 @@ static int woal_get_nick(struct net_device *dev, struct iw_request_info *info,
 	/*
 	 * Get the Nick Name saved
 	 */
-	strncpy(extra, (char *)priv->nick_name, 16);
+	moal_strncpy(extra, (char *)priv->nick_name, 16);
 	extra[16] = '\0';
 	/*
 	 * If none, we may want to get the one that was set
@@ -403,7 +403,7 @@ static int woal_get_name(struct net_device *dev, struct iw_request_info *info,
 	char *cwrq = wrqu->name;
 
 	ENTER();
-	strncpy(cwrq, "IEEE 802.11-DS", IFNAMSIZ);
+	moal_strncpy(cwrq, "IEEE 802.11-DS", IFNAMSIZ);
 	LEAVE();
 	return 0;
 }
@@ -3223,15 +3223,12 @@ static int woal_get_scan(struct net_device *dev, struct iw_request_info *info,
 		/* Beacon Interval */
 		memset(&iwe, 0, sizeof(iwe));
 		ptr = buf;
-		ptr += snprintf(ptr, MAX_BUF_LEN, "Beacon interval=%d",
-				scan_table[i].beacon_period);
 
 		iwe.u.data.length = strlen(buf);
 		iwe.cmd = IWEVCUSTOM;
 		iwe.len = IW_EV_POINT_LEN + iwe.u.data.length;
 		current_ev = IWE_STREAM_ADD_POINT(info, current_ev, end_buf,
 						  &iwe, buf);
-		current_val = current_ev + IW_EV_LCP_LEN + strlen(buf);
 
 		/* Parse and send the IEs */
 		pbeacon = scan_table[i].pbeacon_buf;
@@ -3429,7 +3426,7 @@ static const iw_handler woal_private_handler[] = {
 
 /********************************************************
  * Global Functions
- * ******************************************************
+ ********************************************************
  */
 
 #if WIRELESS_EXT > 14
