@@ -13,7 +13,10 @@
  *    1:1=3.2us"; moal_sta_cfg80211.c woal_he_gi_to_nl80211_he_gi().
  *  - radiotap HE: linux include/net/ieee80211_radiotap.h DATA5_GI (0x0030)
  *    0=0.8 1=1.6 2=3.2, DATA1_FORMAT 0=SU 1=EXT_SU 2=MU 3=TRIG,
- *    DATA5 BW 0..3 = 20/40/80/160, DATA3_CODING 0x2000 = LDPC.
+ *    DATA5 BW 0..3 = 20/40/80/160, DATA3 0x1000 = DCM, 0x2000 = Coding (LDPC).
+ *  - moal writes "he->data3 |= (dcm << 12)" unconditionally, so every HE case
+ *    checks data3 bits 12-15: a GI code leaking out of mix_rate_info.dcm
+ *    bits 1-2 (missing "& 0x1" mask) shows up as Coding/LDPC-extra bits.
  */
 #include <stdio.h>
 #include <string.h>
@@ -133,7 +136,7 @@ static void run(t_u8 rx_rate, t_u8 rate_info, t_u32 rx_info,
 static const char *gi_us[] = {"0.8", "1.6", "3.2", "rsvd"};
 
 static void he_case(const char *tag, t_u8 gi_code, t_u8 pre, t_u8 ldpc,
-		    t_u8 exp_rt_gi, int exp_fmt, t_u8 exp_bw, int exp_ldpc)
+		    t_u8 dcm, t_u8 exp_rt_gi, int exp_fmt, t_u8 exp_bw)
 {
 	radiotap_info rt;
 	struct moal_out o;
@@ -141,7 +144,7 @@ static void he_case(const char *tag, t_u8 gi_code, t_u8 pre, t_u8 ldpc,
 	t_u8 ri = HE | BW80 | ((gi_code & 1) ? GI_B4 : 0) |
 		  ((gi_code & 2) ? GI_B7 : 0) | (ldpc ? LDPC_B6 : 0);
 
-	run(0x07, ri, PRE(pre), &rt, &o);
+	run(0x07, ri, PRE(pre) | (dcm ? RXPD_DCM_MASK : 0), &rt, &o);
 	printf("-- %s: RxPD rate_info=0x%02x preamble=%u (GI code %u = %s us)"
 	       " -> mix rate_info=0x%02x\n",
 	       tag, ri, pre, gi_code,
@@ -156,10 +159,10 @@ static void he_case(const char *tag, t_u8 gi_code, t_u8 pre, t_u8 ldpc,
 	}
 	snprintf(n, sizeof(n), "%s radiotap HE data5 BW/RU", tag);
 	EXPECT(o.he.data5 & 0xF, exp_bw, n);
-	if (exp_ldpc >= 0) {
-		snprintf(n, sizeof(n), "%s radiotap HE data3 LDPC", tag);
-		EXPECT(!!(o.he.data3 & HE_CODING_LDPC_USER0), exp_ldpc, n);
-	}
+	snprintf(n, sizeof(n),
+		 "%s radiotap HE data3 bits 12-15 (DCM 0x1, Coding/LDPC 0x2)",
+		 tag);
+	EXPECT((o.he.data3 >> 12) & 0xF, (ldpc ? 2 : 0) | (dcm ? 1 : 0), n);
 }
 
 static void ht_case(const char *tag, t_u8 sgi, t_u8 ldpc, t_u8 exp_flags)
@@ -190,19 +193,21 @@ int main(void)
 	priv.adapter = &adapter;
 
 	/* positive controls: inputs whose correct radiotap output is known */
-	he_case("PC HE-SU 80 GI0", 0, 0, 0, 0, 0, 2, 0);
+	he_case("PC HE-SU 80 GI0", 0, 0, 0, 0, 0, 0, 2);
 	ht_case("PC HT20 MCS7 SGI", 1, 0, 0x04);
 	run(12, 0, 0, &rt, &o);
 	EXPECT(rt.rate_info.bitrate, 108, "PC legacy 54 Mbps radiotap Rate");
 
 	/* candidate 1 */
-	he_case("HE-SU 80 GI1", 1, 0, 0, 0, 0, 2, -1);
-	he_case("HE-SU 80 GI2", 2, 0, 0, 1, 0, 2, -1);
-	he_case("HE-SU 80 GI3", 3, 0, 0, 2, 0, 2, -1);
-	he_case("HE-MU 80 GI0", 0, 2, 0, 0, -1, 2, -1);
-	he_case("HE-MU 80 GI2", 2, 2, 0, 1, -1, 2, -1);
+	he_case("HE-SU 80 GI1", 1, 0, 0, 0, 0, 0, 2);
+	he_case("HE-SU 80 GI2", 2, 0, 0, 0, 1, 0, 2);
+	he_case("HE-SU 80 GI3", 3, 0, 0, 0, 2, 0, 2);
+	he_case("HE-MU 80 GI0", 0, 2, 0, 0, 0, -1, 2);
+	he_case("HE-MU 80 GI2", 2, 2, 0, 0, 1, -1, 2);
+	/* DCM shares mix_rate_info.dcm with the HE GI code (bit 0 vs bits 1-2) */
+	he_case("HE-SU 80 GI3 DCM", 3, 0, 0, 1, 2, 0, 2);
 	/* same function: RxPD bit 6 LDPC */
-	he_case("HE-SU 80 GI0 LDPC", 0, 0, 1, 0, 0, 2, 1);
+	he_case("HE-SU 80 GI0 LDPC", 0, 0, 1, 0, 0, 0, 2);
 	ht_case("HT20 MCS7 LGI LDPC", 0, 1, 0x10);
 
 	printf("radiotap host test: %d check(s), %d failure(s)\n", checks,
