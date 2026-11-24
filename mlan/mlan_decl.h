@@ -1404,7 +1404,7 @@ typedef MLAN_PACK_START struct _mix_rate_info {
 	/**  bit1-2: 20M: bw=0, 40M: bw=1, 80M: bw=2, 160M: bw=3  */
 	/**  bit3-4: LG: format=0, HT: format=1, VHT: format=2 */
 	/**  bit5: LDPC: 0-not support,  1-support */
-	/**  bit6-7:reserved */
+	/**  bit6-7: HE: preamble type for radiotap, others: reserved */
 	t_u8 rate_info;
 	/** MCS index */
 	t_u8 mcs_index;
@@ -1412,7 +1412,8 @@ typedef MLAN_PACK_START struct _mix_rate_info {
 	t_u16 bitrate;
 	/** NSS */
 	t_u8 nss_index;
-	/** DCM */
+	/** bit0: DCM; bit1-2: HE GI code for radiotap
+	 *  (0/1 = 0.8us, 2 = 1.6us, 3 = 3.2us) */
 	t_u8 dcm;
 } MLAN_PACK_END mix_rate_info, *pmix_rate_info;
 

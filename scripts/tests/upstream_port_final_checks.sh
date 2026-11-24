@@ -1852,6 +1852,7 @@ string_host_regressions
 review_host_regressions
 bash "$SCRIPT_DIR/rate_query_units_host_test.sh"
 bash "$SCRIPT_DIR/cfpinfo_power_table_host_test.sh"
+bash "$SCRIPT_DIR/radiotap_he_gi_host_test.sh"
 python3 "$SCRIPT_DIR/upstream_port_invariants.py"
 bash "$SCRIPT_DIR/mlanutl_compile_qa.sh"
 bash "$SCRIPT_DIR/antcfg_cli_qa.sh"

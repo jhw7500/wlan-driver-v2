@@ -394,7 +394,8 @@ void wlan_rxpdinfo_to_radiotapinfo(pmlan_private priv, RxPD *prx_pd,
 		/* 20M: bw=0, 40M: bw=1, 80M: bw=2, 160M: bw=3 */
 		bw = (rx_rate_info & 0xC) >> 2;
 		gi = (rx_rate_info & 0x10) >> 4;
-		gi_he = (rx_rate_info & 0x80) >> 7;
+		/* [Bit4,Bit7] GI code: 0/1 = 0.8 us, 2 = 1.6 us, 3 = 3.2 us */
+		gi_he = (rx_rate_info & 0x80) >> 6;
 		gi = gi | gi_he;
 		dcm = (prx_pd->rx_info & RXPD_DCM_MASK) >> 16;
 		preamble_type = (prx_pd->rx_info & RXPD_PREAMBLE_MASK) >> 14;
@@ -423,15 +424,17 @@ void wlan_rxpdinfo_to_radiotapinfo(pmlan_private priv, RxPD *prx_pd,
 				    prx_pd->rx_rate - 1 :
 				    prx_pd->rx_rate;
 	}
-	ldpc = rx_rate_info & 0x40;
+	ldpc = (rx_rate_info & 0x40) >> 6;
 
 	rt_info_tmp.rate_info.mcs_index = mcs_index;
 	rt_info_tmp.rate_info.nss_index = nss;
+	/* HE: bit0 DCM, bit1-2 GI code (rate_info bit6-7 = preamble) */
 	rt_info_tmp.rate_info.dcm = dcm;
 	if (format == MLAN_RATE_FORMAT_HE) {
+		rt_info_tmp.rate_info.dcm |= (gi << 1);
 		rt_info_tmp.rate_info.rate_info = (preamble_type << 6) |
 						  (ldpc << 5) | (format << 3) |
-						  (bw << 1) | (gi << 6);
+						  (bw << 1);
 	} else
 		rt_info_tmp.rate_info.rate_info =
 			(ldpc << 5) | (format << 3) | (bw << 1) | gi;
