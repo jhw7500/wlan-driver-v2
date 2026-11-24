@@ -2007,12 +2007,12 @@ static mlan_status moal_recv_packet_to_mon_if(moal_handle *handle,
 					(rt_info.rate_info.rate_info & 0xC0) >>
 					6;
 				bw = (rt_info.rate_info.rate_info & 0x06) >> 1;
-				dcm = rt_info.rate_info.dcm;
-				if (format == MLAN_RATE_FORMAT_HE)
-					gi = (rt_info.rate_info.rate_info &
-					      0xC0) >>
-					     6;
-				else
+				dcm = rt_info.rate_info.dcm & 0x1;
+				if (format == MLAN_RATE_FORMAT_HE) {
+					/* GI code 0/1/2/3 -> radiotap 0.8/0.8/1.6/3.2 */
+					gi = (rt_info.rate_info.dcm >> 1) & 0x3;
+					gi = gi ? gi - 1 : 0;
+				} else
 
 					gi = rt_info.rate_info.rate_info & 0x01;
 				mcs = rt_info.rate_info.mcs_index;
