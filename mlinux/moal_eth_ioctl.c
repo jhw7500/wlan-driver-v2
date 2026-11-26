@@ -2249,6 +2249,213 @@ done:
 	return ret;
 }
 
+#ifdef STA_SUPPORT
+static int woal_get_link_snapshot(moal_private *priv,
+				  mlan_link_snapshot *snapshot)
+{
+	mlan_ioctl_req *req;
+	mlan_ds_get_info *info;
+	mlan_status status;
+
+	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_get_info));
+	if (!req)
+		return -ENOMEM;
+
+	info = (mlan_ds_get_info *)req->pbuf;
+	info->sub_command = MLAN_OID_GET_LINK_SNAPSHOT;
+	req->req_id = MLAN_IOCTL_GET_INFO;
+	req->action = MLAN_ACT_GET;
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (status == MLAN_STATUS_SUCCESS) {
+		moal_memcpy_ext(priv->phandle, snapshot,
+				&info->param.link_snapshot, sizeof(*snapshot),
+				sizeof(*snapshot));
+	}
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+
+	return status == MLAN_STATUS_SUCCESS ? 0 : -EFAULT;
+}
+
+static int woal_get_opermode(moal_private *priv,
+			     mlan_ds_11ac_opermode_cfg *opermode)
+{
+	mlan_ioctl_req *req;
+	mlan_ds_11ac_cfg *cfg_11ac;
+	mlan_status status;
+
+	req = woal_alloc_mlan_ioctl_req(sizeof(mlan_ds_11ac_cfg));
+	if (!req)
+		return -ENOMEM;
+
+	cfg_11ac = (mlan_ds_11ac_cfg *)req->pbuf;
+	cfg_11ac->sub_command = MLAN_OID_11AC_OPERMODE_CFG;
+	req->req_id = MLAN_IOCTL_11AC_CFG;
+	req->action = MLAN_ACT_GET;
+	status = woal_request_ioctl(priv, req, MOAL_IOCTL_WAIT);
+	if (status == MLAN_STATUS_SUCCESS) {
+		moal_memcpy_ext(priv->phandle, opermode,
+				&cfg_11ac->param.opermode_cfg, sizeof(*opermode),
+				sizeof(*opermode));
+	}
+	if (status != MLAN_STATUS_PENDING)
+		kfree(req);
+
+	return status == MLAN_STATUS_SUCCESS ? 0 : -EFAULT;
+}
+
+static const char *woal_link_standard_name(t_u8 standard)
+{
+	static const char *const names[] = {
+		"unknown", "a", "b", "g", "n", "ac", "ax",
+	};
+
+	return standard < ARRAY_SIZE(names) ? names[standard] : names[0];
+}
+
+static const char *woal_rate_format_name(t_u32 format)
+{
+	switch (format) {
+	case MLAN_RATE_FORMAT_LG:
+		return "legacy";
+	case MLAN_RATE_FORMAT_HT:
+		return "ht";
+	case MLAN_RATE_FORMAT_VHT:
+		return "vht";
+	case MLAN_RATE_FORMAT_HE:
+		return "he";
+	default:
+		return "unavailable";
+	}
+}
+
+static const char *woal_rate_width_name(t_u32 width)
+{
+	static const char *const names[] = {"20", "40", "80", "160"};
+
+	return width < ARRAY_SIZE(names) ? names[width] : "unavailable";
+}
+
+static const char *woal_channel_width_name(t_u8 width)
+{
+	switch (width) {
+	case CHAN_BW_20MHZ:
+		return "20";
+	case CHAN_BW_40MHZ:
+		return "40";
+	case CHAN_BW_80MHZ:
+		return "80";
+	case CHAN_BW_160MHZ:
+		return "160";
+	case CHAN_BW_8080MHZ:
+		return "80+80";
+	default:
+		return "unavailable";
+	}
+}
+
+static const char *woal_link_band_name(t_u8 band_ghz)
+{
+	switch (band_ghz) {
+	case 2:
+		return "2.4";
+	case 5:
+		return "5";
+	default:
+		return "unknown";
+	}
+}
+
+static int woal_get_priv_sta_link_state(moal_private *priv, t_u8 *respbuf,
+					t_u32 respbuflen)
+{
+	mlan_link_snapshot snapshot = {0};
+	mlan_link_snapshot verified = {0};
+	chan_band_info channel = {0};
+	mlan_ds_11ac_opermode_cfg opermode = {0};
+	mlan_data_rate rate = {0};
+	char channel_name[12] = "unavailable";
+	const char *width_name = "unavailable";
+	char opermode_bw[12] = "unavailable";
+	char opermode_nss[12] = "unavailable";
+	const char *tx_format = "unavailable";
+	const char *tx_width = "unavailable";
+	const char *rx_format = "unavailable";
+	const char *rx_width = "unavailable";
+	t_u8 channel_width;
+	int ret;
+	int len;
+
+	if (strlen(respbuf) != strlen(CMD_NXP) +
+				       strlen(PRIV_CMD_STA_LINK_STATE))
+		return -EINVAL;
+	if (priv->bss_type != MLAN_BSS_TYPE_STA ||
+	    priv->bss_role != MLAN_BSS_ROLE_STA)
+		return -EOPNOTSUPP;
+
+	ret = woal_get_link_snapshot(priv, &snapshot);
+	if (ret)
+		return ret;
+	if (snapshot.connected) {
+		if (woal_get_sta_channel(priv, MOAL_IOCTL_WAIT, &channel) ==
+		    MLAN_STATUS_SUCCESS) {
+			snprintf(channel_name, sizeof(channel_name), "%u",
+				 channel.channel);
+			channel_width = BANDCFG_GET_CHANWIDTH(
+				channel.bandcfg.chanWidthExt,
+				channel.bandcfg.chanWidth);
+			width_name = woal_channel_width_name(channel_width);
+		}
+		if (!woal_get_opermode(priv, &opermode)) {
+			snprintf(opermode_bw, sizeof(opermode_bw),
+				 "%u", opermode.bw);
+			snprintf(opermode_nss, sizeof(opermode_nss),
+				 "%u", opermode.nss);
+		}
+		if (woal_get_priv_datarate(priv, (t_u8 *)&rate,
+					   sizeof(rate)) == sizeof(rate)) {
+			tx_format = woal_rate_format_name(
+				rate.tx_rate_format);
+			tx_width = woal_rate_width_name(rate.tx_ht_bw);
+			rx_format = woal_rate_format_name(
+				rate.rx_rate_format);
+			rx_width = woal_rate_width_name(rate.rx_ht_bw);
+		}
+		ret = woal_get_link_snapshot(priv, &verified);
+		if (ret)
+			return ret;
+		if (!verified.connected ||
+		    snapshot.generation != verified.generation)
+			return -EAGAIN;
+	}
+
+	if (snapshot.connected)
+		len = snprintf(respbuf, respbuflen,
+			       "association.state=connected\n"
+			       "association.standard=%s\nassociation.band=%s\n"
+			       "association.bssid=%pM\nassociation.connected_sec=%u\n",
+			       woal_link_standard_name(snapshot.standard),
+			       woal_link_band_name(snapshot.band_ghz),
+			       snapshot.bssid, verified.connected_sec);
+	else
+		len = snprintf(respbuf, respbuflen,
+			       "association.state=disconnected\n");
+	if (len < 0 || len >= respbuflen)
+		return -ENOSPC;
+
+	ret = snprintf(respbuf + len, respbuflen - len,
+		       "current.channel=%s\ncurrent.width=%s\n"
+		       "current.opermode_bw=%s\ncurrent.opermode_nss=%s\n"
+		       "current.tx_format=%s\ncurrent.tx_bw=%s\n"
+		       "current.rx_format=%s\ncurrent.rx_bw=%s\n",
+		       channel_name, width_name, opermode_bw, opermode_nss,
+		       tx_format, tx_width, rx_format, rx_width);
+	if (ret < 0 || ret >= respbuflen - len)
+		return -ENOSPC;
+	return len + ret + 1;
+}
+#endif /* STA_SUPPORT */
+
 /**
  *  @brief Set/Get tx rate configurations
  *
@@ -22890,6 +23097,15 @@ int woal_android_priv_cmd(struct net_device *dev, struct ifreq *req)
 			len = woal_get_priv_datarate(priv, buf,
 						     priv_cmd.total_len);
 			goto handled;
+#ifdef STA_SUPPORT
+		} else if (strnicmp(buf + strlen(CMD_NXP),
+				    PRIV_CMD_STA_LINK_STATE,
+				    strlen(PRIV_CMD_STA_LINK_STATE)) == 0) {
+			/* Get association-time and current STA link state */
+			len = woal_get_priv_sta_link_state(priv, buf,
+							priv_cmd.total_len);
+			goto handled;
+#endif
 		} else if (strnicmp(buf + strlen(CMD_NXP), PRIV_CMD_TXRATECFG,
 				    strlen(PRIV_CMD_TXRATECFG)) == 0) {
 			/* Set/Get tx rate cfg */

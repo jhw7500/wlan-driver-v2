@@ -1406,6 +1406,20 @@ typedef struct _mlan_private {
 	t_void *rx_pkt_lock;
 
 #ifdef STA_SUPPORT
+	/** Lock protecting the negotiated-link snapshot */
+	t_void *link_snapshot_lock;
+	/** Valid negotiated-link snapshot */
+	t_u8 link_snapshot_valid;
+	/** Changes on each link snapshot publish or invalidation */
+	t_u32 link_snapshot_generation;
+	/** Negotiated 802.11 generation (MLAN_LINK_* ABI value) */
+	t_u8 link_standard;
+	/** Negotiated link band in GHz (2 or 5) */
+	t_u8 link_band_ghz;
+	/** BSSID captured when the association completed */
+	t_u8 link_bssid[MLAN_MAC_ADDR_LENGTH];
+	/** Monotonic seconds when the association completed */
+	t_u32 link_connected_at_sec;
 	/** Buffer to store the association response for application retrieval
 	 */
 	t_u8 assoc_rsp_buf[ASSOC_RSP_BUF_SIZE];
@@ -1618,6 +1632,18 @@ struct _cmd_ctrl_node {
 	t_void *pdata_buf;
 	/** Pointer to mlan_ioctl_req if command is from IOCTL */
 	t_void *pioctl_buf;
+#ifdef STA_SUPPORT
+	/** Capability IEs appended to this association command */
+	t_u8 link_attempt_modes;
+	/** Common legacy rates emitted in this association command */
+	t_u8 link_attempt_rates[WLAN_SUPPORTED_RATES];
+	/** Number of valid link_attempt_rates entries */
+	t_u8 link_attempt_rates_len;
+	/** Band copied from this association command's BSS descriptor */
+	t_u16 link_attempt_band;
+	/** Peer address copied from this association command */
+	t_u8 link_attempt_bssid[MLAN_MAC_ADDR_LENGTH];
+#endif
 #if defined(PCIE) || defined(SDIO)
 	/** pre_allocated mlan_buffer for cmd */
 	mlan_buffer *pmbuf;
@@ -4057,6 +4083,21 @@ mlan_status wlan_associate(mlan_private *pmpriv, IN t_void *pioctl_buf,
 mlan_status wlan_cmd_802_11_associate(mlan_private *pmpriv,
 				      HostCmd_DS_COMMAND *cmd,
 				      t_void *pdata_buf);
+
+/** Pending-association capability bits used by link classification */
+#define MLAN_LINK_MODE_HT MBIT(0)
+#define MLAN_LINK_MODE_VHT MBIT(1)
+#define MLAN_LINK_MODE_HE MBIT(2)
+
+void wlan_capture_assoc_link_attempt(pmlan_adapter pmadapter,
+				     cmd_ctrl_node *pcmd_node,
+				     HostCmd_DS_COMMAND *cmd);
+
+t_u8 wlan_classify_link_standard(t_u8 request_modes,
+				 const t_u8 *request_rates,
+				 t_u8 request_rates_len, t_u16 band,
+				 const t_u8 *response_ies,
+				 t_u16 response_ies_len);
 
 /** Handler for association command response */
 mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,

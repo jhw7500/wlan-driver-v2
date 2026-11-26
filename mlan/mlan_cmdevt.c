@@ -2205,6 +2205,7 @@ t_void wlan_release_event_lock(mlan_adapter *pmadapter)
 	return;
 }
 #endif
+
 /**
  *  @brief This function prepare the command before sending to firmware.
  *
@@ -2314,6 +2315,12 @@ mlan_status wlan_prepare_cmd(mlan_private *pmpriv, t_u16 cmd_no,
 		ret = MLAN_STATUS_FAILURE;
 		goto done;
 	}
+#ifdef STA_SUPPORT
+	if (cmd_no == HostCmd_CMD_802_11_ASSOCIATE &&
+	    !(pcmd_node->cmd_flag & CMD_F_HOSTCMD)) {
+		wlan_capture_assoc_link_attempt(pmadapter, pcmd_node, cmd_ptr);
+	}
+#endif
 
 	wlan_request_cmd_lock(pmadapter);
 	/* Send command */

@@ -350,6 +350,9 @@ static int process_pcie_reg_rw(int argc, char *argv[]);
 static int process_pcie_bar0_reg_rw(int argc, char *argv[]);
 #endif
 static int process_get_sensor_temp(int argc, char *argv[]);
+#ifdef STA_SUPPORT
+static int process_stalinkstate(int argc, char *argv[]);
+#endif
 static int process_chan_graph(int argc, char *argv[]);
 static int process_11k_cfg(int argc, char *argv[]);
 static int process_11k_neighbor_report(int argc, char *argv[]);
@@ -409,6 +412,7 @@ struct command_node command_list[] = {
 	{"getlog", process_getlog},
 	{"get_txpwrlimit", process_get_txpwrlimit},
 #ifdef STA_SUPPORT
+	{"stalinkstate", process_stalinkstate},
 	{"getsignal", process_get_signal},
 	{"getsignalext", process_get_signal_ext},
 	{"getsignalextv2", process_get_signal_ext},
@@ -664,7 +668,8 @@ static char *usage[] = {
 #endif
 	"         getdatarate", "         getlog", "         get_txpwrlimit",
 #ifdef STA_SUPPORT
-	"         getsignal", "         signalextcfg", "         getsignalext",
+	"         stalinkstate", "         getsignal", "         signalextcfg",
+	"         getsignalext",
 	"         getsignalextv2",
 #endif
 	"         vhtcfg", "         dyn_bw", "         11axcfg",
@@ -1926,6 +1931,68 @@ static char *rate_format[4] = {"LG", "HT", "VHT", "HE"};
 static char *lg_rate[] = {"1 Mbps",  "2 Mbps",	"5.5 Mbps", "11 Mbps",
 			  "6 Mbps",  "9 Mbps",	"12 Mbps",  "18 Mbps",
 			  "24 Mbps", "36 Mbps", "48 Mbps",  "54 Mbps"};
+
+#ifdef STA_SUPPORT
+/**
+ *  @brief Report the negotiated association and current link state
+ *  @param argc   Number of arguments
+ *  @param argv   A pointer to arguments array
+ *  @return       MLAN_STATUS_SUCCESS--success, otherwise--fail
+ */
+static int process_stalinkstate(int argc, char *argv[])
+{
+	t_u8 buffer[BUFFER_LENGTH];
+	struct eth_priv_cmd cmd = {0};
+	struct ifreq ifr = {0};
+	int attempt;
+
+	if (argc != 3) {
+		fprintf(stderr, "Usage: mlanutl <interface> stalinkstate\n");
+		return MLAN_STATUS_FAILURE;
+	}
+
+#ifdef USERSPACE_32BIT_OVER_KERNEL_64BIT
+	{
+		t_u8 *buffer_ptr = buffer;
+
+		memcpy(&cmd.buf, &buffer_ptr, sizeof(buffer_ptr));
+	}
+#else
+	cmd.buf = buffer;
+#endif
+	cmd.total_len = BUFFER_LENGTH;
+
+	snprintf(ifr.ifr_ifrn.ifrn_name, IFNAMSIZ, "%s", dev_name);
+	ifr.ifr_ifru.ifru_data = (void *)&cmd;
+
+	for (attempt = 0; attempt < 2; attempt++) {
+		if (prepare_buffer(buffer, argv[2], 0, NULL) !=
+		    MLAN_STATUS_SUCCESS) {
+			fprintf(stderr,
+				"mlanutl: cannot prepare stalinkstate command\n");
+			return MLAN_STATUS_FAILURE;
+		}
+		cmd.used_len = 0;
+		if (!ioctl(sockfd, MLAN_ETH_PRIV, &ifr))
+			break;
+		if (errno != EAGAIN || attempt == 1) {
+			perror("mlanutl");
+			fprintf(stderr, "mlanutl: stalinkstate fail\n");
+			return MLAN_STATUS_FAILURE;
+		}
+	}
+
+	if (cmd.used_len <= 0 || cmd.used_len > BUFFER_LENGTH ||
+	    buffer[cmd.used_len - 1] != '\0' ||
+	    memchr(buffer, '\0', cmd.used_len - 1) != NULL) {
+		fprintf(stderr, "mlanutl: invalid stalinkstate response\n");
+		return MLAN_STATUS_FAILURE;
+	}
+
+	fputs((char *)buffer, stdout);
+	return MLAN_STATUS_SUCCESS;
+}
+#endif
 
 /**
  *  @brief Process Get data rate
