@@ -2062,8 +2062,6 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 		goto done;
 	}
 
-	/* Send a Media Connected event, according to the Spec */
-	pmpriv->media_connected = MTRUE;
 	pmpriv->multi_ap_flag = 0;
 	pmpriv->adapter->pps_uapsd_mode = MFALSE;
 	pmpriv->adapter->tx_lock_flag = MFALSE;
@@ -2124,6 +2122,8 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 	memcpy_ext(pmadapter, pmpriv->link_bssid, request_bssid,
 		   MLAN_MAC_ADDR_LENGTH, MLAN_MAC_ADDR_LENGTH);
 	pmpriv->link_connected_at_sec = connected_at_sec;
+	pmpriv->link_connected_at_usec = connected_at_usec;
+	pmpriv->media_connected = MTRUE;
 	pmpriv->link_snapshot_valid = MTRUE;
 	pmpriv->link_snapshot_generation++;
 	pmadapter->callbacks.moal_spin_unlock(pmadapter->pmoal_handle,

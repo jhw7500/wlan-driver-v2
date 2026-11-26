@@ -2421,22 +2421,22 @@ static int woal_get_priv_sta_link_state(moal_private *priv, t_u8 *respbuf,
 				rate.rx_rate_format);
 			rx_width = woal_rate_width_name(rate.rx_ht_bw);
 		}
-		ret = woal_get_link_snapshot(priv, &verified);
-		if (ret)
-			return ret;
-		if (!verified.connected ||
-		    snapshot.generation != verified.generation)
-			return -EAGAIN;
 	}
+	ret = woal_get_link_snapshot(priv, &verified);
+	if (ret)
+		return ret;
+	if (snapshot.connected != verified.connected ||
+	    snapshot.generation != verified.generation)
+		return -EAGAIN;
 
-	if (snapshot.connected)
+	if (verified.connected)
 		len = snprintf(respbuf, respbuflen,
 			       "association.state=connected\n"
 			       "association.standard=%s\nassociation.band=%s\n"
 			       "association.bssid=%pM\nassociation.connected_sec=%u\n",
-			       woal_link_standard_name(snapshot.standard),
-			       woal_link_band_name(snapshot.band_ghz),
-			       snapshot.bssid, verified.connected_sec);
+			       woal_link_standard_name(verified.standard),
+			       woal_link_band_name(verified.band_ghz),
+			       verified.bssid, verified.connected_sec);
 	else
 		len = snprintf(respbuf, respbuflen,
 			       "association.state=disconnected\n");

@@ -476,17 +476,18 @@ mlan_status wlan_init_priv(pmlan_private priv)
 
 	ENTER();
 
-	priv->media_connected = MFALSE;
 #ifdef STA_SUPPORT
 	if (priv->link_snapshot_lock) {
 		pmadapter->callbacks.moal_spin_lock(pmadapter->pmoal_handle,
 						      priv->link_snapshot_lock);
+		priv->media_connected = MFALSE;
 		priv->link_snapshot_valid = MFALSE;
 		priv->link_snapshot_generation++;
 		pmadapter->callbacks.moal_spin_unlock(pmadapter->pmoal_handle,
 							priv->link_snapshot_lock);
-	}
+	} else
 #endif
+		priv->media_connected = MFALSE;
 	memset(pmadapter, priv->curr_addr, 0xff, MLAN_MAC_ADDR_LENGTH);
 
 #ifdef STA_SUPPORT

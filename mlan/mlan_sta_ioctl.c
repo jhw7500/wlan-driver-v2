@@ -383,6 +383,7 @@ static mlan_status wlan_get_info_link_snapshot(pmlan_adapter pmadapter,
 	mlan_ds_get_info *info = (mlan_ds_get_info *)pioctl_req->pbuf;
 	mlan_link_snapshot *snapshot = &info->param.link_snapshot;
 	t_u32 connected_at_sec = 0;
+	t_u32 connected_at_usec = 0;
 	t_u32 now_sec = 0;
 	t_u32 now_usec = 0;
 
@@ -409,6 +410,7 @@ static mlan_status wlan_get_info_link_snapshot(pmlan_adapter pmadapter,
 		memcpy_ext(pmadapter, snapshot->bssid, pmpriv->link_bssid,
 			   MLAN_MAC_ADDR_LENGTH, MLAN_MAC_ADDR_LENGTH);
 		connected_at_sec = pmpriv->link_connected_at_sec;
+		connected_at_usec = pmpriv->link_connected_at_usec;
 	}
 	pmadapter->callbacks.moal_spin_unlock(pmadapter->pmoal_handle,
 					       pmpriv->link_snapshot_lock);
@@ -417,6 +419,8 @@ static mlan_status wlan_get_info_link_snapshot(pmlan_adapter pmadapter,
 		pmadapter->callbacks.moal_get_system_time(pmadapter->pmoal_handle,
 						     &now_sec, &now_usec);
 		snapshot->connected_sec = now_sec - connected_at_sec;
+		if (now_usec < connected_at_usec)
+			snapshot->connected_sec--;
 	}
 	pioctl_req->data_read_written =
 		sizeof(*snapshot) + MLAN_SUB_COMMAND_SIZE;

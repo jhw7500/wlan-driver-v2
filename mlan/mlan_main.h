@@ -1420,6 +1420,8 @@ typedef struct _mlan_private {
 	t_u8 link_bssid[MLAN_MAC_ADDR_LENGTH];
 	/** Monotonic seconds when the association completed */
 	t_u32 link_connected_at_sec;
+	/** Microsecond part of the association timestamp */
+	t_u32 link_connected_at_usec;
 	/** Buffer to store the association response for application retrieval
 	 */
 	t_u8 assoc_rsp_buf[ASSOC_RSP_BUF_SIZE];
