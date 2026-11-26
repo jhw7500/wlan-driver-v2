@@ -1927,6 +1927,18 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 	IEEEtypes_MgmtHdr_t *hdr;
 	t_u16 sub_type = 0;
 	t_u16 assoc_rsp_size = 0;
+	t_u8 *response_ies;
+	t_u16 response_ies_len;
+	t_u16 response_fixed_len;
+	t_u16 link_response_size = 0;
+	t_u8 request_modes;
+	const t_u8 *request_rates;
+	t_u8 request_rates_len;
+	t_u16 request_band = 0;
+	t_u8 request_bssid[MLAN_MAC_ADDR_LENGTH] = {0};
+	t_u8 link_standard;
+	t_u32 connected_at_sec = 0;
+	t_u32 connected_at_usec = 0;
 
 	ENTER();
 
@@ -2050,8 +2062,6 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 		goto done;
 	}
 
-	/* Send a Media Connected event, according to the Spec */
-	pmpriv->media_connected = MTRUE;
 	pmpriv->multi_ap_flag = 0;
 	pmpriv->adapter->pps_uapsd_mode = MFALSE;
 	pmpriv->adapter->tx_lock_flag = MFALSE;
@@ -2074,6 +2084,50 @@ mlan_status wlan_ret_802_11_associate(mlan_private *pmpriv,
 		pbss_desc->phy_param_set.ds_param_set.current_chan;
 
 	pmpriv->curr_bss_params.band = pbss_desc->bss_band;
+	if (resp->size >= S_DS_GEN && pmadapter->curr_cmd &&
+	    pmadapter->curr_cmd->respbuf &&
+	    resp->size <= pmadapter->curr_cmd->respbuf->data_len)
+		link_response_size = resp->size - S_DS_GEN;
+	response_ies = (t_u8 *)passoc_rsp + sizeof(*passoc_rsp);
+	response_fixed_len =
+		(t_u16)(response_ies - (t_u8 *)&resp->params);
+	response_ies_len = link_response_size >= response_fixed_len ?
+				    link_response_size - response_fixed_len :
+				    0;
+	request_modes = 0;
+	request_rates = MNULL;
+	request_rates_len = 0;
+	if (pmadapter->curr_cmd) {
+		request_modes = pmadapter->curr_cmd->link_attempt_modes;
+		request_rates = pmadapter->curr_cmd->link_attempt_rates;
+		request_rates_len =
+			pmadapter->curr_cmd->link_attempt_rates_len;
+		request_band = pmadapter->curr_cmd->link_attempt_band;
+		memcpy_ext(pmadapter, request_bssid,
+			   pmadapter->curr_cmd->link_attempt_bssid,
+			   MLAN_MAC_ADDR_LENGTH, MLAN_MAC_ADDR_LENGTH);
+	}
+	link_standard = wlan_classify_link_standard(
+		request_modes, request_rates, request_rates_len,
+		request_band, response_ies, response_ies_len);
+	pmadapter->callbacks.moal_get_system_time(pmadapter->pmoal_handle,
+						  &connected_at_sec,
+						  &connected_at_usec);
+	pmadapter->callbacks.moal_spin_lock(pmadapter->pmoal_handle,
+					    pmpriv->link_snapshot_lock);
+	pmpriv->link_standard = link_standard;
+	pmpriv->link_band_ghz = (!request_band || (request_band & BAND_6G)) ?
+				      0 :
+				      ((request_band & BAND_A) ? 5 : 2);
+	memcpy_ext(pmadapter, pmpriv->link_bssid, request_bssid,
+		   MLAN_MAC_ADDR_LENGTH, MLAN_MAC_ADDR_LENGTH);
+	pmpriv->link_connected_at_sec = connected_at_sec;
+	pmpriv->link_connected_at_usec = connected_at_usec;
+	pmpriv->media_connected = MTRUE;
+	pmpriv->link_snapshot_valid = MTRUE;
+	pmpriv->link_snapshot_generation++;
+	pmadapter->callbacks.moal_spin_unlock(pmadapter->pmoal_handle,
+					      pmpriv->link_snapshot_lock);
 
 	pmpriv->curr_channel = pmpriv->curr_bss_params.bss_descriptor.channel;
 	pmpriv->curr_bandcfg.chanBand = pmpriv->curr_bss_params.band;
@@ -2385,4 +2439,152 @@ t_u8 wlan_band_to_radio_type(t_u16 band)
 
 	LEAVE();
 	return ret_radio_type;
+}
+
+/* Capability TLVs and association-response IEs share the IEEE element IDs
+ * and payloads. The HE minimum includes its extension ID, MAC capabilities,
+ * PHY capabilities and the mandatory MCS/NSS set for up to 80 MHz.
+ */
+static t_u8 wlan_link_capability(t_u16 id, const t_u8 *body, t_u16 len)
+{
+	if (id == HT_CAPABILITY && len >= sizeof(HTCap_t))
+		return MLAN_LINK_MODE_HT;
+	if (id == VHT_CAPABILITY && len >= sizeof(VHT_capa_t))
+		return MLAN_LINK_MODE_VHT;
+	if (id == EXTENSION && len >= 1 + 6 + 11 + 4 &&
+	    body[0] == HE_CAPABILITY)
+		return MLAN_LINK_MODE_HE;
+	return 0;
+}
+
+void wlan_capture_assoc_link_attempt(pmlan_adapter pmadapter,
+				     cmd_ctrl_node *pcmd_node,
+				     HostCmd_DS_COMMAND *cmd)
+{
+	BSSDescriptor_t *bss = (BSSDescriptor_t *)pcmd_node->pdata_buf;
+	t_u8 *pos = (t_u8 *)&cmd->params.associate +
+		    sizeof(HostCmd_DS_802_11_ASSOCIATE);
+	t_u16 cmd_size = wlan_le16_to_cpu(cmd->size);
+	t_u8 *end;
+
+	pcmd_node->link_attempt_modes = 0;
+	pcmd_node->link_attempt_rates_len = 0;
+	pcmd_node->link_attempt_band = 0;
+	memset(pmadapter, pcmd_node->link_attempt_rates, 0,
+	       WLAN_SUPPORTED_RATES);
+	memset(pmadapter, pcmd_node->link_attempt_bssid, 0,
+	       MLAN_MAC_ADDR_LENGTH);
+	if (!bss || cmd_size < S_DS_GEN + sizeof(HostCmd_DS_802_11_ASSOCIATE) ||
+	    cmd_size > MRVDRV_SIZE_OF_CMD_BUFFER)
+		return;
+
+	end = (t_u8 *)cmd + cmd_size;
+	pcmd_node->link_attempt_band = bss->bss_band;
+	memcpy_ext(pmadapter, pcmd_node->link_attempt_bssid,
+		   cmd->params.associate.peer_sta_addr, MLAN_MAC_ADDR_LENGTH,
+		   MLAN_MAC_ADDR_LENGTH);
+	while ((end - pos) >= (t_s32)sizeof(MrvlIEtypesHeader_t)) {
+		t_u16 type = wlan_le16_to_cpu(
+			read_u16_unaligned(pmadapter, pos));
+		t_u16 len = wlan_le16_to_cpu(read_u16_unaligned(
+			pmadapter, pos + sizeof(t_u16)));
+		t_u8 *body = pos + sizeof(MrvlIEtypesHeader_t);
+
+		if (len > (t_u16)(end - body))
+			goto invalid_tlvs;
+		if (type == TLV_TYPE_RATES) {
+			pcmd_node->link_attempt_rates_len =
+				MIN(len, WLAN_SUPPORTED_RATES);
+			memcpy_ext(pmadapter, pcmd_node->link_attempt_rates, body,
+				   pcmd_node->link_attempt_rates_len,
+				   WLAN_SUPPORTED_RATES);
+		} else {
+			pcmd_node->link_attempt_modes |=
+				wlan_link_capability(type, body, len);
+		}
+		pos = body + len;
+	}
+	if (pos != end)
+		goto invalid_tlvs;
+	return;
+
+invalid_tlvs:
+	pcmd_node->link_attempt_modes = 0;
+	pcmd_node->link_attempt_rates_len = 0;
+	memset(pmadapter, pcmd_node->link_attempt_rates, 0,
+	       WLAN_SUPPORTED_RATES);
+}
+
+static t_bool wlan_link_rates_have_ofdm(const t_u8 *request_rates,
+				       t_u8 request_rates_len,
+				       const t_u8 *response_rates,
+				       t_u8 response_rates_len)
+{
+	static const t_u8 ofdm_rates[] = {12, 18, 24, 36, 48, 72, 96, 108};
+	t_u8 i, j, k;
+
+	for (i = 0; i < request_rates_len; i++) {
+		for (j = 0; j < response_rates_len; j++) {
+			if ((request_rates[i] & 0x7f) !=
+			    (response_rates[j] & 0x7f))
+				continue;
+			for (k = 0; k < NELEMENTS(ofdm_rates); k++)
+				if ((request_rates[i] & 0x7f) == ofdm_rates[k])
+					return MTRUE;
+		}
+	}
+	return MFALSE;
+}
+
+t_u8 wlan_classify_link_standard(t_u8 request_modes,
+				 const t_u8 *request_rates,
+				 t_u8 request_rates_len, t_u16 band,
+				 const t_u8 *response_ies,
+				 t_u16 response_ies_len)
+{
+	t_u8 response_modes = 0;
+	t_bool common_ofdm = MFALSE;
+	t_u16 offset = 0;
+	t_bool response_has_rates = MFALSE;
+
+	if (!response_ies_len || !band || (band & BAND_6G))
+		return MLAN_LINK_UNKNOWN;
+
+	while (offset < response_ies_len) {
+		t_u8 element_id, element_len;
+		const t_u8 *element;
+
+		if ((response_ies_len - offset) < sizeof(IEEEtypes_Header_t))
+			return MLAN_LINK_UNKNOWN;
+		element_id = response_ies[offset];
+		element_len = response_ies[offset + 1];
+		offset += sizeof(IEEEtypes_Header_t);
+		if (element_len > (response_ies_len - offset))
+			return MLAN_LINK_UNKNOWN;
+		element = response_ies + offset;
+		if ((element_id == SUPPORTED_RATES ||
+		     element_id == EXTENDED_SUPPORTED_RATES) && element_len) {
+			response_has_rates = MTRUE;
+			common_ofdm |= wlan_link_rates_have_ofdm(
+				request_rates, request_rates_len, element, element_len);
+		} else {
+			response_modes |= wlan_link_capability(element_id, element,
+							       element_len);
+		}
+		offset += element_len;
+	}
+
+	if ((request_modes & response_modes) & MLAN_LINK_MODE_HE)
+		return MLAN_LINK_AX;
+	if ((request_modes & response_modes) & MLAN_LINK_MODE_VHT)
+		return MLAN_LINK_AC;
+	if ((request_modes & response_modes) & MLAN_LINK_MODE_HT)
+		return MLAN_LINK_N;
+	if (!request_rates_len)
+		return MLAN_LINK_UNKNOWN;
+	if (band & BAND_A)
+		return MLAN_LINK_A;
+	if (!response_has_rates)
+		return MLAN_LINK_UNKNOWN;
+	return common_ofdm ? MLAN_LINK_G : MLAN_LINK_B;
 }

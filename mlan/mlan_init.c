@@ -476,7 +476,18 @@ mlan_status wlan_init_priv(pmlan_private priv)
 
 	ENTER();
 
-	priv->media_connected = MFALSE;
+#ifdef STA_SUPPORT
+	if (priv->link_snapshot_lock) {
+		pmadapter->callbacks.moal_spin_lock(pmadapter->pmoal_handle,
+						      priv->link_snapshot_lock);
+		priv->media_connected = MFALSE;
+		priv->link_snapshot_valid = MFALSE;
+		priv->link_snapshot_generation++;
+		pmadapter->callbacks.moal_spin_unlock(pmadapter->pmoal_handle,
+							priv->link_snapshot_lock);
+	} else
+#endif
+		priv->media_connected = MFALSE;
 	memset(pmadapter, priv->curr_addr, 0xff, MLAN_MAC_ADDR_LENGTH);
 
 #ifdef STA_SUPPORT
@@ -1075,6 +1086,12 @@ mlan_status wlan_init_priv_lock_list(pmlan_adapter pmadapter, t_u8 start_index)
 			}
 #ifdef STA_SUPPORT
 			if (pcb->moal_init_lock(pmadapter->pmoal_handle,
+						&priv->link_snapshot_lock) !=
+			    MLAN_STATUS_SUCCESS) {
+				ret = MLAN_STATUS_FAILURE;
+				goto error;
+			}
+			if (pcb->moal_init_lock(pmadapter->pmoal_handle,
 						&priv->curr_bcn_buf_lock) !=
 			    MLAN_STATUS_SUCCESS) {
 				ret = MLAN_STATUS_FAILURE;
@@ -1388,6 +1405,9 @@ t_void wlan_free_lock_list(pmlan_adapter pmadapter)
 				pcb->moal_free_lock(pmadapter->pmoal_handle,
 						    priv->wmm.ra_list_spinlock);
 #ifdef STA_SUPPORT
+			if (priv->link_snapshot_lock)
+				pcb->moal_free_lock(pmadapter->pmoal_handle,
+						    priv->link_snapshot_lock);
 			if (priv->curr_bcn_buf_lock)
 				pcb->moal_free_lock(pmadapter->pmoal_handle,
 						    priv->curr_bcn_buf_lock);

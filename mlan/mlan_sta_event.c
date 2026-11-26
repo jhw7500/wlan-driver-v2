@@ -445,7 +445,13 @@ t_void wlan_reset_connect_state(pmlan_private priv, t_u8 drv_disconnect)
 #endif
 
 	if (drv_disconnect) {
+		pmadapter->callbacks.moal_spin_lock(pmadapter->pmoal_handle,
+						      priv->link_snapshot_lock);
 		priv->media_connected = MFALSE;
+		priv->link_snapshot_valid = MFALSE;
+		priv->link_snapshot_generation++;
+		pmadapter->callbacks.moal_spin_unlock(pmadapter->pmoal_handle,
+							priv->link_snapshot_lock);
 		pmadapter->state_rdh.tx_block = MFALSE;
 #ifdef UAP_SUPPORT
 		if (pmadapter->dfs_mode)

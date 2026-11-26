@@ -133,6 +133,7 @@ enum _mlan_ioctl_req_id {
 	MLAN_OID_GET_SIGNAL_EXT = 0x00050008,
 	MLAN_OID_LINK_STATS = 0x00050009,
 	MLAN_OID_GET_UAP_STATS_LOG = 0x0005000A,
+	MLAN_OID_GET_LINK_SNAPSHOT = 0x0005000B,
 	/* Security Configuration Group */
 	MLAN_IOCTL_SEC_CFG = 0x00060000,
 	MLAN_OID_SEC_CFG_AUTH_MODE = 0x00060001,
@@ -2402,6 +2403,27 @@ typedef struct _mlan_bss_info {
 	t_u8 dfs_check_channel;
 } mlan_bss_info, *pmlan_bss_info;
 
+/** Negotiated standard saved at association completion */
+enum _mlan_link_standard {
+	MLAN_LINK_UNKNOWN = 0,
+	MLAN_LINK_A,
+	MLAN_LINK_B,
+	MLAN_LINK_G,
+	MLAN_LINK_N,
+	MLAN_LINK_AC,
+	MLAN_LINK_AX,
+};
+
+/** Association-time link state for MLAN_OID_GET_LINK_SNAPSHOT */
+typedef struct _mlan_link_snapshot {
+	t_u8 connected;
+	t_u8 standard;
+	t_u8 band_ghz;
+	t_u8 bssid[MLAN_MAC_ADDR_LENGTH];
+	t_u32 connected_sec;
+	t_u32 generation;
+} mlan_link_snapshot;
+
 /** MAXIMUM number of TID */
 #define MAX_NUM_TID 8
 
@@ -2802,6 +2824,8 @@ typedef struct _mlan_ds_get_info {
 		mlan_ver_ext ver_ext;
 		/** BSS information for MLAN_OID_GET_BSS_INFO */
 		mlan_bss_info bss_info;
+		/** Association-time link state */
+		mlan_link_snapshot link_snapshot;
 		/** Debug information for MLAN_OID_GET_DEBUG_INFO */
 		t_u8 debug_info[1];
 #ifdef UAP_SUPPORT

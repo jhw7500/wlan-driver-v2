@@ -74,6 +74,7 @@
 /** Private command: 11AC Oper Mode Cfg */
 #define PRIV_CMD_OPERMODECFG "opermodecfg"
 #define PRIV_CMD_DATARATE "getdatarate"
+#define PRIV_CMD_STA_LINK_STATE "stalinkstate"
 #define PRIV_CMD_TXRATECFG "txratecfg"
 #define PRIV_CMD_RATEBITMAPCFG "ratebitmapcfg"
 #define PRIV_CMD_GETLOG "getlog"

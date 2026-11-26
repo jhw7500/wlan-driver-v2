@@ -548,6 +548,7 @@ SYNOPSIS
 	mlanutl mlanX hostcmd <send_om.conf> send_om_set
 	mlanutl mlanX getdatarate
 	mlanutl uapX getdatarate
+	mlanutl mlanX stalinkstate
 	mlanutl mlanX drvdbg [n]
 	mlanutl mlanX getlog
 	mlanutl mlanX getsignal [m] [n]
@@ -5474,4 +5475,47 @@ Notes:
 	   /run and uses that state for --status.  This is needed for group 14
 	   and for firmware whose mode field does not change after 0xFF.
 	   Direct mlanutl commands are not visible to this script state.
+===============================================================================
+
+===============================================================================
+		U S E R  M A N U A L  F O R  stalinkstate
+
+The stalinkstate command reports the station's negotiated association standard
+and its current operating state. It is read-only and accepts no parameters.
+
+Usage:
+	mlanutl mlanX stalinkstate
+
+The association fields are captured when a connection, reconnection, roam, or
+fast transition completes. The standard is the intersection of the HT, VHT,
+and HE capabilities requested by the driver and accepted in the AP response.
+Legacy links use the association band and the common supported rates: 5 GHz
+is a, and 2.4 GHz is g with a shared OFDM rate or b otherwise. The standard,
+band and BSSID remain fixed until the next association, even if bandcfg is
+changed. association.connected_sec increases with elapsed connection time.
+
+The current channel and width come from a firmware query. The operating-mode
+fields report the configured notification values. The TX and RX fields report
+the last frame formats and bandwidths. These values can therefore change during
+the same association. If a roam races the queries, mlanutl retries the complete
+command once. A second race returns EAGAIN; run the command again.
+
+Output fields:
+	association.state	connected or disconnected
+	association.standard	unknown, a, b, g, n, ac, or ax
+	association.band	2.4 or 5 GHz
+	association.bssid	associated AP address
+	association.connected_sec	seconds since association completed
+	current.channel	current firmware operating channel
+	current.width	current firmware channel width in MHz
+	current.opermode_bw	opermodecfg BW (0=default, 1=20, 2=40, 3=80, 4=160 or 80+80 MHz)
+	current.opermode_nss	opermodecfg NSS (0=default, 1..8 streams)
+	current.tx_format	last TX frame format
+	current.tx_bw	last TX frame bandwidth in MHz
+	current.rx_format	last RX frame format
+	current.rx_bw	last RX frame bandwidth in MHz
+
+If an individual current-state firmware query fails, its value is reported as
+unavailable. The last-frame bandwidth can differ from current.width, including
+after a scan, because they describe different observations.
 ===============================================================================
