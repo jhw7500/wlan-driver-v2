@@ -120,6 +120,89 @@ static void expect_elapsed(t_u32 start_sec, t_u32 start_usec, t_u32 now_sec,
 	EXPECT_EQ(info.param.link_snapshot.connected_sec, expected, label);
 }
 
+static void test_snapshot_survives_bandcfg_change(void)
+{
+	static const t_u8 first_bssid[MLAN_MAC_ADDR_LENGTH] =
+		{0x00, 0x50, 0x43, 0x02, 0xfe, 0x11};
+	static const t_u8 second_bssid[MLAN_MAC_ADDR_LENGTH] =
+		{0x00, 0x50, 0x43, 0x02, 0xfe, 0x12};
+	mlan_adapter adapter = {0};
+	mlan_private priv = {0};
+	mlan_ds_get_info info = {0};
+	mlan_ioctl_req request = {0};
+	mlan_link_snapshot *snapshot = &info.param.link_snapshot;
+
+	adapter.priv[0] = &priv;
+	adapter.callbacks.moal_memset = host_set;
+	adapter.callbacks.moal_memcpy_ext = host_copy;
+	adapter.callbacks.moal_get_system_time = host_get_time;
+	adapter.callbacks.moal_spin_lock = host_lock;
+	adapter.callbacks.moal_spin_unlock = host_unlock;
+	adapter.config_bands = BAND_A | BAND_AN | BAND_AAC | BAND_AAX;
+	priv.config_bands = adapter.config_bands;
+	priv.media_connected = MTRUE;
+	priv.bss_mode = MLAN_BSS_MODE_INFRA;
+	priv.link_snapshot_valid = MTRUE;
+	priv.link_snapshot_generation = 1;
+	priv.link_standard = wlan_classify_link_standard(
+		MLAN_LINK_MODE_HT | MLAN_LINK_MODE_VHT | MLAN_LINK_MODE_HE,
+		requested_rates, sizeof(requested_rates), BAND_A, modern,
+		sizeof(modern));
+	priv.link_band_ghz = 5;
+	__builtin_memcpy(priv.link_bssid, first_bssid, sizeof(first_bssid));
+	priv.link_connected_at_sec = 100;
+	request.action = MLAN_ACT_GET;
+	request.buf_len = sizeof(info);
+	request.pbuf = (t_u8 *)&info;
+	fake_now_sec = 104;
+	fake_now_usec = 0;
+	EXPECT_EQ(wlan_get_info_link_snapshot(&adapter, &request),
+		  MLAN_STATUS_SUCCESS, "snapshot before bandcfg change");
+	EXPECT_EQ(snapshot->standard, MLAN_LINK_AX, "initial recorded standard");
+
+	/*
+	 * bandcfg describes a future association attempt. The completed
+	 * association remains the recorded source until another one succeeds.
+	 */
+	adapter.config_bands = BAND_B;
+	priv.config_bands = BAND_B;
+	EXPECT_EQ(wlan_get_info_link_snapshot(&adapter, &request),
+		  MLAN_STATUS_SUCCESS, "snapshot after bandcfg change");
+	EXPECT_EQ(snapshot->standard, MLAN_LINK_AX,
+		  "bandcfg does not change recorded standard");
+	EXPECT_EQ(snapshot->band_ghz, 5,
+		  "bandcfg does not change recorded band");
+	EXPECT_EQ(__builtin_memcmp(snapshot->bssid, first_bssid,
+				   sizeof(first_bssid)),
+		  0, "bandcfg does not change recorded BSSID");
+	EXPECT_EQ(snapshot->connected_sec, 4,
+		  "bandcfg does not reset connection time");
+	EXPECT_EQ(snapshot->generation, 1,
+		  "bandcfg does not change snapshot generation");
+
+	/* Model the next completed association under the new BAND_B setting. */
+	priv.link_snapshot_generation++;
+	priv.link_standard = wlan_classify_link_standard(
+		0, dsss + 2, sizeof(dsss) - 2, BAND_B, dsss, sizeof(dsss));
+	priv.link_band_ghz = 2;
+	__builtin_memcpy(priv.link_bssid, second_bssid, sizeof(second_bssid));
+	priv.link_connected_at_sec = 104;
+	fake_now_sec = 104;
+	EXPECT_EQ(wlan_get_info_link_snapshot(&adapter, &request),
+		  MLAN_STATUS_SUCCESS, "snapshot after next association");
+	EXPECT_EQ(snapshot->standard, MLAN_LINK_B,
+		  "next association changes recorded standard");
+	EXPECT_EQ(snapshot->band_ghz, 2,
+		  "next association changes recorded band");
+	EXPECT_EQ(__builtin_memcmp(snapshot->bssid, second_bssid,
+				   sizeof(second_bssid)),
+		  0, "next association changes recorded BSSID");
+	EXPECT_EQ(snapshot->connected_sec, 0,
+		  "next association resets connection time");
+	EXPECT_EQ(snapshot->generation, 2,
+		  "next association changes snapshot generation");
+}
+
 /* Minimal kernel-side facade consumed by the extracted MOAL handler. */
 typedef struct {
 	t_u8 bss_type;
@@ -306,6 +389,7 @@ int main(void)
 	int failures = 0;
 
 	test_command_capture();
+	test_snapshot_survives_bandcfg_change();
 	test_runtime_regressions();
 	for (i = 0; i < NELEMENTS(cases); i++) {
 		const struct example *c = &cases[i];
